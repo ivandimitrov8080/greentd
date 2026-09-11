@@ -1,0 +1,7 @@
+target
+result
+nixos.qcow2
+.direnv
+.devenv
+.pre-commit-config.yaml
+.nixos-test-history
