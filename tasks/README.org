@@ -158,15 +158,29 @@
    | =audit-008= | DONE        | No handler mints a player; =handle_cmds= drops unregistered peers (D8). |
    | =audit-010= | DONE        | =tests/sim_smoke.rs= + =tests/balance.rs=; zero tests is no longer true (D17). |
    | =test-001=  | IN-PROGRESS | Same harness; the fixed-seed box waits on =found-009=. |
+   | =found-002= | IN-PROGRESS | =src/config.rs=; every address, the tick rate, the map, the balance directory, the log filter and the two command budgets are resolved from the CLI, the environment and a config file, in that order. =tests/config.rs= holds the precedence matrix. Owed: the remote-host join and the exit code, both of which need a process. |
+   | =audit-005= | IN-PROGRESS | =tick_sim= broadcasts =WaveStarted= to every link on =GameOver='s path, so the client's wave notice is live code (D5). Owed: seeing "wave N" in a running HUD. |
+   | =audit-006= | IN-PROGRESS | =call_wave(key)=, a per-player =wave_call_cooldown= from the balance table, run down in =step= (D6). Owed: =cargo test=. |
+   | =audit-007= | IN-PROGRESS | =src/ratelimit.rs= and =Net::buckets=; a peer spends =Config='s burst and rate, and the rest of the frame's commands are dropped (D7). Owed: =cargo test=. |
 
    Also landed because those tasks could not be built without it: =src/lib.rs=
    (so =tests/= can link the crate) and =ron= as a direct dependency.
 
-   Next in M0, in this order: =audit-005= (D5, wire or delete
-   =WaveStarted=), then =audit-006= and =audit-007= (D6, D7, the call-wave
-   cooldown and the per-peer token bucket). =audit-003=, =audit-009= and
-   =audit-011= are blocked on =found-010= and =net-001=, and the [#A] M0 cluster
-   is otherwise closed.
+   Written but *not yet compiled or run*: =found-002= (D18's =Config=),
+   =audit-005= (D5), =audit-006= (D6) and =audit-007= (D7), in the order the
+   plan asked for them. Each carries a "verification owed" note naming the
+   command that closes it; do not flip a heading to =DONE= until =cargo test= is
+   green and the manual boxes in that note have been checked. The four
+   D-rows in the index above are =part= for exactly that reason.
+
+   Next in M0, in this order: =found-001= (D15, the headless server, which
+   =net-007= and CI =found-007= both wait on), =found-009= (the seeded RNG that
+   =test-001='s open box and =test-002= need), =found-010= (the =LocalPlayer=
+   marker that unblocks =audit-003= and =audit-028=), then =found-006=,
+   =found-005= and =found-003=. =audit-003=, =audit-009= and =audit-011= stay
+   blocked on =found-010= and =net-001=, and =net-001= -- the versioned
+   handshake -- remains the gate for the whole wire-format batch and is the
+   largest unblocked task in the file.
 
 * The single most important correctness question — two lineages
   :PROPERTIES:
@@ -249,9 +263,9 @@
   | D2  | A   | DONE  | =try_sell= refunds the *caller*, not the tower's owner. |
   | D3  | A   | open  | Host mode replicates every =PlayerView= to everyone (=NetworkTarget::All=), so =update_hud='s =me.single()= fails and the host sees no gold or kills. |
   | D4  | A   | DONE  | =sync_match= early-returns when =sim.over=, freezing the HUD at the moment of defeat; =MatchView::phase= is never written. |
-  | D5  | A   | open  | =ServerNotice::WaveStarted= is never sent, so the client's wave notification is dead code and players cannot tell a wave began. |
-  | D6  | A   | open  | =CallWave= has no cooldown, cost or authority check; one client can force waves continuously and end the match. |
-  | D7  | A   | open  | No rate limiting. =handle_cmds= drains and executes every queued command every frame. |
+  | D5  | A   | part  | =ServerNotice::WaveStarted= is never sent, so the client's wave notification is dead code and players cannot tell a wave began. |
+  | D6  | A   | part  | =CallWave= has no cooldown, cost or authority check; one client can force waves continuously and end the match. |
+  | D7  | A   | part  | No rate limiting. =handle_cmds= drains and executes every queued command every frame. |
   | D8  | A   | DONE  | =players.entry(who).or_default()= mints a zero-gold player record for an unregistered key; diverges from =add_player='s starting gold. |
   | D9  | A   | open  | Identity is the UDP socket address, so reconnecting from a new port silently becomes a new player and loses gold and kills. |
   | D10 | B   | open  | A wave is spread evenly around the entire loop, so it has no front; and a creep can spawn already adjacent to the Life Zone. |

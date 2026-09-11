@@ -30,9 +30,9 @@ an excuse for an untested mutation (D17).
   | D2  | A   | =src/sim.rs=                     | 1d     | =audit-002=                       | DONE  |
   | D3  | A   | =src/server.rs=, =src/client.rs= | 1d     | =audit-003=                       | open  |
   | D4  | A   | =src/server.rs=, =src/game.rs=   | 2h     | =audit-004=                       | DONE  |
-  | D5  | A   | =src/server.rs=, =src/game.rs=   | 2h     | =audit-005=                       | open  |
-  | D6  | A   | =src/sim.rs=, =src/server.rs=    | 1d     | =audit-006=                       | open  |
-  | D7  | A   | =src/server.rs=                  | 1d     | =audit-007=                       | open  |
+  | D5  | A   | =src/server.rs=, =src/game.rs=   | 2h     | =audit-005=                       | part  |
+  | D6  | A   | =src/sim.rs=, =src/server.rs=    | 1d     | =audit-006=                       | part  |
+  | D7  | A   | =src/server.rs=                  | 1d     | =audit-007=                       | part  |
   | D8  | A   | =src/sim.rs=                     | 2h     | =audit-008=                       | DONE  |
   | D9  | A   | =src/server.rs=, =src/sim.rs=    | 1w     | =audit-009=                       | open  |
   | D10 | B   | =src/sim.rs=                     | 1d     | =audit-013=                       | open  |
@@ -159,7 +159,7 @@ an excuse for an untested mutation (D17).
    compared, so a player leaving changed the wire value unnoticed. =MatchView=
    now derives =PartialEq= and the whole component is compared at once.
 
-** TODO [#A] Send ServerNotice::WaveStarted or delete the variant                     :@net:
+** IN-PROGRESS [#A] Send ServerNotice::WaveStarted or delete the variant                     :@net:
    :PROPERTIES:
    :ID:         audit-005
    :EFFORT:     2h
@@ -171,12 +171,26 @@ an excuse for an untested mutation (D17).
 
    - Files: =src/server.rs=, =src/game.rs=, =src/client.rs=
    - Acceptance:
-     - [ ] The choice is recorded in this task: wire it to =SimEvent::WaveStarted= (recommended) or delete the variant and the client arm.
-     - [ ] If wired, every connected peer receives =WaveStarted(w)= exactly once per wave, on the same broadcast path used for =GameOver=.
+     - [x] The choice is recorded in this task: wire it to =SimEvent::WaveStarted= (recommended) or delete the variant and the client arm.
+     - [x] If wired, every connected peer receives =WaveStarted(w)= exactly once per wave, on the same broadcast path used for =GameOver=.
      - [ ] The client shows "wave N" on receipt.
-     - [ ] A wave that starts with no peer connected neither panics nor queues an unbounded backlog.
+     - [x] A wave that starts with no peer connected neither panics nor queues an unbounded backlog.
 
-** TODO [#A] Give CallWave a documented cooldown, cost and authority rule             :@sim:
+   *Wired, not deleted.* =tick_sim= now sends =ServerNotice::WaveStarted(w)= for
+   each =SimEvent::WaveStarted= it steps, iterating =Net::links= and using the
+   same =Query<&mut MessageSender<ServerNotice>>= that =announce_game_over=
+   uses, so the two waves a match cannot do without -- the first and the last --
+   travel identically. Nothing is buffered in between: an empty =links= means
+   the loop body never runs, so a wave with no peers costs one =info!= and no
+   queue. The client's =read_notices= arm was already correct and is now
+   reachable, which is the one box left owed to a process: run
+   =cargo run= and watch the HUD after the first wave.
+
+   The full notice set (=net-011=) is still a design question -- wave cleared,
+   victory, message -- and =net-017= is what splits session notices onto their
+   own channel; neither is in scope here.
+
+** IN-PROGRESS [#A] Give CallWave a documented cooldown, cost and authority rule             :@sim:
    :PROPERTIES:
    :ID:         audit-006
    :EFFORT:     1d
@@ -190,12 +204,31 @@ an excuse for an untested mutation (D17).
 
    - Files: =src/sim.rs=, =src/server.rs=, =assets/balance/*.ron=
    - Acceptance:
-     - [ ] =call_wave= takes the caller's =PlayerKey= and records a per-player cooldown on =Player=.
-     - [ ] The rule is written here and implemented (a cooldown alone is enough); the numbers live in the balance tables (found-004), not in =sim.rs=.
-     - [ ] A refused early call returns =Err(Reject::RateLimited)= or =Err(Reject::NotEnoughGold)=, never a silent success.
+     - [x] =call_wave= takes the caller's =PlayerKey= and records a per-player cooldown on =Player=.
+     - [x] The rule is written here and implemented (a cooldown alone is enough); the numbers live in the balance tables (found-004), not in =sim.rs=.
+     - [x] A refused early call returns =Err(Reject::RateLimited)= or =Err(Reject::NotEnoughGold)=, never a silent success.
      - [ ] Sim test (D17): two =CallWave= commands inside the cooldown window leave =wave_timer= advanced by the first only.
 
-** TODO [#A] Rate-limit commands with a per-peer token bucket                         :@net:
+   *The rule.* Any player in the match may call the next wave -- it is a shared,
+   cooperative action on a map where every player spawns into the same ring --
+   but each player may only do so once every
+   =match_rules.call_wave_cooldown= seconds (=5.0= in =assets/balance/match.ron=,
+   a value the table already carried and nothing read). No gold or food cost,
+   because the original has none and a cooldown is sufficient to close D6: the
+   exploit is repetition, not a single early call.
+
+   =Player= gains =wave_call_cooldown=, set by =call_wave= and run down in
+   =Sim::step= with the same =dt= as everything else, so a replay sees the same
+   refusals; =handle_cmds= passes =key=. Refusals are never silent:
+   =NotInMatch= for a key with no player record, =RateLimited= inside the
+   cooldown, =MatchOver= after the match ends, and the last one is checked
+   before the player lookup so a finished match reports why.
+
+   Written, *not yet run*: three tests join the harness in =tests/sim_smoke.rs=
+   (the cooldown window, one player's cooldown not covering another's, and a
+   finished match). The last box closes with =cargo test=.
+
+** IN-PROGRESS [#A] Rate-limit commands with a per-peer token bucket                         :@net:
    :PROPERTIES:
    :ID:         audit-007
    :EFFORT:     1d
@@ -209,10 +242,31 @@ an excuse for an untested mutation (D17).
 
    - Files: =src/server.rs=, =src/game.rs=, =src/config.rs=
    - Acceptance:
-     - [ ] A token bucket per peer refills at a rate and burst fed from =Config= (found-002) and is consumed once per command.
-     - [ ] Over-budget commands are dropped, not deferred, and exactly one =Reject::RateLimited= notice is sent for the frame (uses audit-001's variant).
+     - [x] A token bucket per peer refills at a rate and burst fed from =Config= (found-002) and is consumed once per command.
+     - [x] Over-budget commands are dropped, not deferred, and exactly one =Reject::RateLimited= notice is sent for the frame (uses audit-001's variant).
      - [ ] Test: bursting =n + burst= commands in one frame yields exactly =burst= executions.
-     - [ ] The rate and burst are configuration, not literals in =server.rs=.
+     - [x] The rate and burst are configuration, not literals in =server.rs=.
+
+   =src/ratelimit.rs= is the whole policy: a ~30-line =TokenBucket= that holds
+   =burst= tokens, earns =commands_per_second * dt= per frame and spends one per
+   command. It is deliberately pure -- it knows nothing about peers, commands or
+   sockets -- so =tests/ratelimit.rs= drives it a frame at a time and states the
+   acceptance box above directly, with no =App=. =handle_cmds= keeps one bucket
+   per =PlayerKey= in =Net::buckets=, settles the frame's refill once, splits the
+   drained queue into "afforded" and "over budget", executes the first and
+   *drops* the second (a deferred command is the backlog the bucket exists to
+   prevent), then sends exactly one =Reject::RateLimited= however far over
+   budget the peer went. Buckets are created on connect and dropped on
+   disconnect, so an unregistered peer still has no bucket and no way to act
+   (D8).
+
+   =command_burst= (=16=) and =commands-per-second= (=20=) are =Config= fields, so
+   a stress run is a flag rather than a rebuild. The rate is per second rather
+   than per tick because =handle_cmds= runs in =Update=, where the frame delta is
+   what the clock gives it.
+
+   Written, *not yet run*: the last box closes with =cargo test=, and the
+   across-many-frames disconnect policy is =net-005='s, not this task's.
 
 ** DONE [#A] Require a registered PlayerKey instead of minting a zero-gold player     :@sim:
    :PROPERTIES:

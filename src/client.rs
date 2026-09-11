@@ -5,25 +5,17 @@
 //! twitch input, that latency model is entirely acceptable -- and it removes
 //! every determinism problem that a per-peer sim would introduce.
 
-use std::net::SocketAddr;
-
 use bevy::prelude::*;
 use lightyear::prelude::client::*;
 use lightyear::prelude::*;
 
 use crate::balance::Balance;
+use crate::config::Config;
 use crate::game::*;
 use crate::map::*;
 use crate::visuals::MainCamera;
 
-#[derive(Resource, Clone)]
-pub struct NetConfig {
-    pub server: SocketAddr,
-    /// Each client needs its own source port on one machine.
-    pub bind: SocketAddr,
-}
-
-fn spawn_client(mut commands: Commands, cfg: Res<NetConfig>) {
+fn spawn_client(mut commands: Commands, cfg: Res<Config>) {
     let client = commands
         .spawn((
             Name::new("Client"),
@@ -31,8 +23,8 @@ fn spawn_client(mut commands: Commands, cfg: Res<NetConfig>) {
             // The IO layer. Without this the link never binds a socket and
             // nothing is ever sent -- `Connect` would silently do nothing.
             UdpIo::default(),
-            LocalAddr(cfg.bind),
-            PeerAddr(cfg.server),
+            LocalAddr(cfg.bind_addr),
+            PeerAddr(cfg.server_addr),
             Link::default(),
             ReplicationReceiver,
             // Inserted eagerly so we never miss the first notice while the

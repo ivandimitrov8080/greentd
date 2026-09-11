@@ -63,6 +63,9 @@ pub struct Player {
     pub kills: u32,
     /// Cleared when the player disconnects; their towers stay.
     pub connected: bool,
+    /// Seconds until this player may call another wave (D6). Runs down in
+    /// [`Sim::step`], so it is match time rather than wall-clock time.
+    pub wave_call_cooldown: f32,
 }
 
 #[derive(Resource, Debug)]
@@ -170,6 +173,7 @@ impl Sim {
             gold,
             kills: 0,
             connected: false,
+            wave_call_cooldown: 0.0,
         });
         p.connected = true;
     }
@@ -295,9 +299,31 @@ impl Sim {
         Ok(())
     }
 
-    pub fn call_wave(&mut self) -> Result<(), Reject> {
+    /// Skip the rest of the wave timer, if the caller is allowed to (D6).
+    ///
+    /// The rule, written down here because `audit-006` asks for it: *any player
+    /// in the match* may call the next wave, because calling a wave is a
+    /// shared, cooperative action in a map where every player spawns into the
+    /// same ring, but each player may only do so once every
+    /// `match_rules.call_wave_cooldown` seconds. The cooldown is enough to stop
+    /// the exploit the defect describes -- one client zeroing the timer every
+    /// frame to drag the table to the overrun cap -- without inventing a gold
+    /// or food cost the original does not have.
+    ///
+    /// A refusal is never silent: an unknown caller is `NotInMatch`, a caller
+    /// inside its cooldown is `RateLimited`, and a finished match is
+    /// `MatchOver`.
+    pub fn call_wave(&mut self, who: PlayerKey) -> Result<(), Reject> {
         if self.over {
             return Err(Reject::MatchOver);
+        }
+        let cooldown = self.balance.match_rules.call_wave_cooldown;
+        {
+            let player = self.players.get_mut(&who).ok_or(Reject::NotInMatch)?;
+            if player.wave_call_cooldown > 0.0 {
+                return Err(Reject::RateLimited);
+            }
+            player.wave_call_cooldown = cooldown;
         }
         self.wave_timer = 0.0;
         Ok(())
@@ -355,6 +381,13 @@ impl Sim {
             for id in spawned {
                 events.push(SimEvent::CreepSpawned(id));
             }
+        }
+
+        // --- wave-call cooldowns ---
+        // Match time, not wall-clock time, so a replay sees the same refusals
+        // (D6).
+        for player in self.players.values_mut() {
+            player.wave_call_cooldown = (player.wave_call_cooldown - dt).max(0.0);
         }
 
         // --- move ---

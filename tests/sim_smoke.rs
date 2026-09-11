@@ -4,7 +4,8 @@
 //! `tasks/01-current-code-audit.org` `audit-010` ask for, and it closes D17
 //! (zero tests). It builds a `Sim` with **no `App`, no window, no GPU and no
 //! socket**, drives it with a fixed `dt`, and asserts on both the resulting
-//! state and the `SimEvent`s of each individual tick.
+//! state and the `SimEvent`s of each individual tick. Every sim-mutating audit
+//! task adds its test here, because here is where the harness is.
 //!
 //! Every number a test asserts on is read back from the balance tables rather
 //! than repeated as a literal, so a re-tune changes the expected value in one
@@ -397,6 +398,7 @@ fn a_command_from_an_unregistered_key_changes_nothing() {
         harness.sim.try_sell(stranger, cell),
         Err(Reject::NotInMatch)
     );
+    assert_eq!(harness.sim.call_wave(stranger), Err(Reject::NotInMatch));
 
     assert_eq!(
         harness.sim.players.len(),
@@ -422,13 +424,96 @@ fn no_intent_handler_produces_a_zero_gold_player() {
         let _ = harness.sim.try_build(stranger, cell, kind);
         let _ = harness.sim.try_upgrade(stranger, cell);
         let _ = harness.sim.try_sell(stranger, cell);
-        let _ = harness.sim.call_wave();
+        let _ = harness.sim.call_wave(stranger);
     }
 
     assert_eq!(harness.sim.players.len(), 1, "only the registered player");
     for (key, record) in harness.sim.players.iter() {
         assert_eq!(record.gold, start_gold, "{key:?} has the table's gold");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Call wave (audit-006)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_player_cannot_call_two_waves_inside_the_cooldown() {
+    let who = player(1);
+    let mut harness = Harness::with_players(&[1]);
+    let cooldown = harness.sim.balance.match_rules.call_wave_cooldown;
+    assert!(
+        cooldown > 0.0,
+        "the table must give the cooldown a positive value for this test to mean anything"
+    );
+
+    // The first call is accepted, and zeroes the timer so the next `step`
+    // starts the wave.
+    harness.advance(1);
+    harness.sim.call_wave(who).expect("the first call is allowed");
+    assert_eq!(harness.sim.wave_timer, 0.0);
+
+    let events = harness.step();
+    assert_eq!(
+        count_matching(&events, |e| matches!(e, SimEvent::WaveStarted(1))),
+        1,
+        "the called wave is wave 1"
+    );
+    let armed = harness.sim.wave_timer;
+    assert!(
+        armed > 0.0,
+        "starting a wave re-arms the timer from the table, not from a literal"
+    );
+
+    // The second call, inside the cooldown window, is refused and changes
+    // nothing at all: the timer keeps the value the wave just gave it.
+    assert_eq!(harness.sim.call_wave(who), Err(Reject::RateLimited));
+    assert_eq!(
+        harness.sim.wave_timer, armed,
+        "a refused call must not touch the wave timer"
+    );
+
+    // Once the cooldown has run out the same player may call again.
+    let ticks = (cooldown / TICK).ceil() as u32 + 2;
+    harness.advance(ticks);
+    harness.sim
+        .call_wave(who)
+        .expect("the cooldown has expired");
+    assert_eq!(
+        harness.sim.wave_timer, 0.0,
+        "an accepted call zeroes the timer again"
+    );
+}
+
+#[test]
+fn one_player_cannot_call_waves_for_another() {
+    let (a, b) = (player(1), player(2));
+    let mut harness = Harness::with_players(&[1, 2]);
+    let cooldown = harness.sim.balance.match_rules.call_wave_cooldown;
+    assert!(
+        cooldown > TICK,
+        "a cooldown shorter than one tick would let the next tick re-arm it"
+    );
+
+    harness.advance(1);
+    harness.sim.call_wave(a).expect("A's first call");
+    harness.step();
+
+    // The cooldown is the caller's, not the table's: B is unaffected by A's
+    // call, and A cannot call again yet.
+    assert_eq!(harness.sim.call_wave(a), Err(Reject::RateLimited));
+    harness.sim.call_wave(b).expect("B may call");
+}
+
+#[test]
+fn a_finished_match_refuses_a_wave_call() {
+    let mut tuned = (*shipped_balance()).clone();
+    tuned.match_rules.overrun_cap = 3;
+    let mut harness = Harness::with_balance(Arc::new(tuned));
+    harness.sim.add_player(player(1));
+
+    harness.advance_until(600, |sim| sim.over);
+    assert_eq!(harness.sim.call_wave(player(1)), Err(Reject::MatchOver));
 }
 
 // ---------------------------------------------------------------------------

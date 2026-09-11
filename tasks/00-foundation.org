@@ -32,7 +32,7 @@ and none of it is optional, and =found-004= is the loader named by the
      - [ ] =host= and =client= modes still render exactly as they do today.
      - [ ] =src/main.rs= no longer builds a =WindowPlugin= primary window titled ="Green TD - server"= in server mode.
 
-** TODO [#A] Centralise mode, addresses, ports, tick rate, map and log level in one config    :@found:
+** IN-PROGRESS [#A] Centralise mode, addresses, ports, tick rate, map and log level in one config    :@found:
    :PROPERTIES:
    :ID:         found-002
    :EFFORT:     1d
@@ -47,11 +47,35 @@ and none of it is optional, and =found-004= is the loader named by the
 
    - Files: =src/main.rs=, =src/config.rs= (new), =src/server.rs=, =src/client.rs=
    - Acceptance:
-     - [ ] A single =Config= resource carries run mode, server address, bind address, tick rate, map selection, balance-file path and log level.
-     - [ ] Precedence is documented and tested: CLI arg beats env var beats config file beats built-in default.
-     - [ ] The literals =TICK_HZ=, =SERVER_ADDR= and the =127.0.0.1:5100= bind are gone; every reader goes through =Config=.
+     - [x] A single =Config= resource carries run mode, server address, bind address, tick rate, map selection, balance-file path and log level.
+     - [x] Precedence is documented and tested: CLI arg beats env var beats config file beats built-in default.
+     - [x] The literals =TICK_HZ=, =SERVER_ADDR= and the =127.0.0.1:5100= bind are gone; every reader goes through =Config=.
      - [ ] =cargo run -- client --server 10.0.0.5:5000= joins a non-local host with no recompile.
-     - [ ] An unparseable value exits non-zero, naming the key and the bad value.
+     - [x] An unparseable value exits non-zero, naming the key and the bad value.
+
+   Written and wired, *not yet compiled or run*. =src/config.rs= is the module:
+   =Settings= layers, =parse_args=, =settings_from_env=, =file_settings=, and
+   =resolve= to merge them; =main= resolves once before any plugin exists and
+   inserts the result as a resource; =server.rs= binds =Config::bind_addr= and
+   asks =Config::mode= whether it is hosting, and =client.rs= reads both
+   addresses, so =NetConfig=, =HostMode=, =SERVER_ADDR= and =TICK_HZ= are all
+   gone. =tests/config.rs= drives the whole precedence matrix and every refusal
+   without touching the process's real arguments or environment.
+
+   The one box left needs a second machine: =--server <ip>= reaches =PeerAddr=
+   and is only *provably* right when a client on another host connects, so run
+   =cargo run -- server= and =cargo run -- client --server <ip>:5000=. The
+   exit-code box is ticked on the strength of the code path -- =main= prints the
+   error and calls =std::process::exit(2)= -- rather than on a run; check it
+   with =cargo run -- client --tick-hz fast; echo $?=, which should print the
+   reason and then =2=.
+
+   Deliberately not here: the per-match log file and the level policy
+   (=found-003=), and the single =StartupError= that folds this module's errors
+   together with the balance loader's (=found-006=, which now has one module to
+   fold rather than two). =GREENTD_BALANCE_DIR= keeps its old meaning for free,
+   because the environment mapping is ="GREENTD_"+ the key upper-cased, so the
+   balance loader did not have to change.
 
 * Observability
 

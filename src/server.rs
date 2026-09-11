@@ -6,29 +6,16 @@
 //! testable and portable.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
 
 use bevy::prelude::*;
 use lightyear::prelude::client::Connected;
 use lightyear::prelude::server::*;
 use lightyear::prelude::*;
 
+use crate::config::Config;
 use crate::game::*;
+use crate::ratelimit::TokenBucket;
 use crate::sim::*;
-
-pub const SERVER_ADDR: &str = "127.0.0.1:5000";
-
-/// True when one process plays both roles. Host clients share the server's
-/// world, so they cannot be addressed by `NetworkTarget::Single` and already
-/// contain authoritative entities (no `Remote` marker). Set from `main`.
-#[derive(Resource)]
-pub struct HostMode(pub bool);
-
-impl Default for HostMode {
-    fn default() -> Self {
-        Self(false)
-    }
-}
 
 /// Bookkeeping the server needs to talk to clients. Not part of `Sim`.
 #[derive(Resource, Default)]
@@ -37,6 +24,9 @@ pub struct Net {
     pub links: HashMap<PlayerKey, Entity>,
     /// Player -> their private HUD entity.
     pub views: HashMap<PlayerKey, Entity>,
+    /// Player -> their command budget (`audit-007`). A peer that is not in
+    /// `links` has no bucket: it is not allowed to act at all (D8).
+    pub buckets: HashMap<PlayerKey, TokenBucket>,
     /// The single replicated match-state entity.
     pub match_entity: Option<Entity>,
     /// Sim creep -> its replicated mirror entity.
@@ -55,8 +45,10 @@ fn peer_key(remote: &RemoteId) -> PlayerKey {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-fn spawn_server(mut commands: Commands) {
-    let addr: SocketAddr = SERVER_ADDR.parse().expect("valid server addr");
+/// Bind the socket the config names. `found-002`: this used to parse the
+/// `SERVER_ADDR` literal, which made a remote or an ephemeral port impossible.
+fn spawn_server(config: Res<Config>, mut commands: Commands) {
+    let addr = config.bind_addr;
     let server = commands
         .spawn((
             Name::new("Server"),
@@ -77,7 +69,7 @@ fn server_up(server: Query<(), (With<Server>, With<Started>)>) -> bool {
 fn on_client_connected(
     trigger: On<Add, Connected>,
     links: Query<&RemoteId, With<ClientOf>>,
-    host: Res<HostMode>,
+    config: Res<Config>,
     mut sim: ResMut<Sim>,
     mut net: ResMut<Net>,
     mut commands: Commands,
@@ -102,8 +94,10 @@ fn on_client_connected(
     ));
 
     // A private HUD entity, replicated only to this player. Host clients share
-    // the server's world, so `Single` cannot target them -- they get everything.
-    let target = if host.0 {
+    // the server's world, so `Single` cannot target them and they get
+    // everything -- that is D3, which `audit-003` removes by addressing the
+    // host's own view instead of broadcasting every view.
+    let target = if config.mode.is_host() {
         NetworkTarget::All
     } else {
         NetworkTarget::Single(remote.0)
@@ -121,6 +115,13 @@ fn on_client_connected(
 
     net.links.insert(key, trigger.entity);
     net.views.insert(key, view);
+    // A fresh full budget, so a rejoin is not punished for an earlier burst.
+    // The bucket is keyed by the same `PlayerKey` as everything else, which is
+    // the socket address until `net-002` gives players a real identity.
+    net.buckets.insert(
+        key,
+        TokenBucket::new(config.command_burst, config.commands_per_second),
+    );
     sim.add_player(key);
 }
 
@@ -140,6 +141,7 @@ fn on_client_disconnected(
     }
     info!("player {:?} left (towers remain)", key);
     sim.remove_player(key);
+    net.buckets.remove(&key);
     if let Some(view) = net.views.remove(&key) {
         commands.entity(view).despawn();
     }
@@ -169,15 +171,25 @@ fn setup_match(
 // Intents
 // ---------------------------------------------------------------------------
 
+/// Drain every peer's commands and apply the ones the peer may afford.
+///
+/// Two bounded things happen here: a command from a peer that is not in the
+/// match is dropped without execution (D8), and a registered peer may only
+/// spend the tokens its bucket holds (`audit-007`). Over-budget commands are
+/// dropped rather than deferred, and the peer hears about it exactly once per
+/// frame, so a client cannot turn a burst into a backlog.
 fn handle_cmds(
+    time: Res<Time>,
+    config: Res<Config>,
     mut sim: ResMut<Sim>,
-    net: Res<Net>,
+    mut net: ResMut<Net>,
     mut links: Query<(
         &RemoteId,
         &mut MessageReceiver<ClientCmd>,
         &mut MessageSender<ServerNotice>,
     )>,
 ) {
+    let frame = time.delta_secs();
     for (remote, mut recv, mut send) in links.iter_mut() {
         let key = peer_key(remote);
         // Always drain, so a peer that is not allowed to act cannot leave a
@@ -193,12 +205,32 @@ fn handle_cmds(
             }
             continue;
         }
-        for cmd in cmds {
+
+        // Settle the frame's budget first. The block ends the borrow of
+        // `net.buckets`, so `net.links` is readable again below.
+        let (allowed, over_budget) = {
+            let bucket = net.buckets.entry(key).or_insert_with(|| {
+                TokenBucket::new(config.command_burst, config.commands_per_second)
+            });
+            bucket.refill(frame);
+            let mut allowed: Vec<ClientCmd> = Vec::with_capacity(cmds.len());
+            let mut over_budget = 0usize;
+            for cmd in cmds {
+                if bucket.try_consume() {
+                    allowed.push(cmd);
+                } else {
+                    over_budget += 1;
+                }
+            }
+            (allowed, over_budget)
+        };
+
+        for cmd in allowed {
             let outcome = match cmd {
                 ClientCmd::Build { x, y, kind } => sim.try_build(key, IVec2::new(x, y), kind),
                 ClientCmd::Upgrade { x, y } => sim.try_upgrade(key, IVec2::new(x, y)),
                 ClientCmd::Sell { x, y } => sim.try_sell(key, IVec2::new(x, y)),
-                ClientCmd::CallWave => sim.call_wave(),
+                ClientCmd::CallWave => sim.call_wave(key),
             };
             let notice = match outcome {
                 Ok(()) => ServerNotice::Ok,
@@ -209,6 +241,16 @@ fn handle_cmds(
             };
             send.send::<ReliableChannel>(notice);
         }
+
+        if over_budget > 0 {
+            // One refusal per frame, however many commands were dropped, so a
+            // peer that floods cannot make the server flood back.
+            debug!(
+                "rate limited {:?}: {} command(s) over budget",
+                key, over_budget
+            );
+            send.send::<ReliableChannel>(ServerNotice::Err(Reject::RateLimited));
+        }
     }
 }
 
@@ -216,14 +258,32 @@ fn handle_cmds(
 // Simulation + replication mirror
 // ---------------------------------------------------------------------------
 
-fn tick_sim(time: Res<Time>, mut sim: ResMut<Sim>) {
+/// Step the authoritative sim and turn its events into traffic and logs.
+///
+/// The wave notification is broadcast here rather than in `announce_game_over`
+/// because the event is in hand; it takes the same path, so every connected
+/// peer hears about every wave exactly once (D5). A wave that starts with no
+/// peer connected simply has nobody to tell.
+fn tick_sim(
+    time: Res<Time>,
+    mut sim: ResMut<Sim>,
+    net: Res<Net>,
+    mut links: Query<&mut MessageSender<ServerNotice>>,
+) {
     if sim.over {
         return;
     }
-    for ev in sim.step(time.delta_secs()) {
+    let events = sim.step(time.delta_secs());
+    for ev in events {
         match ev {
             SimEvent::WaveStarted(w) => {
                 info!("wave {} started ({} creeps)", w, sim.creeps_per_wave());
+                let notice = ServerNotice::WaveStarted(w);
+                for entity in net.links.values() {
+                    if let Ok(mut send) = links.get_mut(*entity) {
+                        send.send::<ReliableChannel>(notice.clone());
+                    }
+                }
             }
             SimEvent::CreepSpawned(id) => trace!("creep {:?} spawned", id),
             SimEvent::CreepKilled(id) => trace!("creep {:?} killed", id),
@@ -397,7 +457,6 @@ impl Plugin for GreenTdServerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Sim>()
             .init_resource::<Net>()
-            .init_resource::<HostMode>()
             .add_systems(Startup, spawn_server)
             .add_observer(on_client_connected)
             .add_observer(on_client_disconnected)

@@ -10,8 +10,10 @@
 //! | Module      | Owns                                                    |
 //! |-------------+---------------------------------------------------------|
 //! | `balance`   | every tuned number, loaded from `assets/balance/*.ron`   |
+//! | `config`    | one run's mode, addresses, tick rate and budgets          |
 //! | `game`      | replicated components, client/server messages, `Reject`  |
 //! | `map`       | static geometry: the ring, cells, buildability           |
+//! | `ratelimit` | how many commands a peer may spend per frame             |
 //! | `sim`       | the authoritative state machine; no networking types     |
 //! | `protocol`  | the lightyear contract: messages, channels, components   |
 //! | `server`    | authority: intents in, replicated mirrors out            |
@@ -22,9 +24,11 @@
 
 pub mod balance;
 pub mod client;
+pub mod config;
 pub mod game;
 pub mod map;
 pub mod protocol;
+pub mod ratelimit;
 pub mod server;
 pub mod sim;
 pub mod visuals;
