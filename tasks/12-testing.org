@@ -8,8 +8,11 @@
 This plan touches a new =tests/= and =benches/= tree, =src/sim.rs= (a state hash
 and =#[cfg(test)]= helpers), =src/server.rs=, =src/protocol.rs=, new =src/bot.rs=
 and =src/replay.rs=, and the CI pipeline from [[file:00-foundation.org][00-foundation.org]]
-=found-007=. There are currently zero tests (=D17=), even though =Sim= was
-written to be a testable =step(dt) -> Vec<SimEvent>= state machine over HashMaps.
+=found-007=. There are tests as of =test-001= (=tests/sim_smoke.rs=,
+=tests/balance.rs=), which closed D17; the rest of this file is what grows
+around them. =Sim= is a testable =step(dt) -> Vec<SimEvent>= state machine over
+HashMaps, and the harness in =test-001= is the headless one every task here
+extends.
 
 * Tasks
 
@@ -27,7 +30,7 @@ written to be a testable =step(dt) -> Vec<SimEvent>= state machine over HashMaps
    - Files: =tests/sim.rs= (or a =#[cfg(test)] mod tests= in =src/sim.rs=), =Cargo.toml= dev-dependencies
    - Acceptance:
      - [x] A test builds =Sim::new()=, runs N =step= calls and asserts on state.
-     - [x] The suite runs under =cargo test= with no window and no OS sockets opened.
+     - [x] The suite runs under =cargo test= with no window and no OS sockets opened: no test builds an =App=, so both are impossible by construction. 19 tests, 0 failures.
      - [x] A helper sets up players, towers and waves so later tests need no boilerplate.
      - [ ] =SimEvent=s can be collected and asserted per tick, and a fixed seed is threaded in.
 

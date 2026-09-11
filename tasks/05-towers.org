@@ -23,7 +23,7 @@ confirm is marked =(tune)=.
    :EFFORT:     1w
    :BLOCKED-BY: found-004
    :END:
-   =tower_stats(kind)= returns a flat struct ={ name, cost, range, damage,
+   =tower_stats(kind)= returned a flat struct ={ name, cost, range, damage,
    cooldown, splash, slow }= and =Tower= carries a =kind: u8= into it plus an
    unbounded =level: u8= (D18).  The original instead has eleven families with
    per-tier stats and an explicit upgrade relation, so a tower's identity must
@@ -31,11 +31,18 @@ confirm is marked =(tune)=.
 
    - Files: =assets/balance/towers.ron=, =src/game.rs=, =src/sim.rs=
    - Acceptance:
-     - [ ] =TowerStats=, the =tower_stats(kind)= function and =TOWER_KIND_COUNT= no longer exist anywhere in =src/=.
+     - [x] =TowerStats=, the =tower_stats(kind)= function and =TOWER_KIND_COUNT= no longer exist anywhere in =src/= — done early by [[file:00-foundation.org][00-foundation.org]] =found-004=, which replaced all three with =balance.tower(kind) -> Option<&TowerDef>= and =balance.tower_kind_count()=. Nothing to do here for this box; do not re-delete anything.
      - [ ] =Tower= stores a family id and a tier, and no integer doubles as its identity.
      - [ ] A tower record declares cost, per-tier stats, upgrade edge(s), food cost, target filter, damage type, projectile key and abilities, loaded from =assets/balance/towers.ron=.
      - [ ] The loader rejects a record naming an unknown damage type, target filter or upgrade target.
      - [ ] Both peers load the same file and its hash is part of the protocol version (found-004).
+
+   Note as of =found-004=: =assets/balance/towers.ron= exists with three entries
+   (=basic=, =cannon=, =frost=) carrying exactly the numbers =tower_stats= used to
+   hard-code, and its schema is already a superset of the flat struct: it has
+   =key=, =upgrade_base_cost=, =upgrade_growth= and an optional =next= link, and
+   the loader validates that link (resolving, acyclic, monotonic in cost and
+   damage). This task replaces that schema rather than starting from nothing.
 
 ** TODO [#A] Upgrade along explicit edges and branch into different towers from tier 3                                          :@towers:
    :PROPERTIES:
@@ -352,21 +359,22 @@ confirm is marked =(tune)=.
    :EFFORT:     1d
    :BLOCKED-BY: tower-002, audit-001
    :END:
-   =try_sell= refunds the *caller*, not the tower's owner (D2), and always uses
+   =try_sell= refunded the *caller*, not the tower's owner (D2), and always used
    a flat 70% with no difficulty variation.  The original sells through an
    ability with per-difficulty values (one variant returns 100% at level 1 and
    50% above it), shows the value as floating text, and takes two clicks to sell
-   an Aura tower or a Trap.  The ownership hole D1 is closed in
-   [[file:01-current-code-audit.org][01-current-code-audit.org]] =audit-001=; this task references it rather than
-   duplicating it.
+   an Aura tower or a Trap.  The ownership hole D1 and the refund hole D2 are
+   both closed in [[file:01-current-code-audit.org][01-current-code-audit.org]]
+   =audit-002=; this task references it rather than duplicating it, and only the
+   per-difficulty pricing, the floating text and the two-click rule are left.
 
    - Files: =src/sim/mod.rs=, =src/protocol.rs=, =src/client.rs=
    - Acceptance:
-     - [ ] The refund is issued to the tower's owner, closing D2.
-     - [ ] Sell value is per-difficulty and per-tier data; the flat 70% literal is gone.
+     - [x] The refund is issued to the tower's owner, closing D2 — done by =audit-002=, and =try_sell= additionally refuses a non-owner with =Reject::NotOwner=.
+     - [ ] Sell value is per-difficulty and per-tier data; the flat 70% (=BalanceData::sell_refund=) is gone.
      - [ ] The client shows the sell value as floating text before the sale commits.
      - [ ] Selling an Aura tower or a Trap requires two confirmations.
-     - [ ] Swap exchanges two cells atomically and only for towers the caller may command, reusing the authority check from =audit-001=.
+     - [ ] Swap exchanges two cells atomically and only for towers the caller may command, reusing the authority check from =audit-002=.
 
 ** TODO [#B] Publish tower upgrade data the client can render without simulating                                               :@towers:
    :PROPERTIES:

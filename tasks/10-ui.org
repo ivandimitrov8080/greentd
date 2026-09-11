@@ -73,15 +73,16 @@ state or the local build ghost, and every action is an intent, never a mutation.
    :BLOCKED-BY: ui-001
    :END:
    Today the only way to choose a tower is the =Digit1=/=Digit2=/=Digit3= keys in
-   =player_input=, and =TOWER_KIND_COUNT= is =3=; the original has eleven families
-   with their own tiers and branching upgrades. A panel is required: one button
-   per family with its icon, cost and hotkey, the families the lobby turned off
-   hidden or disabled (=tower-020=), affordability shown, and the tier/branch
-   graph of the selected family rendered rather than a flat list.
+   =player_input=, and the kind count is the three-entry tower table (=3=; it was
+   the =TOWER_KIND_COUNT= const until =found-004= deleted it); the original has
+   eleven families with their own tiers and branching upgrades. A panel is
+   required: one button per family with its icon, cost and hotkey, the families
+   the lobby turned off hidden or disabled (=tower-020=), affordability shown, and
+   the tier/branch graph of the selected family rendered rather than a flat list.
 
    - Files: =src/ui/build_panel.rs=, =src/game.rs=, =src/client.rs=
    - Acceptance:
-     - [ ] Every available family renders a button with an icon, a cost and a hotkey, driven by the tower data rather than =TOWER_KIND_COUNT=.
+     - [ ] Every available family renders a button with an icon, a cost and a hotkey, driven by the tower data (=balance.towers=) and never by a hard-coded count.
      - [ ] A family disabled before the match is not selectable and the button states why (=tower-020=).
      - [ ] A family the player cannot currently afford is visually distinct from one that is disabled.
      - [ ] The panel shows the tier and branch graph of the selected family.

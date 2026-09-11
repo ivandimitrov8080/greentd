@@ -29,9 +29,9 @@ contract.  It touches =src/sim.rs= (the =src/sim/economy.rs= and
    - Files: =src/sim/mod.rs=, =src/sim/economy.rs=, =src/game.rs=
    - Acceptance:
      - [ ] =Player= holds gold, lumber and food (used and cap) plus kills, income, interest and a tower count.
-     - [ ] =START_GOLD= and every other economy literal move to =assets/balance/economy.ron= (found-004).
+     - [ ] Every economy literal lives in a balance table. As of =found-004= starting gold is =match_rules.start_gold= in =assets/balance/match.ron=; the remaining ones belong in =assets/balance/economy.ron= (found-004).
      - [ ] Adding a resource is a data change and not a new struct field plus a new literal in each site.
-     - [ ] =players.entry(who).or_default()= no longer mints a zero-gold record that diverges from =add_player= (D8).
+     - [x] =players.entry(who).or_default()= no longer mints a zero-gold record that diverges from =add_player= (D8) — closed by [[file:01-current-code-audit.org][01-current-code-audit.org]] =audit-008=, which made every handler reject an unregistered key with =Reject::NotInMatch= instead.
 
 * Income and bounty
 
@@ -43,8 +43,8 @@ contract.  It touches =src/sim.rs= (the =src/sim/economy.rs= and
    :END:
    The original grants gold at the end of each wave, starting at 200 and rising
    by 10–20 per wave, but the sim has no end-of-wave payout at all: gold only
-   comes from kills, and =Player.gold= simply starts at the invented
-   =START_GOLD = 300=.
+   comes from kills, and =Player.gold= simply starts at the invented 300
+   (=match_rules.start_gold=, =assets/balance/match.ron= as of =found-004=).
 
    - Files: =src/sim/economy.rs=, =src/sim/mod.rs=, =assets/balance/economy.ron=
    - Acceptance:
@@ -254,16 +254,19 @@ contract.  It touches =src/sim.rs= (the =src/sim/economy.rs= and
    :EFFORT:     1d
    :BLOCKED-BY: econ-001, lobby-001
    :END:
-   =START_GOLD = 300= is an invented value (Green TD Evolution settled on 500,
+   The starting gold was an invented 300 (Green TD Evolution settled on 500,
    one Green Circle TD used 2000; the original is unknown), and a player joining
-   mid-match starts at wave N with only that and no catch-up (D24).
+   mid-match starts at wave N with only that and no catch-up (D24). As of
+   =found-004= the 300 lives in =assets/balance/match.ron= as
+   =match_rules.start_gold=, so the work here is the *value* and the catch-up
+   rule, not the de-literalisation.
 
    - Files: =src/sim/economy.rs=, =src/game.rs=, =assets/balance/economy.ron=
    - Acceptance:
-     - [ ] The starting gold is data and marked  =(tune)=; the default is recorded and differs from the unconfirmed =START_GOLD = 300=.
+     - [ ] The starting gold is data and marked  =(tune)=; the default is recorded and differs from the unconfirmed 300 now in =match_rules.start_gold=.
      - [ ] Starting food and lumber (if enabled) are data.
      - [ ] A mid-match joiner receives a documented catch-up: at minimum the cumulative end-of-wave gold they missed, configurable per match.
-     - [ ] D24 is closed.
+     - [ ] D24 is closed (the task that owns it is [[file:01-current-code-audit.org][01-current-code-audit.org]] =audit-021=; coordinate rather than duplicating).
 
 ** TODO [#B] Define the economy HUD data contract                                                                               :@econ:
    :PROPERTIES:

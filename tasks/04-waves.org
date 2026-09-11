@@ -296,16 +296,17 @@ that consumes this data lives in [[file:02-simulation.org][02-simulation.org]].
    :EFFORT:     1d
    :BLOCKED-BY: sim-007
    :END:
-   Timing today is a flat =WAVE_INTERVAL = 20.0= with the first wave at 3.0 s and
+   Timing today is a flat wave interval (20.0 s, now =match_rules.wave_interval= in
+   =assets/balance/match.ron=) with the first wave at 3.0 s (=first_wave_delay=) and
    an unbounded =CallWave= (D6). Design the real model here — inter-wave gap,
    wave-clear rule, and a bounded "call next wave early" mechanic — even though
-   the authority and cooldown fix itself lives in the audit (audit-001).
+   the authority and cooldown fix itself lives in the audit (=audit-006= owns D6).
 
    - Files: =src/sim.rs=, =src/game.rs=, =assets/balance/waves.ron=
    - Acceptance:
-     - [ ] The wave interval is data per mode and difficulty, not the =WAVE_INTERVAL = 20.0= literal.
-     - [ ] The first-wave delay and the inter-wave gap are separate, documented values.
-     - [ ] The "call next wave early" mechanic is specified: who may call it, whether it costs or rewards, and its cooldown (enforcement is audit-001 and D6).
+     - [ ] The wave interval is data per mode and difficulty, not one flat value for the whole match (the single value is already in =match.ron= as of =found-004=; this makes it vary).
+     - [ ] The first-wave delay and the inter-wave gap are separate, documented values (they already are: =first_wave_delay= and =wave_interval=).
+     - [ ] The "call next wave early" mechanic is specified: who may call it, whether it costs or rewards, and its cooldown (enforcement is =audit-006=, using =match_rules.call_wave_cooldown= which =found-004= already ships).
      - [ ] Early-send cannot spawn two waves in one step.
 
 * Tooling and communication
@@ -356,8 +357,10 @@ that consumes this data lives in [[file:02-simulation.org][02-simulation.org]].
 * Open questions
 
   - *Exact creep HP/speed/bounty curves per wave.* Not documented. Default:
-    seed the table from today's =hp = 45*(1+0.28*(w-1))=, =speed = 55+2*(w-1)=,
-    =bounty = 6+w/2=, all =(tune)=.
+    seed the table from today's curves, which as of =found-004= are the
+    =waves.scaling= block in =assets/balance/waves.ron=: =hp = hp_base *
+    (1 + hp_growth*(w-1))= (45, 0.28), =speed = speed_base + speed_growth*(w-1)=
+    (55, 2), =bounty = bounty_base + bounty_per_wave*w= (6, 0.5), all =(tune)=.
   - *Exact damage-vs-armour multipliers used by the harness.* See
     [[file:02-simulation.org][02-simulation.org]] =sim-002=; all =(tune)=.
   - *Which waves are boss and hero waves.* "3 boss levels" and a wave-30 Illidan

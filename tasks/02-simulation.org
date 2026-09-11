@@ -225,17 +225,21 @@ the creep data model and adds the armour/damage system (=src/game.rs=,
    :EFFORT:     1w
    :BLOCKED-BY: decide-default-lineage
    :END:
-   "Green TD" is two lineages with different lose conditions, and =sim.rs=
-   hardcodes one of them — =OVERRUN_CAP = 150= — which matches neither (D19;
-   Lineage A documents 600/700/800/1000). Implement both as data:
-   =LoseRule::Overrun { cap }= (too many creeps alive at once) and
+   "Green TD" is two lineages with different lose conditions, and the sim
+   hardcodes one of them — =match_rules.overrun_cap = 150= as of =found-004= —
+   which matches neither (D19; Lineage A documents 600/700/800/1000). Implement
+   both as data: =LoseRule::Overrun { cap }= (too many creeps alive at once) and
    =LoseRule::Lives { lives, boss_leak_cost }= (a creep reaching the Life Zone
    costs lives; a boss costs 10; 0 lives is defeat).
+
+   Note: =Sim::overrun_cap()= already reads the value from the table and
+   =Sim::step= compares against it, so what is left here is the *rule* enum and
+   the =Lives= implementation, not the de-literalisation.
 
    - Files: =src/sim.rs=, =src/game.rs=, =src/protocol.rs=
    - Acceptance:
      - [ ] =LoseRule= is an enum with exactly the =Overrun= and =Lives= variants above and is a field of the match settings.
-     - [ ] Under =Overrun= the match ends when live creeps exceed =cap=, and the literal =OVERRUN_CAP = 150= is deleted.
+     - [ ] Under =Overrun= the match ends when live creeps exceed =cap=, and the =cap= value is corrected to a documented Lineage A number (150 is in neither lineage); it already comes from =assets/balance/match.ron= and not a const.
      - [ ] Under =Lives= a boss leak costs =boss_leak_cost= (default 10) and 0 lives is defeat; =SimEvent= gains =CreepLeaked=, =LivesLost= and =GameOver= carrying remaining lives.
      - [ ] The default rule for a fresh match comes from the lobby setting (lobby-003), not a hardcoded constant.
      - [ ] The inactive rule is never consulted, proven by a test that runs =Lives= mode past the old 150-creep point without ending.
@@ -274,7 +278,7 @@ the creep data model and adds the armour/damage system (=src/game.rs=,
    - Acceptance:
      - [ ] The sim emits =SimEvent::WaveCleared(w)= exactly when the last creep spawned by wave =w= is gone and none of its creeps remain.
      - [ ] =WaveCleared= fires once per wave and never for a wave with creeps still in flight, leakers included.
-     - [ ] An inter-wave gap (duration plus phase) is explicit in =Sim= instead of the flat =WAVE_INTERVAL= countdown.
+     - [ ] An inter-wave gap (duration plus phase) is explicit in =Sim= instead of the flat =match_rules.wave_interval= countdown.
      - [ ] A test clears a wave early and asserts =WaveCleared= precedes the next =WaveStarted=.
 
 * Events and the network boundary
@@ -294,7 +298,7 @@ the creep data model and adds the armour/damage system (=src/game.rs=,
    - Acceptance:
      - [ ] =SimEvent= covers spawn, kill, leak, wave start, wave clear, bounty/gold change, build/upgrade/sell, crit, ability cast, game over and victory.
      - [ ] Each variant is annotated replicated or local-only, and a test enumerates the set so a new variant must declare itself.
-     - [ ] =ServerNotice::WaveStarted= is removed or driven by =SimEvent::WaveStarted= (closes D5).
+     - [ ] =ServerNotice::WaveStarted= is removed or driven by =SimEvent::WaveStarted= (closes D5; the audit-side decision is =audit-005=, which owns D5 and should be done first).
      - [ ] No event carries nondeterministic data such as a wall-clock time or an address-derived key.
 
 ** TODO [#A] Replace =MatchView::phase: u8= with a typed match phase   :@sim:
@@ -303,16 +307,24 @@ the creep data model and adds the armour/damage system (=src/game.rs=,
    :EFFORT:     1d
    :BLOCKED-BY: sim-011
    :END:
-   =MatchView::phase= is a =u8= initialised to 0 in =setup_match= and never
-   written again (D4), so the HUD cannot tell whether the match is running or
+   =MatchView::phase= was a =u8= initialised to 0 in =setup_match= and never
+   written again (D4), so the HUD could not tell whether the match was running or
    over. Introduce an explicit =Phase= enum in the sim, replicate it, and stop
    =sync_match= from freezing the HUD at defeat.
 
+   *Partly done* by the audit's =audit-004=, which took the conservative version
+   of this change: =game::Phase= now exists with =Waiting=0=, =InMatch=1=,
+   =Over=2=, =Sim::phase()= computes it, =Sim::match_view()= is the single source
+   of what gets replicated, =sync_match= no longer early-returns on =over=, and
+   the client renders the phase. What remains here is the richer six-state
+   lifecycle and making =Phase= the only "is it over" source. Do not re-fix the
+   D4 symptom: it is closed.
+
    - Files: =src/game.rs=, =src/sim.rs=, =src/server.rs=
    - Acceptance:
-     - [ ] =Phase= is an enum (Lobby -> Setup -> Running -> Victory -> Defeat -> Restarting) and =MatchView::phase= carries it instead of a =u8=.
-     - [ ] The sim advances the phase at the documented transitions and =GameOver= sets =Defeat=.
-     - [ ] =sync_match= keeps publishing wave and lives after =Defeat= so the HUD is not frozen (fixes the D4 symptom).
+     - [ ] =Phase= covers =Lobby -> Setup -> Running -> Victory -> Defeat -> Restarting= (the audit's interim enum has only =Waiting=/=InMatch=/=Over=, which is enough for M0 but not for the lobby in [[file:08-lobby.org][08-lobby.org]]).
+     - [ ] The sim advances the phase at the documented transitions, and a defeat sets =Defeat= rather than the current =Over=.
+     - [x] =sync_match= keeps publishing wave and lives after defeat so the HUD is not frozen (the D4 symptom) — done by =audit-004=.
      - [ ] =Phase= is the only source of "is the match over"; no display path reads =Sim::over= directly.
 
 * Determinism, replay and performance

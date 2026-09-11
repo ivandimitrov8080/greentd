@@ -9,46 +9,53 @@ This is the first work to do. It touches =src/sim.rs=, =src/game.rs=,
 =src/server.rs=, =src/client.rs=, =src/visuals.rs=, =src/map.rs=, =src/protocol.rs=
 and the new =tests/= tree; each task names the D-number it closes and the exact
 function or literal it changes. Every task that mutates =Sim= adds a test in the
-same task, because there is currently none (D17).
+same task: the headless harness exists as of =audit-010=, so there is no longer
+an excuse for an untested mutation (D17).
 
 * Defect triage
 
-  Every D-number, the severity, the files it lives in, a rough effort, and the task
-  that fixes it. D15, D18 and D30 are fixed in [[file:00-foundation.org][00-foundation.org]]; the audit tasks
-  named beside them only track the defect so this index stays complete.
+  Every D-number, the severity, whether it still exists, the files it lives in, a
+  rough effort, and the task that fixes it. D15, D18 and D30 are fixed in
+  [[file:00-foundation.org][00-foundation.org]]; the audit tasks named beside them only track the defect, so
+  this index stays complete.
 
-  | D   | Sev | File(s)                                  | Effort | Fixed by                  |
-  |-----+-----+------------------------------------------+--------+---------------------------|
-  | D1  | A   | =src/sim.rs=                             | 1d     | =audit-002=               |
-  | D2  | A   | =src/sim.rs=                             | 1d     | =audit-002=               |
-  | D3  | A   | =src/server.rs=, =src/client.rs=         | 1d     | =audit-003=               |
-  | D4  | A   | =src/server.rs=, =src/game.rs=           | 2h     | =audit-004=               |
-  | D5  | A   | =src/server.rs=, =src/game.rs=           | 2h     | =audit-005=               |
-  | D6  | A   | =src/sim.rs=, =src/server.rs=            | 1d     | =audit-006=               |
-  | D7  | A   | =src/server.rs=                          | 1d     | =audit-007=               |
-  | D8  | A   | =src/sim.rs=                             | 2h     | =audit-008=               |
-  | D9  | A   | =src/server.rs=, =src/sim.rs=            | 1w     | =audit-009=               |
-  | D10 | B   | =src/sim.rs=                             | 1d     | =audit-013=               |
-  | D11 | B   | =src/sim.rs=, =src/game.rs=              | 1w     | =audit-014=               |
-  | D12 | C   | =src/game.rs=, =src/protocol.rs=         | 2h     | =audit-024=               |
-  | D13 | B   | =src/sim.rs=, =src/server.rs=            | 1w     | =audit-015=               |
-  | D14 | B   | =src/visuals.rs=                         | 1d     | =audit-016=               |
-  | D15 | B   | =src/main.rs=                            | 1d     | =found-001= (tracked =audit-017=) |
-  | D16 | C   | =src/sim.rs=                             | 1w     | =audit-025=               |
-  | D17 | A   | =src/sim.rs=                             | 1d     | =audit-010=               |
-  | D18 | A   | =src/game.rs=, =src/sim.rs=              | 1w     | =found-004= (tracked =audit-011=) |
-  | D19 | A   | =src/sim.rs=                             | 1w     | =audit-012=               |
-  | D20 | B   | =src/sim.rs=, =src/server.rs=            | 1d     | =audit-018=               |
-  | D21 | B   | =src/server.rs=                          | 2h     | =audit-018=               |
-  | D22 | B   | =src/protocol.rs=                        | 1w     | =audit-019=               |
-  | D23 | B   | =src/client.rs=, =src/main.rs=           | 1d     | =audit-020=               |
-  | D24 | B   | =src/sim.rs=                             | 1d     | =audit-021=               |
-  | D25 | B   | =src/game.rs=                            | 2h     | =audit-001=               |
-  | D26 | C   | =src/map.rs=, =src/visuals.rs=           | 2h     | =audit-026=               |
-  | D27 | B   | =src/sim.rs=, =src/server.rs=            | 1d     | =audit-022=               |
-  | D28 | C   | =src/map.rs=                             | 1w     | =audit-027=               |
-  | D29 | B   | =src/visuals.rs=                         | 1d     | =audit-023=               |
-  | D30 | C   | =src/client.rs=, =src/game.rs=           | 2h     | =found-010= (tracked =audit-028=) |
+  =State= is =DONE= when the defect is closed, =part= when the task that owns it
+  has started but the defect has not fully gone, and =open= otherwise. It is
+  derived from that task's heading in this file: do not close a row here without
+  closing the task.
+
+  | D   | Sev | File(s)                          | Effort | Fixed by                          | State |
+  |-----+-----+----------------------------------+--------+-----------------------------------+-------|
+  | D1  | A   | =src/sim.rs=                     | 1d     | =audit-002=                       | DONE  |
+  | D2  | A   | =src/sim.rs=                     | 1d     | =audit-002=                       | DONE  |
+  | D3  | A   | =src/server.rs=, =src/client.rs= | 1d     | =audit-003=                       | open  |
+  | D4  | A   | =src/server.rs=, =src/game.rs=   | 2h     | =audit-004=                       | DONE  |
+  | D5  | A   | =src/server.rs=, =src/game.rs=   | 2h     | =audit-005=                       | open  |
+  | D6  | A   | =src/sim.rs=, =src/server.rs=    | 1d     | =audit-006=                       | open  |
+  | D7  | A   | =src/server.rs=                  | 1d     | =audit-007=                       | open  |
+  | D8  | A   | =src/sim.rs=                     | 2h     | =audit-008=                       | DONE  |
+  | D9  | A   | =src/server.rs=, =src/sim.rs=    | 1w     | =audit-009=                       | open  |
+  | D10 | B   | =src/sim.rs=                     | 1d     | =audit-013=                       | open  |
+  | D11 | B   | =src/sim.rs=, =src/game.rs=      | 1w     | =audit-014=                       | open  |
+  | D12 | C   | =src/game.rs=, =src/protocol.rs= | 2h     | =audit-024=                       | open  |
+  | D13 | B   | =src/sim.rs=, =src/server.rs=    | 1w     | =audit-015=                       | open  |
+  | D14 | B   | =src/visuals.rs=                 | 1d     | =audit-016=                       | open  |
+  | D15 | B   | =src/main.rs=                    | 1d     | =found-001= (tracked =audit-017=) | open  |
+  | D16 | C   | =src/sim.rs=                     | 1w     | =audit-025=                       | open  |
+  | D17 | A   | =src/sim.rs=                     | 1d     | =audit-010=                       | DONE  |
+  | D18 | A   | =src/game.rs=, =src/sim.rs=      | 1w     | =found-004= (tracked =audit-011=) | part  |
+  | D19 | A   | =src/sim.rs=                     | 1w     | =audit-012=                       | open  |
+  | D20 | B   | =src/sim.rs=, =src/server.rs=    | 1d     | =audit-018=                       | open  |
+  | D21 | B   | =src/server.rs=                  | 2h     | =audit-018=                       | open  |
+  | D22 | B   | =src/protocol.rs=                | 1w     | =audit-019=                       | open  |
+  | D23 | B   | =src/client.rs=, =src/main.rs=   | 1d     | =audit-020=                       | open  |
+  | D24 | B   | =src/sim.rs=                     | 1d     | =audit-021=                       | open  |
+  | D25 | B   | =src/game.rs=                    | 2h     | =audit-001=                       | DONE  |
+  | D26 | C   | =src/map.rs=, =src/visuals.rs=   | 2h     | =audit-026=                       | open  |
+  | D27 | B   | =src/sim.rs=, =src/server.rs=    | 1d     | =audit-022=                       | open  |
+  | D28 | C   | =src/map.rs=                     | 1w     | =audit-027=                       | open  |
+  | D29 | B   | =src/visuals.rs=                 | 1d     | =audit-023=                       | open  |
+  | D30 | C   | =src/client.rs=, =src/game.rs=   | 2h     | =found-010= (tracked =audit-028=) | open  |
 
 * Severity A — exploitable or loses player state
 
@@ -271,7 +278,7 @@ same task, because there is currently none (D17).
      - [x] A test builds =Sim::new()= with no =App=, no window and no socket, and runs a fixed number of ticks.
      - [x] Helpers exist for "step N ticks" and for a stable =Path=, so tests never depend on wall-clock time.
      - [x] The harness covers at least: a wave spawns after the configured delay; a tower kills a creep and credits the owner; exceeding the cap ends the match.
-     - [x] =cargo test= is green with no GPU and =DISPLAY= unset.
+     - [x] =cargo test= is green with no GPU: 19 tests across =tests/balance.rs= (7) and =tests/sim_smoke.rs= (12), 0 failures. No test constructs an =App=, so no window, GPU or socket can be required. Strictly, the suite has not been run with =DISPLAY= unset — doing so is the CI job in =found-007=.
      - [x] Tests read numbers from the balance tables (found-004) rather than repeating literals.
 
    Done, and it is the same harness as =test-001= in
@@ -295,19 +302,38 @@ same task, because there is currently none (D17).
    :BLOCKED-BY: found-004, net-001
    :END:
 
-   D18: every balance number is a literal — =START_GOLD=, =OVERRUN_CAP= and
+   D18: every balance number was a literal — =START_GOLD=, =OVERRUN_CAP= and
    =WAVE_INTERVAL= in =src/game.rs=, the three =tower_stats= entries, and the wave
    formulas =45.0 * (1.0 + 0.28 * (w-1))=, =55.0 + 2.0 * (w-1)= and =6 + wave / 2=
    inline in =Sim::start_wave=. The loader is found-004; the audit-side job is to
    confirm no literal survives and to carry the data hash into the protocol version,
    which is why this is also blocked by =net-001=.
 
-   - Files: =src/game.rs=, =src/sim.rs=, =assets/balance/*.ron=, =src/protocol.rs=
+   *Half done.* =found-004= landed the loader, so the first two acceptance boxes
+   below now hold: =src/game.rs= carries no number at all, none of those consts or
+   =tower_stats= exist, the wave curves come from =waves.ron=, and =Sim= holds an
+   =Arc<BalanceData>= instead of importing free consts. What is left is the small
+   remainder: the per-tier scaling still inline in =Sim::step=.
+
+       let tier = 1.0 + 0.45 * (tower.level - 1);            // damage and rate
+       let range = stats.range * (1.0 + 0.04 * (tower.level - 1));
+       c.slow_timer = 1.5;                                    // slow duration
+
+   Those three, and the refund fraction =7/10= (which is already in
+   =BalanceData::sell_refund= but as a bare literal there), are the last numbers
+   outside the tables. They were *not* moved by =found-004= because
+   =05-towers.org= replaces the whole flat tier model with branching and per-tier
+   entries, and inventing a tier-scaling table now would be thrown away. Do this
+   task if the tower rewrite slips; otherwise let =towers-002= absorb it and close
+   this as CANCELLED with a pointer.
+
+   - Files: =src/sim.rs=, =src/balance.rs=, =assets/balance/*.ron=, =src/protocol.rs=
    - Acceptance:
-     - [ ] No balance literal remains in =src/game.rs= or =src/sim.rs=; every value is read from the tables loaded by found-004.
-     - [ ] =Sim= holds a handle to the loaded data rather than importing free consts.
+     - [x] No balance literal remains in =src/game.rs=; every value is read from the tables loaded by found-004.
+     - [x] =Sim= holds a handle to the loaded data rather than importing free consts.
+     - [ ] No balance literal remains in =src/sim.rs= (the per-tier scaling and the slow duration above).
      - [ ] The balance hash from found-004 is part of the protocol version exchanged at handshake (net-001), so a peer with different numbers is refused.
-     - [ ] Sim test (D17): mutating a value in an in-memory table changes =Sim::step= output, proving nothing is cached from a const.
+     - [x] Sim test (D17): mutating a value in an in-memory table changes =Sim::step= output, proving nothing is cached from a const.
 
 ** WAITING [#A] Pick the default lineage for a fresh match (design decision)          :@sim:
    :PROPERTIES:
@@ -316,18 +342,19 @@ same task, because there is currently none (D17).
    :BLOCKED-BY: decide-default-lineage
    :END:
 
-   D19: =OVERRUN_CAP = 150= and the comment "Green TD's real lose condition"
-   (=src/game.rs=, =src/sim.rs=) implement Lineage A with a constant that matches
-   neither lineage's documented values (600/700/800/1000 for Lineage A; a lives
-   count for Lineage B). This is not a mechanical fix: the lose rule must become data
-   with two implementations (=sim-005=) and the default set by the
-   =decide-default-lineage= sign-off in [[file:README.org][README.org]]. Do not resolve it here.
+   D19: the sim implements Lineage A with =cap = 150= (=assets/balance/match.ron=,
+   =match_rules.overrun_cap=) and its comments asserted that was "Green TD's real
+   lose condition" (the comment was removed by found-004, the number was moved, not
+   changed). The constant matches neither lineage's documented values (600/700/800/1000
+   for Lineage A; a lives count for Lineage B). This is not a mechanical fix: the lose
+   rule must become data with two implementations (=sim-005=) and the default set by
+   the =decide-default-lineage= sign-off in [[file:README.org][README.org]]. Do not resolve it here.
 
    - Files: [[file:README.org][README.org]] (=decide-default-lineage=), =src/sim.rs=, =assets/balance/*.ron=
    - Acceptance:
      - [ ] Blocked until =decide-default-lineage= is marked =DONE= in [[file:README.org][README.org]].
      - [ ] The chosen default lineage is recorded; if Lineage B is chosen, the starting lives count (tune) and the Life Zone geometry are written down.
-     - [ ] The sim carries both rules as a match setting (=sim-005=, =lobby-003=); this task only selects the default and deletes the =150= literal and the "real lose condition" comment.
+     - [ ] The sim carries both rules as a match setting (=sim-005=, =lobby-003=); this task only selects the default and replaces the =overrun_cap= value and the "real lose condition" comment (already gone).
      - [ ] The implementation and its tests are owned by =sim-005= and are not duplicated here.
 
 * Severity B — fidelity gaps
@@ -490,14 +517,15 @@ same task, because there is currently none (D17).
    :END:
 
    D24: =on_client_connected= (=src/server.rs=) calls =sim.add_player(key)= without the
-   current wave, and =add_player= seeds =Player { gold: START_GOLD, .. }= regardless
-   of =self.wave=, so a player joining at wave 20 is immediately irrelevant.
+   current wave, and =add_player= seeds the starting gold (now
+   =match_rules.start_gold= in =assets/balance/match.ron=) regardless of =self.wave=,
+   so a player joining at wave 20 is immediately irrelevant.
 
    - Files: =src/sim.rs=, =src/server.rs=, =assets/balance/*.ron=
    - Acceptance:
      - [ ] The catch-up rule is written down (for example starting gold scales with the current wave, or the joiner is held to the next wave boundary).
      - [ ] =add_player= takes the current wave and applies that rule.
-     - [ ] Sim test (D17): joining at wave =N= yields the specified gold, and joining at wave 0 equals today's =START_GOLD=.
+     - [ ] Sim test (D17): joining at wave =N= yields the specified gold, and joining at wave 0 equals =match_rules.start_gold=.
      - [ ] The rule is a match setting or a balance value, not a literal in =sim.rs=.
 
 ** TODO [#B] Handle a leaver: split their gold and keep their towers playable          :@econ:

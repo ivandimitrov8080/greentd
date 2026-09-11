@@ -90,11 +90,13 @@
    :ID:       status-implemented
    :END:
 
-   - Single crate; three run modes share one =App= builder in =src/main.rs=.
+   - One crate with a library root and a thin binary: the three run modes share
+     one =App= builder in =src/main.rs=, and =src/lib.rs= owns the modules so
+     =tests/= can link them.
    - =src/sim.rs=: server-only authoritative state machine. =HashMap= of
      =CreepId -> Creep=, =IVec2 -> Tower=, =PlayerKey -> Player=. Plain
-     =step(dt) -> Vec<SimEvent>=, no networking types, unit-testable in
-     principle (the harness is `test-001`; see `tests/`).
+     =step(dt) -> Vec<SimEvent>=, no networking types, unit-tested headless by
+     [[file:12-testing.org][12-testing.org]] =test-001= (see =tests/sim_smoke.rs=).
    - Creep model: distance-along-path, =hp/max_hp=, =base_speed=,
      =slow_mult=+ =slow_timer=, =bounty=, =last_hit_by=.
    - Wave loop: infinite, 20 s between waves, first wave at 3 s, both from =assets/balance/match.ron=. Count is
@@ -107,8 +109,8 @@
      splashes, Frost slows.
    - =try_build/ try_upgrade/ try_sell/ call_wave= are the only mutators, each
      returning =Result<(), Reject>=.
-   - Lose condition: =creeps.len() > OVERRUN_CAP (=150=)= ends the match
-     permanently.
+   - Lose condition: =creeps.len() > =match_rules.overrun_cap= (=150= in
+     =assets/balance/match.ron=)= ends the match permanently.
    - =src/map.rs=: 32x24 grid, =TILE = 32.0=, one closed ring path through four
      corner waypoints; buildability is "not within =0.95 * TILE= of the path".
    - =src/protocol.rs=: =ClientCmd= (C2S) and =ServerNotice= (S2C) messages,
@@ -149,7 +151,7 @@
 
    | Task        | State       | What landed |
    |-------------+-------------+-------------|
-   | =found-004= | DONE        | =src/balance.rs= and =assets/balance/*.ron=; every tuned number is data, validated and hashed. |
+   | =found-004= | DONE        | =src/balance.rs= and =assets/balance/*.ron=; every tuned number is data, validated and hashed. D18 is only =part= until =audit-011= removes the remaining per-tier literals. |
    | =audit-001= | DONE        | =Reject= gains =NotOwner=, =RateLimited= and =NotInMatch=. |
    | =audit-002= | DONE        | Ownership enforced in =try_upgrade=/=try_sell=; refunds go to the owner (D1, D2). |
    | =audit-004= | DONE        | =Phase= is published and the mirror keeps running after defeat (D4). |
@@ -159,6 +161,12 @@
 
    Also landed because those tasks could not be built without it: =src/lib.rs=
    (so =tests/= can link the crate) and =ron= as a direct dependency.
+
+   Next in M0, in this order: =audit-005= (D5, wire or delete
+   =WaveStarted=), then =audit-006= and =audit-007= (D6, D7, the call-wave
+   cooldown and the per-peer token bucket). =audit-003=, =audit-009= and
+   =audit-011= are blocked on =found-010= and =net-001=, and the [#A] M0 cluster
+   is otherwise closed.
 
 * The single most important correctness question — two lineages
   :PROPERTIES:
@@ -178,8 +186,9 @@
   | Waves   | Endless                       | 36 waves (PROs) or 60 waves, then Endless |
   | Source  | hiveworkshop thread 350930    | hiveworkshop thread 249982, wc3maps 356685 |
 
-  The current code implements Lineage A with =OVERRUN_CAP = 150=, which does not
-  even match Lineage A's documented numbers (600–1000).
+  The current code implements Lineage A with =match_rules.overrun_cap = 150=
+  (=assets/balance/match.ron=), which does not even match Lineage A's documented
+  numbers (600–1000).
 
   **Decision:** support both, as data. The lose rule becomes a match setting
   (=lobby-003=) with two implementations (=sim-005=). Default for a fresh match
@@ -220,45 +229,52 @@
   :ID:       defects
   :END:
 
-  These are deficiencies in the code as it stands. Each is fixed by a task in
-  [[file:01-current-code-audit.org][01-current-code-audit.org]] (except where noted). Referenced by ID from
+  These are the deficiencies the plan was written against, with a =State= column
+  saying which are still live. The summaries describe each defect as it was
+  found, so a closed row may quote an identifier that no longer exists in =src/=
+  — that is the point of the row, not an error in it. Each is fixed by a task in
+  [[file:01-current-code-audit.org][01-current-code-audit.org]] (except where noted) and referenced by ID from
   other files so a task can say "fixes D9" without restating it.
+
+  =State= is =DONE= when the defect is closed, =part= when the task that owns it
+  has started but the defect has not fully gone, and =open= otherwise. The audit
+  file carries the same column; keep the two in step.
 
   =A= defects are exploitable or lose player state. =B= are fidelity gaps. =C=
   are polish. The full write-up of each is in the audit file.
 
-  | ID  | Sev | Summary |
-  |-----+-----+---------|
-  | D1  | A   | =try_upgrade= and =try_sell= never check that the caller owns the tower. Any client can drain or destroy any other player's board. |
-  | D2  | A   | =try_sell= refunds the *caller*, not the tower's owner. |
-  | D3  | A   | Host mode replicates every =PlayerView= to everyone (=NetworkTarget::All=), so =update_hud='s =me.single()= fails and the host sees no gold or kills. |
-  | D4  | A   | =sync_match= early-returns when =sim.over=, freezing the HUD at the moment of defeat; =MatchView::phase= is never written. |
-  | D5  | A   | =ServerNotice::WaveStarted= is never sent, so the client's wave notification is dead code and players cannot tell a wave began. |
-  | D6  | A   | =CallWave= has no cooldown, cost or authority check; one client can force waves continuously and end the match. |
-  | D7  | A   | No rate limiting. =handle_cmds= drains and executes every queued command every frame. |
-  | D8  | A   | =players.entry(who).or_default()= mints a zero-gold player record for an unregistered key; diverges from =add_player='s =START_GOLD=. |
-  | D9  | A   | Identity is the UDP socket address, so reconnecting from a new port silently becomes a new player and loses gold and kills. |
-  | D10 | B   | A wave is spread evenly around the entire loop, so it has no front; and a creep can spawn already adjacent to the Life Zone. |
-  | D11 | B   | Creeps are entirely uniform — no armour type, no damage type, no air, no boss, no hero, no immune. |
-  | D12 | C   | =CreepVis= and =CreepHp= are distinct components, doubling replication updates per creep per tick. |
-  | D13 | B   | No projectile entities; towers damage invisibly on a cooldown. |
-  | D14 | B   | No client-side interpolation; creeps visibly step at 30 Hz. |
-  | D15 | B   | =VisualsPlugin= is added in =server= mode, so a dedicated server opens a window and allocates 768 sprites. |
-  | D16 | C   | Target acquisition is O(towers × creeps) per tick, ~115k distance tests at the current caps. |
-  | D17 | A   | Zero tests. The sim is written to be testable and never has been. |
-  | D18 | A   | Every balance number is a literal in =game.rs= or worse, inline in =sim.rs=. |
-  | D19 | A   | The lose condition is the other lineage's lose condition and its constant (150) matches neither. See the lineage section above. |
-  | D20 | B   | =Sim::over= is terminal; there is no restart, rematch or -restart equivalent. |
-  | D21 | B   | =Net::announced_over= is never reset, so a restarted match would not announce again. |
-  | D22 | B   | No protocol version negotiation; a mismatched client desyncs silently instead of being rejected. |
-  | D23 | B   | =spawn_client= hardcodes =127.0.0.1=; there is no way to join a remote host. |
-  | D24 | B   | A player joining mid-match starts at wave N with starting gold and no catch-up. |
-  | D25 | B   | =Reject= has no =NotOwner= and no =RateLimited= variant, so D1/D6 cannot report a reason. |
-  | D26 | C   | Grass/path colouring treats "inside the ring" and "outside the ring" identically; undocumented whether that is intended. |
-  | D27 | B   | No leaver handling: gold is not split, and towers are simply orphaned. |
-  | D28 | C   | =Path::distance_to= walks every segment; =is_buildable= is called per click on the server. Cheap now, wrong shape later. |
-  | D29 | B   | =VisualsPlugin='s =MapTile= is =#[allow(dead_code)]= and tiles are spawned as individual entities rather than a tiled render pass. |
-  | D30 | C   | No =LocalPlayer= marker; the client infers "my" state from "the one =PlayerView= I happen to hold". |
+  | D   | Sev | State | Summary |
+  |-----+-----+-------+---------|
+  | D1  | A   | DONE  | =try_upgrade= and =try_sell= never check that the caller owns the tower. Any client can drain or destroy any other player's board. |
+  | D2  | A   | DONE  | =try_sell= refunds the *caller*, not the tower's owner. |
+  | D3  | A   | open  | Host mode replicates every =PlayerView= to everyone (=NetworkTarget::All=), so =update_hud='s =me.single()= fails and the host sees no gold or kills. |
+  | D4  | A   | DONE  | =sync_match= early-returns when =sim.over=, freezing the HUD at the moment of defeat; =MatchView::phase= is never written. |
+  | D5  | A   | open  | =ServerNotice::WaveStarted= is never sent, so the client's wave notification is dead code and players cannot tell a wave began. |
+  | D6  | A   | open  | =CallWave= has no cooldown, cost or authority check; one client can force waves continuously and end the match. |
+  | D7  | A   | open  | No rate limiting. =handle_cmds= drains and executes every queued command every frame. |
+  | D8  | A   | DONE  | =players.entry(who).or_default()= mints a zero-gold player record for an unregistered key; diverges from =add_player='s starting gold. |
+  | D9  | A   | open  | Identity is the UDP socket address, so reconnecting from a new port silently becomes a new player and loses gold and kills. |
+  | D10 | B   | open  | A wave is spread evenly around the entire loop, so it has no front; and a creep can spawn already adjacent to the Life Zone. |
+  | D11 | B   | open  | Creeps are entirely uniform — no armour type, no damage type, no air, no boss, no hero, no immune. |
+  | D12 | C   | open  | =CreepVis= and =CreepHp= are distinct components, doubling replication updates per creep per tick. |
+  | D13 | B   | open  | No projectile entities; towers damage invisibly on a cooldown. |
+  | D14 | B   | open  | No client-side interpolation; creeps visibly step at 30 Hz. |
+  | D15 | B   | open  | =VisualsPlugin= is added in =server= mode, so a dedicated server opens a window and allocates 768 sprites. |
+  | D16 | C   | open  | Target acquisition is O(towers × creeps) per tick, ~115k distance tests at the current caps. |
+  | D17 | A   | DONE  | Zero tests. The sim is written to be testable and never has been. |
+  | D18 | A   | part  | Every balance number is a literal in =game.rs= or worse, inline in =sim.rs=. The tables are data as of =found-004=; the per-tier scaling in =Sim::step= is still inline, which is =audit-011='s remainder. |
+  | D19 | A   | open  | The lose condition is the other lineage's lose condition and its constant (150) matches neither. See the lineage section above. |
+  | D20 | B   | open  | =Sim::over= is terminal; there is no restart, rematch or -restart equivalent. |
+  | D21 | B   | open  | =Net::announced_over= is never reset, so a restarted match would not announce again. |
+  | D22 | B   | open  | No protocol version negotiation; a mismatched client desyncs silently instead of being rejected. |
+  | D23 | B   | open  | =spawn_client= hardcodes =127.0.0.1=; there is no way to join a remote host. |
+  | D24 | B   | open  | A player joining mid-match starts at wave N with starting gold and no catch-up. |
+  | D25 | B   | DONE  | =Reject= has no =NotOwner= and no =RateLimited= variant, so D1/D6 cannot report a reason. |
+  | D26 | C   | open  | Grass/path colouring treats "inside the ring" and "outside the ring" identically; undocumented whether that is intended. |
+  | D27 | B   | open  | No leaver handling: gold is not split, and towers are simply orphaned. |
+  | D28 | C   | open  | =Path::distance_to= walks every segment; =is_buildable= is called per click on the server. Cheap now, wrong shape later. |
+  | D29 | B   | open  | =VisualsPlugin='s =MapTile= is =#[allow(dead_code)]= and tiles are spawned as individual entities rather than a tiled render pass. |
+  | D30 | C   | open  | No =LocalPlayer= marker; the client infers "my" state from "the one =PlayerView= I happen to hold". |
 
 * Cross-cutting decisions
   :PROPERTIES:
