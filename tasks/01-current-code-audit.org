@@ -1,0 +1,608 @@
+#+TITLE: greentd — current-code audit
+#+SUBTITLE: One task per defect in the code that already exists (D1–D30)
+#+TODO: TODO NEXT IN-PROGRESS WAITING BLOCKED | DONE CANCELLED
+#+TAGS: FOUNDATION(f) SIM(s) MAP(m) WAVES(w) TOWERS(t) ECON(e) BUILDER(b) LOBBY(l) NET(n) UI(u) CONTENT(c) TEST(x) RELEASE(r)
+#+FILETAGS: :greentd:
+#+STARTUP: overview indent
+
+This is the first work to do. It touches =src/sim.rs=, =src/game.rs=,
+=src/server.rs=, =src/client.rs=, =src/visuals.rs=, =src/map.rs=, =src/protocol.rs=
+and the new =tests/= tree; each task names the D-number it closes and the exact
+function or literal it changes. Every task that mutates =Sim= adds a test in the
+same task, because there is currently none (D17).
+
+* Defect triage
+
+  Every D-number, the severity, the files it lives in, a rough effort, and the task
+  that fixes it. D15, D18 and D30 are fixed in [[file:00-foundation.org][00-foundation.org]]; the audit tasks
+  named beside them only track the defect so this index stays complete.
+
+  | D   | Sev | File(s)                                  | Effort | Fixed by                  |
+  |-----+-----+------------------------------------------+--------+---------------------------|
+  | D1  | A   | =src/sim.rs=                             | 1d     | =audit-002=               |
+  | D2  | A   | =src/sim.rs=                             | 1d     | =audit-002=               |
+  | D3  | A   | =src/server.rs=, =src/client.rs=         | 1d     | =audit-003=               |
+  | D4  | A   | =src/server.rs=, =src/game.rs=           | 2h     | =audit-004=               |
+  | D5  | A   | =src/server.rs=, =src/game.rs=           | 2h     | =audit-005=               |
+  | D6  | A   | =src/sim.rs=, =src/server.rs=            | 1d     | =audit-006=               |
+  | D7  | A   | =src/server.rs=                          | 1d     | =audit-007=               |
+  | D8  | A   | =src/sim.rs=                             | 2h     | =audit-008=               |
+  | D9  | A   | =src/server.rs=, =src/sim.rs=            | 1w     | =audit-009=               |
+  | D10 | B   | =src/sim.rs=                             | 1d     | =audit-013=               |
+  | D11 | B   | =src/sim.rs=, =src/game.rs=              | 1w     | =audit-014=               |
+  | D12 | C   | =src/game.rs=, =src/protocol.rs=         | 2h     | =audit-024=               |
+  | D13 | B   | =src/sim.rs=, =src/server.rs=            | 1w     | =audit-015=               |
+  | D14 | B   | =src/visuals.rs=                         | 1d     | =audit-016=               |
+  | D15 | B   | =src/main.rs=                            | 1d     | =found-001= (tracked =audit-017=) |
+  | D16 | C   | =src/sim.rs=                             | 1w     | =audit-025=               |
+  | D17 | A   | =src/sim.rs=                             | 1d     | =audit-010=               |
+  | D18 | A   | =src/game.rs=, =src/sim.rs=              | 1w     | =found-004= (tracked =audit-011=) |
+  | D19 | A   | =src/sim.rs=                             | 1w     | =audit-012=               |
+  | D20 | B   | =src/sim.rs=, =src/server.rs=            | 1d     | =audit-018=               |
+  | D21 | B   | =src/server.rs=                          | 2h     | =audit-018=               |
+  | D22 | B   | =src/protocol.rs=                        | 1w     | =audit-019=               |
+  | D23 | B   | =src/client.rs=, =src/main.rs=           | 1d     | =audit-020=               |
+  | D24 | B   | =src/sim.rs=                             | 1d     | =audit-021=               |
+  | D25 | B   | =src/game.rs=                            | 2h     | =audit-001=               |
+  | D26 | C   | =src/map.rs=, =src/visuals.rs=           | 2h     | =audit-026=               |
+  | D27 | B   | =src/sim.rs=, =src/server.rs=            | 1d     | =audit-022=               |
+  | D28 | C   | =src/map.rs=                             | 1w     | =audit-027=               |
+  | D29 | B   | =src/visuals.rs=                         | 1d     | =audit-023=               |
+  | D30 | C   | =src/client.rs=, =src/game.rs=           | 2h     | =found-010= (tracked =audit-028=) |
+
+* Severity A — exploitable or loses player state
+
+  These come first. Every one either lets a client affect another player's board or
+  match, or silently loses gold and kills.
+
+** TODO [#A] Give Reject the NotOwner and RateLimited reasons                          :@sim:
+   :PROPERTIES:
+   :ID:         audit-001
+   :EFFORT:     2h
+   :END:
+
+   D25: =Reject= in =src/game.rs= has =NotEnoughGold=, =Occupied=, =PathBlocked=,
+   =OutOfBounds=, =BadKind=, =NoSuchTower= and =MatchOver=, so neither the ownership
+   refusal (D1/D2, =audit-002=) nor the rate-limit refusal (D6/D7, =audit-006= and
+   =audit-007=) has a reason to report. Add the two variants and their =text()=
+   strings first, because the tasks below depend on them.
+
+   - Files: =src/game.rs=, =src/server.rs=
+   - Acceptance:
+     - [ ] =Reject= gains =NotOwner= and =RateLimited=, and =Reject::text()= returns a player-readable string for each.
+     - [ ] =Reject= still derives =Serialize/Deserialize/Clone/Copy/PartialEq/Eq= so it round-trips on the =ServerNotice::Err= path.
+     - [ ] A test round-trips every =Reject= variant through =ServerNotice::Err= and asserts each =text()= is non-empty, so no new variant is unhandled.
+
+** TODO [#A] Enforce tower ownership in upgrade and sell                              :@sim:
+   :PROPERTIES:
+   :ID:         audit-002
+   :EFFORT:     1d
+   :BLOCKED-BY: audit-001
+   :END:
+
+   =Tower= already carries =owner: PlayerKey= (=src/sim.rs=, =struct Tower=), but
+   =Sim::try_upgrade= and =Sim::try_sell= never read it. D1: any client can upgrade
+   or sell any other player's tower. D2: =try_sell= credits the refund to =who=
+   rather than to the tower's owner, which mints gold. Both live in the same two
+   functions and share one change, so this task closes D1 and D2 together.
+
+   - Files: =src/sim.rs=, =src/server.rs=
+   - Acceptance:
+     - [ ] =try_upgrade= returns =Err(Reject::NotOwner)= when =tower.owner != who=, before any gold is spent (D1).
+     - [ ] =try_sell= returns =Err(Reject::NotOwner)= for a non-owner and, on success, credits =refund= to =tower.owner=, not to =who= (D2).
+     - [ ] On the rejected path nothing mutates: no level change, no despawn, and no gold delta for either player.
+     - [ ] Sim unit test (D17): player A builds; player B calls upgrade then sell; both are refused and A's gold and tower level are byte-identical to before.
+
+** TODO [#A] Address the host's own PlayerView instead of broadcasting every view     :@net:
+   :PROPERTIES:
+   :ID:         audit-003
+   :EFFORT:     1d
+   :BLOCKED-BY: found-010
+   :END:
+
+   D3: =on_client_connected= (=src/server.rs=) sets =NetworkTarget::All= for the
+   private view when =HostMode(true)=, so every =PlayerView= replicates to every peer
+   and =update_hud='s (=src/client.rs=) =me.single()= fails, leaving the host with no
+   gold or kills. Fixed on top of found-010's =LocalPlayer= marker, not by re-adding
+   one here.
+
+   - Files: =src/server.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] Host mode no longer replicates a private view with =NetworkTarget::All=; the host's own view is addressable, or the host HUD binds directly to its authoritative =Player=.
+     - [ ] =update_hud= resolves exactly one =LocalPlayer= on host and remote peers alike (found-010).
+     - [ ] A host plus one remote client shows each peer its own gold and kills and never the other's.
+     - [ ] Verified on a manual =cargo run= (host) with one =cargo run -- client=.
+
+** TODO [#A] Publish MatchView.phase and stop freezing the HUD at defeat              :@sim:
+   :PROPERTIES:
+   :ID:         audit-004
+   :EFFORT:     2h
+   :END:
+
+   D4: =sync_match= (=src/server.rs=) returns early when =sim.over=, so the last
+   replicated =live_creeps= is whatever it was on the frame the cap was crossed and
+   the client HUD freezes there; and =MatchView::phase= (=src/game.rs=) is written
+   once as =0= and never again.
+
+   - Files: =src/server.rs=, =src/game.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] =sync_match= writes the final =live_creeps= at least once after =sim.over= becomes true, so the HUD shows the true overrun count.
+     - [ ] =phase= is driven by match state (for example Waiting, InMatch, Over) and is non-zero once the match has started.
+     - [ ] Sim/server test (D17): from a forced game-over, the replicated =MatchView.live_creeps= reaches the final sim value.
+     - [ ] The change-diffing guard still suppresses a write when nothing changed.
+
+** TODO [#A] Send ServerNotice::WaveStarted or delete the variant                     :@net:
+   :PROPERTIES:
+   :ID:         audit-005
+   :EFFORT:     2h
+   :END:
+
+   D5: =tick_sim= (=src/server.rs=) turns =SimEvent::WaveStarted(w)= into an =info!=
+   line and nothing else, so =ServerNotice::WaveStarted(u32)= is a live wire variant
+   the client can never receive and =read_notices='s arm is dead code.
+
+   - Files: =src/server.rs=, =src/game.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] The choice is recorded in this task: wire it to =SimEvent::WaveStarted= (recommended) or delete the variant and the client arm.
+     - [ ] If wired, every connected peer receives =WaveStarted(w)= exactly once per wave, on the same broadcast path used for =GameOver=.
+     - [ ] The client shows "wave N" on receipt.
+     - [ ] A wave that starts with no peer connected neither panics nor queues an unbounded backlog.
+
+** TODO [#A] Give CallWave a documented cooldown, cost and authority rule             :@sim:
+   :PROPERTIES:
+   :ID:         audit-006
+   :EFFORT:     1d
+   :BLOCKED-BY: audit-001
+   :END:
+
+   D6: =Sim::call_wave= (=src/sim.rs=) sets =wave_timer = 0.0= with no caller, no
+   cooldown and no cost, and =handle_cmds= (=src/server.rs=) calls it without passing
+   =key=, so one client can zero the timer every frame and drag the table to the
+   overrun cap.
+
+   - Files: =src/sim.rs=, =src/server.rs=, =assets/balance/*.ron=
+   - Acceptance:
+     - [ ] =call_wave= takes the caller's =PlayerKey= and records a per-player cooldown on =Player=.
+     - [ ] The rule is written here and implemented (a cooldown alone is enough); the numbers live in the balance tables (found-004), not in =sim.rs=.
+     - [ ] A refused early call returns =Err(Reject::RateLimited)= or =Err(Reject::NotEnoughGold)=, never a silent success.
+     - [ ] Sim test (D17): two =CallWave= commands inside the cooldown window leave =wave_timer= advanced by the first only.
+
+** TODO [#A] Rate-limit commands with a per-peer token bucket                         :@net:
+   :PROPERTIES:
+   :ID:         audit-007
+   :EFFORT:     1d
+   :BLOCKED-BY: audit-001
+   :END:
+
+   D7: =handle_cmds= (=src/server.rs=) drains =recv.receive()= and executes every
+   queued command in the same frame, so the only bound is how many arrived. A host
+   that accepts thousands of build attempts per tick is a denial of service against
+   everyone's match.
+
+   - Files: =src/server.rs=, =src/game.rs=, =src/config.rs=
+   - Acceptance:
+     - [ ] A token bucket per peer refills at a rate and burst fed from =Config= (found-002) and is consumed once per command.
+     - [ ] Over-budget commands are dropped, not deferred, and exactly one =Reject::RateLimited= notice is sent for the frame (uses audit-001's variant).
+     - [ ] Test: bursting =n + burst= commands in one frame yields exactly =burst= executions.
+     - [ ] The rate and burst are configuration, not literals in =server.rs=.
+
+** TODO [#A] Require a registered PlayerKey instead of minting a zero-gold player     :@sim:
+   :PROPERTIES:
+   :ID:         audit-008
+   :EFFORT:     2h
+   :END:
+
+   D8: the intent handlers use =self.players.entry(who).or_default()= (=try_build=,
+   =try_upgrade=, =try_sell= in =src/sim.rs=), which silently creates a zero-gold
+   =Player= for an unregistered key, while =add_player= seeds =START_GOLD=. The two
+   entry points disagree about what a new player is.
+
+   - Files: =src/sim.rs=, =src/server.rs=
+   - Acceptance:
+     - [ ] No intent handler inserts into =self.players=; each returns an error when the key is unknown.
+     - [ ] =handle_cmds= drops commands from peers absent from =Net::links=, so the sim error is a defensive backstop, not the normal path.
+     - [ ] Sim test (D17): a command from an arbitrary =PlayerKey= leaves =sim.players= and the tower map unchanged.
+     - [ ] No reachable path can produce a =Player= with zero gold.
+
+** TODO [#A] Make identity survive a reconnect from a new port                        :@net:
+   :PROPERTIES:
+   :ID:         audit-009
+   :EFFORT:     1w
+   :BLOCKED-BY: net-001
+   :END:
+
+   D9: =peer_key= (=src/server.rs=) derives =PlayerKey= from =remote.0.to_bits()=,
+   the peer's UDP socket address, so a reconnect from a new source port is a new
+   player who has lost gold, kills and towers. Removing the address as identity
+   changes the wire format, so this is blocked on the protocol v2 handshake in
+   [[file:09-networking.org][09-networking.org]] (=net-001=) and must not be built twice.
+
+   - Files: =src/server.rs=, =src/sim.rs=, =src/protocol.rs=
+   - Acceptance:
+     - [ ] A reconnect from a different source port maps to the same =PlayerKey= and recovers gold, kills and towers.
+     - [ ] The raw socket address is no longer the identity key; a server-issued session token (net-001) is.
+     - [ ] An unknown or expired token yields a new player, not a hang or an error that wedges the link.
+     - [ ] =Sim= never reads a =SocketAddr=; identity stays the sim-local =PlayerKey=.
+
+** TODO [#A] Stand up the minimum headless sim test harness                           :@test:
+   :PROPERTIES:
+   :ID:         audit-010
+   :EFFORT:     1d
+   :END:
+
+   D17: the project has zero =#[test]=, no =tests/= directory and no CI, while
+   =src/sim.rs='s module doc claims it "can be unit-tested headless". Every task in
+   this file that touches =Sim= adds a test, and they all lean on this harness; the
+   full strategy belongs to [[file:12-testing.org][12-testing.org]] (=test-001=).
+
+   - Files: =src/sim.rs=, =tests/sim_smoke.rs= (new)
+   - Acceptance:
+     - [ ] A test builds =Sim::new()= with no =App=, no window and no socket, and runs a fixed number of ticks.
+     - [ ] Helpers exist for "step N ticks" and for a stable =Path=, so tests never depend on wall-clock time.
+     - [ ] The harness covers at least: a wave spawns after the configured delay; a tower kills a creep and credits the owner; exceeding the cap ends the match.
+     - [ ] =cargo test= is green with no GPU and =DISPLAY= unset.
+     - [ ] Tests read numbers from the balance tables (found-004) rather than repeating literals.
+
+** TODO [#A] Remove the remaining balance literals and version the balance hash       :@sim:
+   :PROPERTIES:
+   :ID:         audit-011
+   :EFFORT:     1w
+   :BLOCKED-BY: found-004, net-001
+   :END:
+
+   D18: every balance number is a literal — =START_GOLD=, =OVERRUN_CAP= and
+   =WAVE_INTERVAL= in =src/game.rs=, the three =tower_stats= entries, and the wave
+   formulas =45.0 * (1.0 + 0.28 * (w-1))=, =55.0 + 2.0 * (w-1)= and =6 + wave / 2=
+   inline in =Sim::start_wave=. The loader is found-004; the audit-side job is to
+   confirm no literal survives and to carry the data hash into the protocol version,
+   which is why this is also blocked by =net-001=.
+
+   - Files: =src/game.rs=, =src/sim.rs=, =assets/balance/*.ron=, =src/protocol.rs=
+   - Acceptance:
+     - [ ] No balance literal remains in =src/game.rs= or =src/sim.rs=; every value is read from the tables loaded by found-004.
+     - [ ] =Sim= holds a handle to the loaded data rather than importing free consts.
+     - [ ] The balance hash from found-004 is part of the protocol version exchanged at handshake (net-001), so a peer with different numbers is refused.
+     - [ ] Sim test (D17): mutating a value in an in-memory table changes =Sim::step= output, proving nothing is cached from a const.
+
+** WAITING [#A] Pick the default lineage for a fresh match (design decision)          :@sim:
+   :PROPERTIES:
+   :ID:         audit-012
+   :EFFORT:     1w
+   :BLOCKED-BY: decide-default-lineage
+   :END:
+
+   D19: =OVERRUN_CAP = 150= and the comment "Green TD's real lose condition"
+   (=src/game.rs=, =src/sim.rs=) implement Lineage A with a constant that matches
+   neither lineage's documented values (600/700/800/1000 for Lineage A; a lives
+   count for Lineage B). This is not a mechanical fix: the lose rule must become data
+   with two implementations (=sim-005=) and the default set by the
+   =decide-default-lineage= sign-off in [[file:README.org][README.org]]. Do not resolve it here.
+
+   - Files: [[file:README.org][README.org]] (=decide-default-lineage=), =src/sim.rs=, =assets/balance/*.ron=
+   - Acceptance:
+     - [ ] Blocked until =decide-default-lineage= is marked =DONE= in [[file:README.org][README.org]].
+     - [ ] The chosen default lineage is recorded; if Lineage B is chosen, the starting lives count (tune) and the Life Zone geometry are written down.
+     - [ ] The sim carries both rules as a match setting (=sim-005=, =lobby-003=); this task only selects the default and deletes the =150= literal and the "real lose condition" comment.
+     - [ ] The implementation and its tests are owned by =sim-005= and are not duplicated here.
+
+* Severity B — fidelity gaps
+
+  These do not lose data, but they are the difference between a slice and the game.
+
+** TODO [#B] Give each wave a front instead of wrapping the whole loop                :@waves:
+   :PROPERTIES:
+   :ID:         audit-013
+   :EFFORT:     1d
+   :END:
+
+   D10: =Sim::start_wave= (=src/sim.rs=) spreads a wave evenly around the ring
+   (=spacing = self.path.total / n=, =dist: spacing * i=), so it has no front,
+   arrives from every direction, and can spawn a creep already adjacent to the
+   destination. A single spawn point (or a short arc) is the fix.
+
+   - Files: =src/sim.rs=, =assets/balance/*.ron=
+   - Acceptance:
+     - [ ] A wave spawns from one point or a short bounded arc with a fixed intra-wave gap, not spread around the ring.
+     - [ ] The gap and the arc are balance-table values (found-004), not literals in =sim.rs=.
+     - [ ] Once =sim-005= defines the leak point, no creep spawns within a defined safety distance of it; until then the rule is expressed as a distance from the wave's own spawn point.
+     - [ ] Sim test (D17): every creep of a wave spawns within the configured arc and the intra-wave gap is within one tick of the configured value.
+
+** TODO [#B] Give creeps an armour type, damage type, layer and wave kind             :@waves:
+   :PROPERTIES:
+   :ID:         audit-014
+   :EFFORT:     1w
+   :BLOCKED-BY: waves-004
+   :END:
+
+   D11: =Creep= (=src/sim.rs=) is entirely uniform — =dist=, =hp=, =base_speed=,
+   =slow_mult=, =bounty= and =last_hit_by= only — so there is no armour type, no
+   damage type, no air, no boss, no hero and no immune wave. The original has immune
+   waves every five waves (Divine armour), air waves, three boss tiers and
+   hero-armoured waves, and hero towers deal 300% to hero armour. This adds the
+   fields the content tables ([[file:04-waves.org][04-waves.org]] =waves-004=) will populate.
+
+   - Files: =src/sim.rs=, =src/game.rs=, =assets/balance/*.ron=
+   - Acceptance:
+     - [ ] =Creep= carries an armour type, a damage type, a movement layer (ground/air) and flags for boss, hero and immune.
+     - [ ] The damage-type-versus-armour-type multiplier table is data (found-004), not a =match= in code.
+     - [ ] A ground-only tower cannot target an air creep, and the immune rule of the chosen lineage is recorded (in some versions only Chaos kills immunes).
+     - [ ] Sim test (D17): an air creep is untargetable by a ground-only tower; a hero-armoured creep takes the documented 300% from a hero tower.
+
+** TODO [#B] Make tower fire a visible projectile that splashes on arrival            :@sim:
+   :PROPERTIES:
+   :ID:         audit-015
+   :EFFORT:     1w
+   :END:
+
+   D13: =Sim::step= (=src/sim.rs=) applies damage instantly on a cooldown with no
+   projectile entity, so a tower's fire is invisible and its splash is a silent area
+   test. The original shows a missile that travels and splashes on impact.
+
+   - Files: =src/sim.rs=, =src/server.rs=, =src/protocol.rs=, =src/visuals.rs=
+   - Acceptance:
+     - [ ] Firing a tower creates a projectile sim entity with a target and a travel time, and damage is applied on arrival, not at the muzzle.
+     - [ ] The projectile is mirrored and rendered, so the player sees the shot land.
+     - [ ] Damage is applied exactly once per projectile; splash still hits the target plus everything in radius.
+     - [ ] Sim test (D17): a projectile whose target dies first retargets or fizzles per a written rule, and never applies damage to a dead creep.
+
+** TODO [#B] Interpolate replicated creeps on the client                              :@ui:
+   :PROPERTIES:
+   :ID:         audit-016
+   :EFFORT:     1d
+   :END:
+
+   D14: =track_creeps= (=src/visuals.rs=) writes each replicated snapshot straight
+   into the transform (=transform.translation.x = vis.x=), so creeps step visibly at
+   the 30 Hz replication rate. Because the client does not simulate
+   (=decide-authority=), interpolation is the only mechanism that can smooth it.
+
+   - Files: =src/visuals.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] Creeps render by interpolating between the last two replicated samples at display rate, with a single documented render delay.
+     - [ ] Steady-state positional error against the authoritative position is under one world unit, with no visible overshoot at a ring corner.
+     - [ ] The wire format is unchanged; interpolation is presentation-only and never feeds back into =Sim=.
+     - [ ] If =net-009= in [[file:09-networking.org][09-networking.org]] owns the implementation, this task closes by pointing at it rather than duplicating.
+
+** TODO [#B] Verify the server runs headless, tracked in found-001                     :@found:
+   :PROPERTIES:
+   :ID:         audit-017
+   :EFFORT:     2h
+   :BLOCKED-BY: found-001
+   :END:
+
+   D15: =src/main.rs= adds =VisualsPlugin= in =server= mode, so a dedicated server
+   opens a window and allocates 768 sprites. The fix lives in =found-001=; this task
+   only tracks the defect in the audit index and records the audit-side check, so the
+   two files do not duplicate the work.
+
+   - Files: =src/main.rs=, =src/visuals.rs=
+   - Acceptance:
+     - [ ] =cargo run -- server= creates no window, no camera and no =MapTile= entity (the fix is found-001's).
+     - [ ] The server reaches the listening state with =DISPLAY= unset.
+     - [ ] The triage table lists D15 against =found-001=, not against a second implementation here.
+
+** TODO [#B] Add the sim reset path and clear announced_over                          :@sim:
+   :PROPERTIES:
+   :ID:         audit-018
+   :EFFORT:     1d
+   :END:
+
+   D20: =Sim::over= (=src/sim.rs=) is documented "Terminal" and =Sim::step= returns
+   immediately when it is set, so a rematch needs a process restart. D21:
+   =Net::announced_over= (=src/server.rs=) latches true in =announce_game_over= and is
+   never cleared, so a restarted match would never announce again. Both are one reset
+   path, so this task closes D20 and D21 together.
+
+   - Files: =src/sim.rs=, =src/server.rs=
+   - Acceptance:
+     - [ ] A =Sim::reset()= clears =over=, =wave=, =wave_timer=, creeps and towers, and restores each player's gold and kills to the configured starting values.
+     - [ ] The same path clears =Net::announced_over=, so a rematch announces game over again.
+     - [ ] Sim test (D17): drive to over, reset, then observe a fresh wave spawn with empty boards.
+     - [ ] The user-facing restart flow is out of scope here and lives in [[file:08-lobby.org][08-lobby.org]].
+
+** TODO [#B] Negotiate the protocol version and refuse a mismatched peer               :@net:
+   :PROPERTIES:
+   :ID:         audit-019
+   :EFFORT:     1w
+   :BLOCKED-BY: net-001
+   :END:
+
+   D22: peers never exchange a version, so a client built against different balance
+   numbers or a different =ClientCmd= layout desyncs silently. The versioned
+   handshake (crate version, wire revision and balance hash) is =net-001=; this task
+   is the audit-side refusal behaviour and is blocked so the format is touched once.
+
+   - Files: =src/protocol.rs=, =src/server.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] A client whose version or balance hash differs is refused during the handshake with a message naming the mismatch, and the server logs it.
+     - [ ] The refusal happens before any =Replicate= entity or =Sim= player record is created.
+     - [ ] A matching client still completes the handshake and receives its =PlayerView=.
+
+** TODO [#B] Join a remote host instead of only 127.0.0.1                            :@net:
+   :PROPERTIES:
+   :ID:         audit-020
+   :EFFORT:     1d
+   :BLOCKED-BY: found-002, net-001
+   :END:
+
+   D23: =spawn_client= (=src/client.rs=) connects to =NetConfig.server=, which
+   =src/main.rs= builds from =SERVER_ADDR = "127.0.0.1:5000"= (=src/server.rs=), so a
+   remote host is unreachable. The address must come from the =Config= built by
+   =found-002=, and any address exchanged at connect time belongs to net-001's
+   handshake.
+
+   - Files: =src/client.rs=, =src/main.rs=, =src/server.rs=
+   - Acceptance:
+     - [ ] No literal =127.0.0.1= remains in the client connect path; the address is read from =Config= (found-002).
+     - [ ] =cargo run -- client --server <ip:port>= reaches a host on another machine on the LAN.
+     - [ ] This task adds no flag parsing of its own and deletes =SERVER_ADDR=.
+     - [ ] The default with no flag is unchanged, so =cargo run= still hosts locally.
+
+** TODO [#B] Define and apply a mid-match join catch-up rule                          :@sim:
+   :PROPERTIES:
+   :ID:         audit-021
+   :EFFORT:     1d
+   :END:
+
+   D24: =on_client_connected= (=src/server.rs=) calls =sim.add_player(key)= without the
+   current wave, and =add_player= seeds =Player { gold: START_GOLD, .. }= regardless
+   of =self.wave=, so a player joining at wave 20 is immediately irrelevant.
+
+   - Files: =src/sim.rs=, =src/server.rs=, =assets/balance/*.ron=
+   - Acceptance:
+     - [ ] The catch-up rule is written down (for example starting gold scales with the current wave, or the joiner is held to the next wave boundary).
+     - [ ] =add_player= takes the current wave and applies that rule.
+     - [ ] Sim test (D17): joining at wave =N= yields the specified gold, and joining at wave 0 equals today's =START_GOLD=.
+     - [ ] The rule is a match setting or a balance value, not a literal in =sim.rs=.
+
+** TODO [#B] Handle a leaver: split their gold and keep their towers playable          :@econ:
+   :PROPERTIES:
+   :ID:         audit-022
+   :EFFORT:     1d
+   :END:
+
+   D27: =on_client_disconnected= (=src/server.rs=) calls =sim.remove_player=, which
+   only sets =connected = false= and leaves towers owned by a key that will never
+   issue another command; gold is not split and the towers are orphaned.
+
+   - Files: =src/sim.rs=, =src/server.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] The rule is written here and implemented: the leaver's gold split among remaining players (as the original does), or their towers sold and refunded, or a documented alternative.
+     - [ ] Whichever is chosen matches the original's behaviour or is recorded as a deviation with the reason.
+     - [ ] No tower is left owned by a departed key in a way that later confuses =try_upgrade= / =try_sell= (ties to audit-002).
+     - [ ] Sim test (D17): in a two-player match one leaves; the survivor's economy stays non-degenerate and no tower becomes unreachable.
+     - [ ] Coordinate with [[file:06-economy.org][06-economy.org]]'s leaver split rather than duplicating it.
+
+** TODO [#B] Replace the 768 tile entities with a tiled render pass                   :@ui:
+   :PROPERTIES:
+   :ID:         audit-023
+   :EFFORT:     1d
+   :END:
+
+   D29: =setup_camera_and_map= (=src/visuals.rs=) spawns 32 x 24 = 768 individual
+   =MapTile= entities behind a marker struct that is =#[allow(dead_code)]=, which is a
+   per-entity cost for a static image and hides the intent.
+
+   - Files: =src/visuals.rs=, =src/map.rs=
+   - Acceptance:
+     - [ ] The 768 tile entities are replaced by a single tiled render pass, or =MapTile= becomes a used marker and its =#[allow(dead_code)]= is removed.
+     - [ ] The board renders identically to today.
+     - [ ] Startup entity count drops by the tile count, measured and recorded.
+
+* Severity C — polish
+
+** TODO [#C] Merge CreepVis and CreepHp into one replicated component                 :@net:
+   :PROPERTIES:
+   :ID:         audit-024
+   :EFFORT:     2h
+   :END:
+
+   D12: =CreepVis= and =CreepHp= (=src/game.rs=) are registered independently in
+   =build_protocol= (=src/protocol.rs=), so each creep can produce two replicated
+   component updates per tick instead of one.
+
+   - Files: =src/game.rs=, =src/protocol.rs=, =src/server.rs=, =src/visuals.rs=
+   - Acceptance:
+     - [ ] A single =CreepState= component carries position and health and is the only creep component on the wire, or a measured justification (component updates per creep per tick and bytes/s at 150 creeps and 30 Hz) is recorded for keeping the split.
+     - [ ] =track_creeps= still re-renders a creep exactly once per changed tick.
+     - [ ] =sync_creeps= writes one component per creep.
+     - [ ] The protocol version hash (found-004) reflects the component-set change.
+
+** TODO [#C] Replace the per-tower, per-creep scan with a spatial index               :@sim:
+   :PROPERTIES:
+   :ID:         audit-025
+   :EFFORT:     1w
+   :END:
+
+   D16: target acquisition is O(towers x creeps) every tick and the splash pass
+   repeats it. At the current caps (700 towers, 150 creeps) that is about 105k
+   distance tests per tick, roughly 115k once the splash loop is counted, each
+   calling =creep.pos(&self.path)= (a binary search over the path).
+
+   - Files: =src/sim.rs=
+   - Acceptance:
+     - [ ] The body states the current complexity and the worst case (O(towers x creeps) plus a second O(towers x creeps) splash pass; about 105k-115k distance tests per tick at 700 towers and 150 creeps).
+     - [ ] Targeting uses a uniform-grid index keyed by cell, cell size at least the maximum tower range, so a query touches only nearby creeps.
+     - [ ] Behaviour is unchanged: the same creep is targeted and splash hits the same set as today, ties included.
+     - [ ] Sim test (D17): for a fixed board the index-backed target and splash set are identical to the scan's.
+     - [ ] A benchmark records at least an order of magnitude improvement at the worst case, and the number is written here.
+
+** TODO [#C] Decide and document inside-ring versus outside-ring colouring            :@map:
+   :PROPERTIES:
+   :ID:         audit-026
+   :EFFORT:     2h
+   :END:
+
+   D26: =setup_camera_and_map= (=src/visuals.rs=) colours a cell by =is_buildable=
+   alone, so inside the ring and outside the ring look identical and nothing says
+   whether that is intended.
+
+   - Files: =src/map.rs=, =src/visuals.rs=
+   - Acceptance:
+     - [ ] Inside-ring and outside-ring ground are either rendered differently, or the decision to treat them identically is written as a comment in =src/map.rs= and cited here.
+     - [ ] The board still renders and the path remains visually distinct from buildable ground.
+
+** TODO [#C] Stop walking every path segment in distance_to                          :@map:
+   :PROPERTIES:
+   :ID:         audit-027
+   :EFFORT:     1w
+   :END:
+
+   D28: =Path::distance_to= (=src/map.rs=) walks all four segments per call and
+   =is_buildable= is called per click on the server. Cheap for a four-corner ring,
+   wrong shape for a map with many waypoints.
+
+   - Files: =src/map.rs=
+   - Acceptance:
+     - [ ] =distance_to= (or a cell-local test) no longer walks every segment for a grid query, and returns the same answer as today.
+     - [ ] A benchmark confirms the improvement is not bought with a changed answer.
+     - [ ] =Sim::is_buildable= still rejects a cell within =0.95 * TILE= of the path.
+
+** TODO [#C] Mark the local player, tracked in found-010                              :@ui:
+   :PROPERTIES:
+   :ID:         audit-028
+   :EFFORT:     2h
+   :BLOCKED-BY: found-010
+   :END:
+
+   D30: =update_hud= (=src/client.rs=) infers "me" from the single =PlayerView= it
+   happens to hold (=me.single()=), which is a coincidence and breaks in host mode.
+   The fix is the =LocalPlayer= marker in =found-010=; this task tracks the defect in
+   the audit index and records the client-side acceptance.
+
+   - Files: =src/client.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] =update_hud= reads gold and kills from a =LocalPlayer= query, never from =single()= over all =PlayerView=s (found-010).
+     - [ ] The player count is read from =MatchView=.
+     - [ ] The triage table lists D30 against =found-010=, not a second marker defined here.
+
+* Sequencing
+
+  Work top to bottom. The order is chosen so that each phase is safe to start on the
+  code the previous phase left behind, and so that authority holes close before any
+  new feature widens them.
+
+  1. *Foundations of the audit.* =audit-010= (D17, the headless harness) and
+     =audit-001= (D25, the =Reject= reasons) come first. Every later sim task adds a
+     test, and the authority tasks need a reason to report. Neither changes behaviour
+     on its own.
+  2. *The [#A] authority cluster.* =audit-002= (D1/D2), =audit-003= (D3), =audit-004=
+     (D4), =audit-005= (D5), =audit-006= (D6), =audit-007= (D7), =audit-008= (D8).
+     These stop a client from draining or destroying another player's board, freezing
+     the HUD, spamming waves or commands, or minting a zero-gold player. Do these
+     before any feature work.
+  3. *Identity, once =net-001= lands.* =audit-009= (D9) turns the socket address into
+     a session identity; it is the prerequisite for reconnect and for the leaver rule
+     to be trustworthy.
+  4. *The wire-format batch, done together behind =net-001=.* =audit-009= (D9),
+     =audit-011= (D18's balance hash), =audit-019= (D22) and =audit-020= (D23) all
+     change or depend on the format, so doing them in one pass is cheaper than three;
+     =audit-024= (D12, the component merge) joins this batch because it changes the
+     replicated component set. None may start before =net-001= is =DONE=.
+  5. *The design decision.* =audit-012= (D19) stays =WAITING= until
+     =decide-default-lineage= is signed off. It blocks nothing else in this file, but
+     it gates =sim-005=, and the lose condition cannot be finalised until it resolves.
+  6. *The [#B] fidelity cluster.* =audit-013= (D10), =audit-014= (D11), =audit-015=
+     (D13), =audit-016= (D14), =audit-017= (D15), =audit-018= (D20/D21), =audit-021=
+     (D24), =audit-022= (D27), =audit-023= (D29).
+  7. *The [#C] polish.* =audit-024= through =audit-028=.

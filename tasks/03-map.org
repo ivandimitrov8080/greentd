@@ -1,0 +1,303 @@
+#+TITLE: greentd — map
+#+SUBTITLE: The map as data: tile grid, path shapes, spawn lanes, the Life Zone, build regions and framing
+#+TODO: TODO NEXT IN-PROGRESS WAITING BLOCKED | DONE CANCELLED
+#+TAGS: FOUNDATION(f) SIM(s) MAP(m) WAVES(w) TOWERS(t) ECON(e) BUILDER(b) LOBBY(l) NET(n) UI(u) CONTENT(c) TEST(x) RELEASE(r)
+#+FILETAGS: :greentd:
+#+STARTUP: overview indent
+
+This file plans the map system that today is a single hardcoded ring in
+=src/map.rs=: a 32x24 grid (=GRID_W=, =GRID_H=), =TILE = 32.0=, four corner
+waypoints in =RING=, and a buildability test that is nothing but "further than
+=0.95 * TILE= from the path". Every task here moves a constant out of the
+source and into an asset (=assets/maps/*.ron=), generalises the path shape, and
+adds the Life Zone and per-player lanes that [[file:02-simulation.org][02-simulation.org]] and
+[[file:04-waves.org][04-waves.org]] depend on. The map module stays shared by client and server and
+carries no authority.
+
+* Map data model and loading
+
+** TODO [#A] Load the map from a data asset instead of the =RING= constant   :@map:
+   :PROPERTIES:
+   :ID:         map-001
+   :EFFORT:     1w
+   :END:
+   =map.rs= hardcodes the grid (=GRID_W = 32=, =GRID_H = 24=, =TILE = 32.0=) and
+   the path as the four-corner =RING= array, so a second map cannot exist and
+   nothing outside =map.rs= can vary the field. Move all of it into a
+   serialisable map definition that also names build regions and path
+   waypoints.
+
+   - Files: =src/map.rs=, =src/map/loader.rs=, =assets/maps/ring-classic.ron=
+   - Acceptance:
+     - [ ] A map asset declares the tile grid, path waypoints, named build regions and named path waypoints, and is loaded at match setup (found-004).
+     - [ ] =GRID_W=, =GRID_H=, =TILE= and =RING= no longer determine the loaded map; the shipped =ring-classic.ron= reproduces today's geometry exactly.
+     - [ ] A malformed or missing asset fails with a readable error naming the field, not a panic from =Path::build=.
+     - [ ] The map type is shared by client and server and imports no =lightyear= type.
+
+** TODO [#B] Validate every map at load with actionable errors   :@map:
+   :PROPERTIES:
+   :ID:         map-011
+   :EFFORT:     1d
+   :BLOCKED-BY: map-001, map-002
+   :END:
+   =Path::build= assumes well-formed waypoints and indexes =cumulative[i + 1]=
+   without checking, so a doubled waypoint or one off the grid panics or yields
+   a silently wrong path. Validate once at load with errors that name the field
+   and the index.
+
+   - Files: =src/map/validate.rs=, =src/map.rs=, =assets/maps/*.ron=
+   - Acceptance:
+     - [ ] A zero-length segment, a duplicate waypoint or a non-increasing cumulative length is reported with the segment index.
+     - [ ] The self-intersection policy (allowed or rejected) is stated and enforced for every shipped map.
+     - [ ] Every spawn point and Life Zone is asserted to lie on the path, and every player start region inside the grid.
+     - [ ] Validation runs at load and a failing map cannot start a match.
+
+** TODO [#B] Ship a map registry and a second map   :@map:
+   :PROPERTIES:
+   :ID:         map-013
+   :EFFORT:     1d
+   :BLOCKED-BY: map-001, map-011
+   :END:
+   Both lineages must be exercisable, which needs at least a classic multi-lane
+   ring (Lineage A) and an open-path map with a Life Zone (Lineage B). Add a
+   registry that enumerates and validates the shipped maps at startup.
+
+   - Files: =src/map/registry.rs=, =assets/maps/ring-classic.ron=, =assets/maps/lane-open.ron=
+   - Acceptance:
+     - [ ] At least one Lineage A ring map and one Lineage B open-path map with a Life Zone ship under =assets/maps/=.
+     - [ ] The registry enumerates maps and validates each at load; a broken map is reported without crashing startup.
+     - [ ] Every map carries a display name, author, lineage and wave count for the picker (=map-009=).
+     - [ ] The registry is the single source of the map list, so the lobby has no hardcoded table.
+
+* Path geometry
+
+** TODO [#A] Support the path shapes the real maps use   :@map:
+   :PROPERTIES:
+   :ID:         map-002
+   :EFFORT:     1w
+   :BLOCKED-BY: map-001
+   :END:
+   There is exactly one closed ring through four corners and =Path::sample=
+   wraps every distance with =rem_euclid(self.total)=, so no other shape is
+   expressible. Generalise =Path= to the classic circle (Lineage A), a
+   serpentine, a multi-lane layout and a figure-8, each providing =sample(dist)=
+   and =distance_to(p)=.
+
+   - Files: =src/map/path.rs=, =src/map.rs=, =assets/maps/*.ron=
+   - Acceptance:
+     - [ ] At least four shapes are expressible as waypoint lists and at least two ship (the classic ring and one other).
+     - [ ] =sample(dist)= is continuous and, for a closed shape, wraps exactly as today; for an open shape it reports arrival at the Life Zone.
+     - [ ] =distance_to(p)= is correct for a leg that crosses the path's own interior (a figure-8 crosses itself).
+     - [ ] Building is still forbidden within =0.95 * TILE= of any shape.
+
+** TODO [#B] Expose heading and arrival along the path   :@map:
+   :PROPERTIES:
+   :ID:         map-012
+   :EFFORT:     2h
+   :BLOCKED-BY: map-002
+   :END:
+   Creeps are drawn upright, so on every corner they visibly slide sideways; and
+   an open path needs to report "arrived" rather than a clamped position. Add
+   =Path::heading(dist)= and make =sample= expose arrival.
+
+   - Files: =src/map/path.rs=, =src/protocol.rs=, =src/visuals.rs=
+   - Acceptance:
+     - [ ] =Path::heading(dist)= returns a unit vector for the segment at that distance and the destination direction on an open path's last leg.
+     - [ ] =sample= reports arrival (or the caller can test =dist >= total=) on an open path instead of wrapping.
+     - [ ] Heading is smooth across a corner, with no 90-degree snap in one tick.
+     - [ ] Heading travels with the replicated creep position without adding a second component (see net-001 on D12).
+
+* Spawns, lanes and build regions
+
+** TODO [#A] Give every player a spawn lane   :@map:
+   :PROPERTIES:
+   :ID:         map-004
+   :EFFORT:     1d
+   :BLOCKED-BY: map-001, map-002
+   :END:
+   Research could not confirm the original's lane count. *Decision:* model one
+   spawn point per player, because =creeps_per_wave()= already multiplies by the
+   connected-player count, so a bigger lobby means more creeps from more points.
+   Implement a =SpawnPoint= per player and give each wave a front instead of
+   spreading it around the loop.
+
+   - Files: =src/map.rs=, =assets/maps/*.ron=, =src/sim.rs=
+   - Acceptance:
+     - [ ] A map declares one spawn point per player; =N= connected players use =N= points.
+     - [ ] The lane topology (shared path versus separate paths) is a map-level setting with a written default of one shared ring.
+     - [ ] A wave spawns from its owner's spawn point as a contiguous front (see =map-005=, closes D10).
+     - [ ] A player joining or leaving changes the active spawn set without disturbing creeps already in flight.
+
+** TODO [#A] Spawn waves as a front, never adjacent to the Life Zone   :@map:
+   :PROPERTIES:
+   :ID:         map-005
+   :EFFORT:     1d
+   :BLOCKED-BY: map-004, map-003
+   :END:
+   D10: a wave is spread evenly around the whole loop so it has no front, and a
+   creep can spawn already touching the Life Zone and leak immediately. Define
+   how a wave is laid out from a spawn point and require a minimum
+   spawn-to-Life-Zone distance.
+
+   - Files: =src/map/path.rs=, =src/map.rs=, =src/sim.rs=
+   - Acceptance:
+     - [ ] A wave occupies a contiguous run of path starting at its spawn point, with a clear front (closes D10).
+     - [ ] No spawn point lies within a configurable minimum distance of its Life Zone, enforced at map load.
+     - [ ] The inter-creep spacing is data, not the inline =spacing = path.total / n=.
+     - [ ] Two lanes spawning on the same tick do not overlap at the spawn point.
+
+** TODO [#A] Make buildability a precomputed rule set, not a per-query path walk   :@map:
+   :PROPERTIES:
+   :ID:         map-006
+   :EFFORT:     1w
+   :BLOCKED-BY: map-001
+   :END:
+   =is_buildable= is "not within =0.95 * TILE= of the path", computed by walking
+   every path segment on every query — D28. Replace it with a precomputed
+   per-cell build mask plus explicit rules: no-build on path, no-build on
+   another player's area, no-build on a trap, and the original's "another player
+   can get rid of a tower in their area" rule.
+
+   - Files: =src/map.rs=, =src/sim.rs=, =assets/maps/*.ron=
+   - Acceptance:
+     - [ ] A per-cell mask (buildable, on-path, owner, blocked) is built once at load and =is_buildable= is a single lookup (closes D28).
+     - [ ] The rules are named flags in the map asset, not branches in code.
+     - [ ] A cell owned by another player is unbuildable for the caller and the reject reason is distinct (the map-side half of D25's =NotOwner=).
+     - [ ] The "another player may get rid of a tower in their area" rule is expressible and the ownership filter supports D1's ownership fix.
+
+* The Life Zone
+
+** TODO [#A] Add the Life Zone as a named, rendered region   :@map:
+   :PROPERTIES:
+   :ID:         map-003
+   :EFFORT:     1d
+   :BLOCKED-BY: map-002
+   :END:
+   Lineage B ends a creep's run at the Life Zone and "creeps that enter the Life
+   Zone are removed from the game instead of killed", but there is no end point
+   today — creeps wrap forever ([[file:02-simulation.org][02-simulation.org]] =sim-005=, =sim-006=).
+   Add the zone as a named region at the path end, with a distinct render and
+   the leak behaviour attached to it.
+
+   - Files: =src/map.rs=, =src/visuals.rs=, =assets/maps/*.ron=
+   - Acceptance:
+     - [ ] A map declares a Life Zone as a region with a shape the sim can point-test in constant time.
+     - [ ] A closed-ring map with no Life Zone still loads and never leaks.
+     - [ ] The zone is rendered distinctly from path and grass.
+     - [ ] The zone's geometry is what =sim-006= tests against; there is no second definition of "the end" in the sim.
+
+* Presentation
+
+** TODO [#A] Define terrain classes for the tile palette   :@map:
+   :PROPERTIES:
+   :ID:         map-007
+   :EFFORT:     1d
+   :BLOCKED-BY: map-001
+   :END:
+   D26: grass versus path is the only distinction and "inside the ring" is
+   coloured identically to "outside", with no statement of intent. Define the
+   tile palette — path, buildable grass, decorative, blocked — and document the
+   intended look so the art pass has placeholder colours to replace.
+
+   - Files: =src/map.rs=, =src/visuals.rs=, =assets/maps/*.ron=
+   - Acceptance:
+     - [ ] A terrain class enum (path, buildable, decorative, blocked) exists and every cell has one.
+     - [ ] The render maps each class to a documented colour/sprite, and inside versus outside the ring is a deliberate choice.
+     - [ ] The palette is data, so the art pass can replace colours without touching =visuals.rs= logic.
+     - [ ] A test asserts every in-bounds cell has a terrain class.
+
+** TODO [#A] Derive world bounds and camera framing from the loaded map   :@map:
+   :PROPERTIES:
+   :ID:         map-008
+   :EFFORT:     1d
+   :BLOCKED-BY: map-001
+   :END:
+   The orthographic =AutoMin= projection hardcodes =WORLD_W + 96.0= and
+   =WORLD_H + 96.0=, and =GRID_W=/=GRID_H= feed both camera and input mapping,
+   so any other map size mis-frames and mis-clicks. Make framing derive from the
+   loaded map.
+
+   - Files: =src/visuals.rs=, =src/map.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] The camera's =min_width=/=min_height= come from the loaded map's world size, not the =WORLD_W=/=WORLD_H= constants.
+     - [ ] =cell_to_world= and =world_to_cell= use the map's tile size and origin and round-trip for a non-32x24 map.
+     - [ ] The whole map is framed at startup for at least two differently sized maps.
+     - [ ] A cursor position maps to the same cell at any zoom or window size.
+
+** TODO [#C] Add a data-driven doodad layer that never affects pathing   :@map:
+   :PROPERTIES:
+   :ID:         map-010
+   :EFFORT:     1d
+   :BLOCKED-BY: map-001
+   :END:
+   The originals are full of decorative terrain. Add a doodad layer (positions,
+   sprites, optional animation) declared in the map asset, strictly visual: it
+   must not change buildability, pathing or the sim.
+
+   - Files: =assets/maps/*.ron=, =src/visuals.rs=, =src/map.rs=
+   - Acceptance:
+     - [ ] A map declares decorations as data (position, sprite key, optional animation).
+     - [ ] Adding or removing a decoration changes nothing the sim can observe; a test compares sim state with and without them.
+     - [ ] Decorations never make a cell buildable or unbuildable.
+     - [ ] Decorations render behind creeps and towers (a lower z-order).
+
+** TODO [#C] Render the ground as a tiled pass, not 768 entities   :@map:
+   :PROPERTIES:
+   :ID:         map-014
+   :EFFORT:     1w
+   :BLOCKED-BY: map-001, map-007
+   :END:
+   =setup_camera_and_map= spawns one entity per tile — 768 for the current grid
+   (D29). Replace it with a tiled or instanced ground pass driven by the terrain
+   classes from =map-007=, so a larger map is not a larger entity count.
+
+   - Files: =src/visuals.rs=, =src/map.rs=
+   - Acceptance:
+     - [ ] The ground is drawn without one ECS entity per tile.
+     - [ ] Terrain classes from =map-007= drive the pass.
+     - [ ] Removing the per-tile =MapTile= entities (and its =#[allow(dead_code)]=) does not change what the player sees.
+     - [ ] A map several times larger renders in the same number of draw batches.
+
+* Selection
+
+** TODO [#B] Let the lobby pick a map   :@map:
+   :PROPERTIES:
+   :ID:         map-009
+   :EFFORT:     1d
+   :BLOCKED-BY: map-001, lobby-001
+   :END:
+   With more than one map, the host must choose one before the match starts and
+   every client must load the same one. Add the lobby-side map picker here; the
+   lobby mechanics themselves are in [[file:08-lobby.org][08-lobby.org]] (lobby-001).
+
+   - Files: =src/lobby.rs=, =src/map/registry.rs=, =assets/maps/*.ron=
+   - Acceptance:
+     - [ ] The host selects a map before the match and the choice is part of the replicated match settings.
+     - [ ] Every client loads the host's map, and a client whose local map file differs is rejected rather than silently mismatched.
+     - [ ] The picker lists registered maps with their lineage and wave count.
+     - [ ] Selecting a Lineage A map defaults the lose rule to =Overrun= and a Lineage B map to =Lives= ([[file:02-simulation.org][02-simulation.org]] =sim-005=), overridable by the host.
+
+* Non-goals
+
+  - Combat rules, the creep data model and the win/lose rules: [[file:02-simulation.org][02-simulation.org]].
+  - Wave content, kinds and difficulty: [[file:04-waves.org][04-waves.org]].
+  - Lobby protocol, host authority and kick/restart: [[file:08-lobby.org][08-lobby.org]].
+  - Tile art, doodad models and audio: [[file:11-content.org][11-content.org]].
+  - Minimap and camera controls: [[file:10-ui.org][10-ui.org]].
+  - Maze-building and path blocking: never, this is the genre's defining
+    non-feature (the path is fixed).
+
+* Open questions
+
+  - *Spawn lane count.* Research could not confirm it. Default: one spawn point
+    per player (=map-004=), matching =creeps_per_wave()='s player multiplier.
+  - *Do Lineage A ring creeps loop forever or stop at the ring end?* Default:
+    loop forever on a closed ring, so =Overrun= can accumulate.
+  - *Exact build-region ownership layout.* Unconfirmed. Default: equal
+    rectangular plots around the ring, one per player, =(tune)=.
+  - *Real serpentine, multi-lane and figure-8 geometry.* Not documented in
+    measured form. Default: author-defined waypoint lists, marked =(tune)=.
+  - *Default spawn direction.* Unconfirmed. Default: clockwise from each
+    player's spawn point.
+  - *Does the Life Zone ever move or multiply per lane?* Unconfirmed. Default:
+    one zone per lane, fixed for the match.

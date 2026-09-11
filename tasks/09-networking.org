@@ -1,0 +1,404 @@
+#+TITLE: greentd — networking and netcode
+#+SUBTITLE: Protocol v2, authority, reconnection, replication, spectators and the dedicated server
+#+TODO: TODO NEXT IN-PROGRESS WAITING BLOCKED | DONE CANCELLED
+#+TAGS: FOUNDATION(f) SIM(s) MAP(m) WAVES(w) TOWERS(t) ECON(e) BUILDER(b) LOBBY(l) NET(n) UI(u) CONTENT(c) TEST(x) RELEASE(r)
+#+FILETAGS: :greentd:
+#+STARTUP: overview indent
+
+The server owns the simulation and every client is a dumb renderer of it
+(=decide-authority=). This file plans protocol v2, authority and identity,
+reconnection, replication and interpolation, spectators and the dedicated
+server. It touches =src/protocol.rs=, =src/server.rs=, =src/client.rs=,
+=src/game.rs=, =src/main.rs= and =Cargo.toml=.
+
+* Protocol, identity and authority
+
+** TODO [#A] Ship protocol v2 with version negotiation                      :@net:
+   :PROPERTIES:
+   :ID:         net-001
+   :EFFORT:     1w
+   :BLOCKED-BY: found-004
+   :END:
+   D22: peers never exchange a version, so a client built against different
+   balance numbers or a different =ClientCmd= layout desyncs silently instead of
+   being refused. Derive the protocol version from the balance-data hash
+   ([[file:00-foundation.org][00-foundation.org]] =found-004=) plus a schema
+   revision, send it in the handshake, and answer a mismatch with a readable
+   reason before any game entity exists. *This is the gating task*: every audit
+   fix that changes the wire format or the replicated component set is
+   =BLOCKED-BY= this one (for example =audit-009=, =audit-011=, =audit-019=,
+   =audit-020= and =audit-024=), so it lands first.
+
+   - Files: =src/protocol.rs=, =src/server.rs=, =src/client.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] The version is =hash(balance data) ++ schema revision=, computed once and identical on both peers.
+     - [ ] A client whose hash or revision differs is refused during the handshake with a message naming which part mismatched, and the server logs it (D22).
+     - [ ] The refusal happens before any =Replicate= entity or =Sim= player record is created.
+     - [ ] A matching client still completes the handshake and receives its =PlayerView=.
+     - [ ] Every audit task that changes the wire format lists =BLOCKED-BY: net-001=.
+
+** TODO [#A] Give players a stable identity that survives a new port        :@net:
+   :PROPERTIES:
+   :ID:         net-002
+   :EFFORT:     1w
+   :BLOCKED-BY: net-001
+   :END:
+   D9: =peer_key= is =PlayerKey(remote.0.to_bits())= - the UDP socket address -
+   so a client that reconnects from a new source port silently becomes a new
+   player and drops its gold, kills and towers. Issue a client-generated
+   persistent id during the handshake and map it to a session, with explicit
+   takeover semantics so one peer cannot impersonate another's id. The audit-side
+   identity fix is =audit-009=, which is blocked on this task.
+
+   - Files: =src/protocol.rs=, =src/server.rs=, =src/sim.rs=
+   - Acceptance:
+     - [ ] The client generates a persistent id and sends it in the handshake; the server keys the player on it, not on =remote.0=.
+     - [ ] A client reconnecting from a new port with the same id maps to the same =PlayerKey= and the same =PlayerView= (D9).
+     - [ ] A second connection presenting an id already in use is either rejected or takes over the session under a documented rule; it never silently creates a second player.
+     - [ ] =peer_key= no longer calls =remote.0.to_bits()=, and =PlayerKey= is derived from the id.
+
+** TODO [#A] Let a dropped client rejoin its own player                     :@net:
+   :PROPERTIES:
+   :ID:         net-003
+   :EFFORT:     1w
+   :BLOCKED-BY: net-002
+   :END:
+   Today =on_client_disconnected= sets =connected = false= and leaves the
+   =Player= record and its towers in the sim, but nothing can ever reattach to
+   it, so a blip is a permanent loss of gold, kills, hero level and towers. With
+   identity from =net-002=, a client that reconnects inside a grace window must
+   resume the same player and receive a full-state resync.
+
+   - Files: =src/server.rs=, =src/sim.rs=, =src/protocol.rs=
+   - Acceptance:
+     - [ ] A client that drops and reconnects inside the grace window resumes the same =PlayerKey=, keeping gold, kills, builder ("hero") level and the whole tower board.
+     - [ ] The reconnecting client receives a whole-state snapshot tied to a tick, so it renders the correct wave and board with no missing or duplicated entity.
+     - [ ] After the grace window the player is treated as a leaver exactly once, under the leaver split of [[file:06-economy.org][06-economy.org]] (=econ-011=), and cannot reattach afterwards.
+     - [ ] The grace-window duration is a match setting, not a literal, with a documented default (tune).
+
+** TODO [#A] Harden authority at one validation choke point                 :@net:sim:
+   :PROPERTIES:
+   :ID:         net-004
+   :EFFORT:     1w
+   :BLOCKED-BY: net-001
+   :END:
+   The net layer trusts the caller in the ways D1, D2, D6, D7, D8 and D25
+   expose. Rather than three patches, route every =ClientCmd= through one
+   validation helper: the sender may only affect its own entities; a build or
+   upgrade cell must be in the sender's build region; the phase must be Running;
+   the kind must be enabled and affordable; and an unregistered key is rejected
+   instead of minted. The mechanical sim-side fixes are the audit tasks
+   =audit-002= (D1, D2), =audit-006= (D6), =audit-007= (D7) and =audit-008= (D8),
+   and the reason variants are =audit-001= (D25). The token-bucket mechanics are
+   =net-005=; this task owns the shared helper and the policy.
+
+   - Files: =src/server.rs=, =src/sim.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] Every accepted =ClientCmd= variant flows through one validation function, and no intent handler is reachable from the network by another path.
+     - [ ] =try_upgrade= and =try_sell= reject a tower the caller does not own with =Reject::NotOwner=, and a successful sell refunds the owner (D1, D2).
+     - [ ] =CallWave= has a documented cooldown and an authority policy, so one client cannot advance waves for the whole table (D6).
+     - [ ] A command from an unregistered key is rejected, and =players.entry(who).or_default()= is no longer reachable from the network (D8).
+     - [ ] =Reject= gains =NotOwner=, =RateLimited=, =NotEnoughFood=, =TowerDisabled= and any other variant the invariants need, each with a =Reject::text()= string (D25).
+
+** TODO [#A] Rate-limit commands with a per-connection token bucket         :@net:
+   :PROPERTIES:
+   :ID:         net-005
+   :EFFORT:     1d
+   :BLOCKED-BY: net-004
+   :END:
+   D7: =handle_cmds= drains =recv.receive()= and executes every queued command
+   in the same frame. Give each connection a token bucket with a budget per tick
+   and per second, a burst allowance, and a disconnect policy for a peer that
+   keeps abusing it. This implements the budget =net-004= enforces and the
+   bucket described by =audit-007=.
+
+   - Files: =src/server.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] Each connection has a token bucket with documented per-tick and per-second budgets and a burst allowance.
+     - [ ] Commands over budget are dropped, not deferred, and the peer is told once per frame with =Reject::RateLimited=.
+     - [ ] A peer that exceeds the budget across many frames is disconnected by a documented policy.
+     - [ ] A synthetic burst of N commands in one frame produces at most the budget's worth of sim mutations.
+
+** TODO [#B] Split the channels by reliability                              :@net:
+   :PROPERTIES:
+   :ID:         net-017
+   :EFFORT:     1d
+   :BLOCKED-BY: net-001
+   :END:
+   =build_protocol= installs one =ReliableChannel= with
+   =ChannelMode::OrderedReliable= in both directions, so every message shares
+   one path. Specify which traffic is reliable-ordered and which is unreliable,
+   and separate the client-to-server command channel from the server-to-client
+   notice channel so a retransmitted notice cannot head-of-line block a build.
+
+   - Files: =src/protocol.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] A table here lists each current and planned message with its channel and the reason for it.
+     - [ ] Build, upgrade and sell are reliable-ordered, because losing one changes the board.
+     - [ ] The C2S command channel and the S2C notice channel are distinct.
+     - [ ] Per-tick state is not carried on the reliable channel and is not retransmitted.
+
+** TODO [#B] Stop trusting client-asserted state                            :@net:sim:
+   :PROPERTIES:
+   :ID:         net-018
+   :EFFORT:     1d
+   :BLOCKED-BY: net-004
+   :END:
+   The client must only ever send intents, never game state. Audit every
+   =ClientCmd= variant for anything the server currently believes: cell
+   coordinates arrive as =x/y= and are used as a build/upgrade/sell target, and
+   anything similar must be re-derived or re-validated server-side, never
+   accepted because the client said so.
+
+   - Files: =src/protocol.rs=, =src/server.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] Every =ClientCmd= variant is confirmed to carry only intent (a cell, a kind, a target), not authoritative state.
+     - [ ] A tower's coordinates and kind are validated against sim state before use; no coordinate is trusted as pre-validated.
+     - [ ] Any field the client sends that the server acts on is either re-derived or bounds-checked.
+     - [ ] A test sends forged coordinates and out-of-range indices and asserts they are rejected.
+
+* Server modes, joining and observers
+
+** TODO [#A] Fix host mode so the local client addresses itself             :@net:
+   :PROPERTIES:
+   :ID:         net-006
+   :EFFORT:     1w
+   :BLOCKED-BY: net-001
+   :END:
+   D3: in host mode every =PlayerView= is replicated with =NetworkTarget::All=
+   because a local client cannot be addressed with =NetworkTarget::Single=, so
+   =update_hud='s =me.single()= fails and the host sees no gold or kills. A local
+   client shares the server's world and does not need replication at all; solve
+   that properly instead of broadcasting everything. The minimal mechanical fix
+   is =audit-003=.
+
+   - Files: =src/server.rs=, =src/client.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] A local (host) client reads its own =PlayerView= directly from local state, not through the replication path (D3).
+     - [ ] The host's HUD shows its own gold and kills; a remote client in the same match shows only its own.
+     - [ ] No =PlayerView= is replicated to a client that is not its owner.
+     - [ ] A host plus one remote client is covered by a test asserting each HUD shows the right figures.
+
+** TODO [#A] Run the server truly headless                                  :@net:
+   :PROPERTIES:
+   :ID:         net-007
+   :EFFORT:     1w
+   :BLOCKED-BY: found-001
+   :END:
+   D15: today =main= adds =VisualsPlugin= in =server= mode, so a "dedicated"
+   server opens a 1280x800 window and allocates the 768 tile sprites. Make server
+   mode headless: no window, no asset load, a fixed deterministic tick and a
+   graceful shutdown. The config layer that supplies the tick and player cap is
+   [[file:00-foundation.org][00-foundation.org]] (=found-001=), and the
+   audit-side check is =audit-017=.
+
+   - Files: =src/main.rs=, =src/server.rs=
+   - Acceptance:
+     - [ ] =cargo run -- server= starts with no window and does not add =VisualsPlugin= (D15).
+     - [ ] The tick is fixed and deterministic, with no wall-clock drift in the sim.
+     - [ ] A headless server accepts a client, runs a wave and shuts down cleanly.
+     - [ ] The listen address, tick rate and player cap come from =found-001= config, not literals.
+
+** TODO [#B] Join a host other than 127.0.0.1                              :@net:
+   :PROPERTIES:
+   :ID:         net-008
+   :EFFORT:     1d
+   :BLOCKED-BY: found-001
+   :END:
+   D23: =spawn_client= hardcodes =PeerAddr(cfg.server)= where =cfg.server= is
+   always =SERVER_ADDR = "127.0.0.1:5000"=, so there is no way to join a remote
+   host. Add an address or hostname input, DNS resolution, and a connect UI that
+   reports failure instead of hanging; the audit-side fix is =audit-020=.
+
+   - Files: =src/client.rs=, =src/main.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] The server address can be entered as an address or a hostname and is resolved before connecting.
+     - [ ] A client can join a host that is not =127.0.0.1= without a recompile (D23).
+     - [ ] A failed connect reports a reason (unreachable, full, version mismatch) rather than failing silently.
+     - [ ] =SERVER_ADDR= becomes a default, not the only possible value.
+
+** TODO [#B] Decide and implement spectators and observers                   :@net:
+   :PROPERTIES:
+   :ID:         net-013
+   :EFFORT:     1d
+   :BLOCKED-BY: net-001
+   :END:
+   Watching without playing is expected of a map with this many players, and the
+   original had an Observer Slot that a later version removed. Decide whether
+   spectators exist, whether they consume a slot, and whether their stream is
+   delayed, then implement the decision.
+
+   - Files: =src/server.rs=, =src/protocol.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] The decisions (spectators exist or not; stream delay; slot) are recorded here with reasons.
+     - [ ] If spectators exist, a spectator receives the world but has no builder, no gold, and cannot send =Build=, =Upgrade=, =Sell= or =CallWave=.
+     - [ ] If spectators exist, the stream delay is a documented setting.
+     - [ ] Spectators are listed distinctly from players in the lobby (=lobby-015=).
+
+** TODO [#B] Define the connection lifecycle and timeouts                   :@net:
+   :PROPERTIES:
+   :ID:         net-014
+   :EFFORT:     1d
+   :BLOCKED-BY: net-001
+   :END:
+   There is no handshake timeout, no drop detection beyond the lightyear
+   =Connected= marker, and no defined behaviour during a partition. Specify the
+   =Started= / =Connected= state machine, the timeout before a silent peer is
+   treated as gone, and what a match does while a peer is unreachable.
+
+   - Files: =src/server.rs=, =src/client.rs=, =src/protocol.rs=
+   - Acceptance:
+     - [ ] A peer that never completes the handshake is dropped after a documented timeout.
+     - [ ] A peer that stops responding is detected and treated as disconnected within a documented window (see =net-003=).
+     - [ ] The states (Connecting, Connected, Started, Disconnected) and their transitions are written down.
+     - [ ] A network partition parks the match rather than ending it or desyncing it.
+
+** TODO [#C] Discover hosts on the LAN or list them                         :@net:
+   :PROPERTIES:
+   :ID:         net-015
+   :EFFORT:     1d
+   :BLOCKED-BY: net-008
+   :END:
+   The original was a LAN game and the transport is raw UDP, so a host that
+   announces itself and clients that list what they hear is the cheapest
+   faithful option, and it removes the need to type an IP by hand.
+
+   - Files: =src/server.rs=, =src/client.rs=, =src/protocol.rs=
+   - Acceptance:
+     - [ ] A host broadcasts a discovery beacon carrying its protocol version (=net-001=).
+     - [ ] A client lists discoverable hosts without the user typing an address.
+     - [ ] A beacon from an incompatible version is listed as incompatible, not joinable.
+     - [ ] Discovery is opt-in and can be disabled by the host.
+
+* Replication and presentation
+
+** TODO [#B] Interpolate replicated state for smooth rendering              :@net:ui:
+   :PROPERTIES:
+   :ID:         net-009
+   :EFFORT:     1w
+   :BLOCKED-BY: net-001
+   :END:
+   D14: the client snaps to each 30 Hz sample, so creeps visibly step. Because
+   the client does not simulate (=decide-authority=), interpolation is the only
+   mechanism that makes the dumb-renderer model acceptable, so it is
+   load-bearing rather than cosmetic. Interpolate *for rendering only*; do not
+   add prediction. The audit-side tracking task is =audit-016=.
+
+   - Files: =src/client.rs=, =src/visuals.rs=
+   - Acceptance:
+     - [ ] Creeps and towers render at a fixed delay behind the newest replicated sample, not at the sample itself (D14).
+     - [ ] A dropped or late sample does not cause a visible stutter within the documented jitter tolerance.
+     - [ ] A correction larger than a threshold is smoothed or faded rather than teleporting, and the choice is recorded.
+     - [ ] The interpolation delay is one documented constant, and no client-side simulation or prediction is introduced (=decide-authority=).
+
+** TODO [#C] One component per creep and a lower update rate               :@net:
+   :PROPERTIES:
+   :ID:         net-010
+   :EFFORT:     1w
+   :BLOCKED-BY: net-009
+   :END:
+   D12: =CreepVis= and =CreepHp= are separate components, so each creep produces
+   two replication updates per tick. Merge them into one =CreepState=, and use
+   the interpolation from =net-009= to lower the creep update rate. The
+   audit-side component merge is =audit-024=.
+
+   - Files: =src/game.rs=, =src/protocol.rs=, =src/server.rs=
+   - Acceptance:
+     - [ ] =CreepVis= and =CreepHp= are replaced by one =CreepState= component, halving creep updates (D12).
+     - [ ] The creep update rate is below the tick rate, with interpolation covering the gap.
+     - [ ] Delta or change-only encoding is used for creeps and towers, so an unchanged entity is not re-sent.
+     - [ ] A headless run records bytes per peer before and after the change.
+
+** TODO [#A] Emit the full notice set, starting with WaveStarted            :@net:
+   :PROPERTIES:
+   :ID:         net-011
+   :EFFORT:     1d
+   :BLOCKED-BY: net-001
+   :END:
+   D5: =ServerNotice::WaveStarted= is never sent, so the client's wave
+   notification branch in =read_notices= is dead code. Define the complete
+   server-to-client notice set and when each is emitted, and put the
+   session-level ones on the reliable channel. The wave-lifecycle events that
+   drive them come from [[file:02-simulation.org][02-simulation.org]] (=sim-007= and
+   =sim-011=); the audit-side branch fix is =audit-005=.
+
+   - Files: =src/protocol.rs=, =src/server.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] =ServerNotice::WaveStarted= is emitted at the start of every wave and reaches the client (D5).
+     - [ ] The notice set (wave started/cleared, game over, victory, message, rejection) is listed here with its emission point and its channel.
+     - [ ] Session-level notices are reliable-ordered; high-frequency ones are not (see =net-017=).
+     - [ ] The client's dead wave-notification branch is either wired up or removed.
+
+** TODO [#C] Tell a client which replicated player is itself                :@net:
+   :PROPERTIES:
+   :ID:         net-012
+   :EFFORT:     1d
+   :BLOCKED-BY: net-002
+   :END:
+   D30: the client infers "my" state from "the one =PlayerView= I happen to
+   hold", which works only while a client holds exactly one. Once a client can
+   see more than one player (spectators, multiboard) it must be told which is
+   its own. Add a =LocalPlayer= marker and stop guessing; the marker is owned by
+   =found-010=.
+
+   - Files: =src/game.rs=, =src/protocol.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] The server marks exactly one replicated player as a client's own (D30).
+     - [ ] =update_hud= reads gold, kills and identity from that marker, not from =me.single()=.
+     - [ ] A client that holds another player's view (spectator, multiboard) does not mistake it for its own.
+     - [ ] The marker is stable across a reconnect (=net-003=).
+
+** TODO [#A] Set and measure a bandwidth and creep-count budget             :@net:
+   :PROPERTIES:
+   :ID:         net-016
+   :EFFORT:     1w
+   :BLOCKED-BY: net-010
+   :END:
+   Lineage A's lose cap can be 600-1000 live creeps (tune), and the current
+   per-entity replication will not survive that. Define the maximum creeps and
+   towers the netcode must sustain, state the budget numerically, and measure it
+   on a headless run against the merged-component layout of =net-010=. The
+   benchmark that checks it is =test-012=.
+
+   | Stream             | Bytes/entity | Count      | Rate      | Bytes/s/peer |
+   |--------------------+--------------+------------+-----------+--------------|
+   | Creeps (merged)    | 16           | 600 (tune) | 10 Hz     | 96,000       |
+   | Towers (on change) | 10           | 700        | on change | 1,000        |
+   | MatchView          | 20           | 1          | 30 Hz     | 600          |
+   | PlayerView (self)  | 8            | 1          | 30 Hz     | 240          |
+
+   - Files: =src/server.rs=, =src/protocol.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] The target is stated numerically (players, live creeps, towers, tick rate) as bytes per second per peer and as total server egress.
+     - [ ] A stated priority order decides what is degraded or dropped first on a saturated link.
+     - [ ] Snapshot versus delta is specified per stream (creeps, towers, match view, player view).
+     - [ ] A headless run measures actual bytes per peer and the figure is recorded against this budget.
+
+* Non-goals
+
+  - Client-side prediction and rollback are deliberately excluded
+    (=decide-authority=); only interpolation (=net-009=) is in scope.
+  - Account systems and authentication beyond the session identity of
+    =net-002= are not in scope.
+  - Changing the map or balance-data formats is owned by
+    [[file:03-map.org][03-map.org]] (=map-001=) and
+    [[file:00-foundation.org][00-foundation.org]] (=found-004=).
+  - Multiboard, build panel, connect screen and the message log widget are owned
+    by [[file:10-ui.org][10-ui.org]] (=ui-001=, =ui-009=, =ui-016=).
+  - The authority *policy* is fixed here, but the underlying sim mutators are
+    owned by [[file:01-current-code-audit.org][01-current-code-audit.org]]
+    (=audit-001=, =audit-002=, =audit-006=, =audit-007=, =audit-008=).
+
+* Open questions
+
+  - *Browser transport*: =Cargo.toml= carries a =wasm-release= profile.
+    Recommended default: defer a web client; decide in
+    [[file:13-release.org][13-release.org]] if pursued.
+  - *Spectator slot and delay*: recommended default: spectators consume no slot
+    and receive a fixed delay (tune).
+  - *Matchmaking vs LAN discovery*: recommended default: LAN discovery first
+    (=net-015=), a static server list later.
+  - *Interpolation delay*: recommended default: about two tick intervals
+    (~=66 ms=) behind the newest sample (tune).
+  - *Session-id lifetime*: recommended default: per-session only, not persisted
+    to disk, since there are no accounts.

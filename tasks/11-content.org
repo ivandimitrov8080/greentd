@@ -1,0 +1,248 @@
+#+TITLE: greentd — Content: art, animation, VFX and audio
+#+SUBTITLE: The visual and aural identity of the game, and the pipeline that ships it
+#+TODO: TODO NEXT IN-PROGRESS WAITING BLOCKED | DONE CANCELLED
+#+TAGS: FOUNDATION(f) SIM(s) MAP(m) WAVES(w) TOWERS(t) ECON(e) BUILDER(b) LOBBY(l) NET(n) UI(u) CONTENT(c) TEST(x) RELEASE(r)
+#+FILETAGS: :greentd:
+#+STARTUP: overview indent
+
+This plan touches a new =assets/= tree, =src/visuals.rs=, =src/ui/theme.rs=, a
+new =src/audio.rs= and the asset manifest/check tooling. The visual layer today
+is entirely procedural — 768 tile sprites, creeps darkened by health fraction in
+=track_creeps=, towers scaled by =level.min(6)= — with no =assets/= directory, no
+animation, no VFX and no audio. It runs after the sim has named every unit and tower.
+
+* Tasks
+
+** TODO [#A] Choose and document the art direction :@content:
+   :PROPERTIES:
+   :ID:         content-001
+   :EFFORT:     1w
+   :END:
+   The clone is not Warcraft III, and it must not copy Blizzard assets, names or
+   textures. Pick and document a visual identity that reads as "green TD" — the
+   green ring is the map's signature — while being entirely original, and make it
+   the single style source that every other task in this file follows and that
+   the UI palette (=ui-017=) consumes.
+
+   - Files: =docs/art-direction.md=, =assets/=, =src/ui/theme.rs=
+   - Acceptance:
+     - [ ] A short art-direction document states the palette, the silhouette language, the camera framing and the icon style.
+     - [ ] It names the green ring as the map's signature read and says how it is preserved.
+     - [ ] It states explicitly that no Blizzard asset, name or texture is used.
+     - [ ] The palette is checked against a colour-blind simulation and shared with content-011 and ui-017.
+
+** TODO [#B] Produce the terrain tileset for path, buildable ground, decoration and blocked cells :@content:map:
+   :PROPERTIES:
+   :ID:         content-002
+   :EFFORT:     1w
+   :BLOCKED-BY: content-001, map-007
+   :END:
+   Terrain today is two hardcoded colours chosen by =is_buildable=, and grass
+   inside and outside the ring are coloured identically (=D26=). Produce art for
+   path, buildable grass, decoration and blocked cells, resolved by model key and
+   driven by the per-cell region masks the map data provides (=map-007=), so a
+   tileset swap is a data change rather than a code change.
+
+   - Files: =assets/tilesets/=, =assets/manifest.ron=, =src/visuals.rs=, =src/map.rs=
+   - Acceptance:
+     - [ ] Tiles exist for path, buildable grass, decoration and blocked, each resolved by a model key.
+     - [ ] The path is unmistakable at the default zoom and under the colour-blind palette (=content-011=).
+     - [ ] Region masks from the map data select the tiles, and inside-the-ring grass is distinct from outside (=D26=, =map-007=).
+     - [ ] Replacing the tileset is a manifest/data edit with no code change.
+
+** TODO [#A] Produce creep art that distinguishes ground, air, boss, hero and immune :@content:waves:
+   :PROPERTIES:
+   :ID:         content-003
+   :EFFORT:     1w
+   :BLOCKED-BY: content-001
+   :END:
+   Every creep is one red square today (=D11=), yet the original exposes the air,
+   boss, hero and immune kinds through the multiboard icons and armour-type
+   indicators. Each family must be distinguishable at a glance, and the immune
+   variant needs the strongest read of all, because a player who cannot see that
+   the creeps are immune builds the wrong damage type and loses to the wave.
+
+   - Files: =assets/models/creeps/=, =assets/manifest.ron=, =src/visuals.rs=
+   - Acceptance:
+     - [ ] Ground and air variants are distinguishable without reading a label.
+     - [ ] Boss and hero variants read as distinct silhouettes, not merely as larger copies.
+     - [ ] The immune variant carries an unambiguous, colour-blind-safe marker.
+     - [ ] Every creep kind in the wave catalogue (=waves-013=) has a model key, and a review scene spawns one of each for sign-off.
+
+** TODO [#A] Produce tower art per family, tier and branch :@content:towers:
+   :PROPERTIES:
+   :ID:         content-004
+   :EFFORT:     1w
+   :BLOCKED-BY: content-001
+   :END:
+   =track_towers= expresses tier by scaling the sprite, which saturates at
+   =level.min(6)=, and cannot express eleven families or the tier-3 split into
+   different towers. Produce per-family art with tier decoration (pips or trim)
+   and a visible branch indicator, so a tower's identity and tier read without a
+   label and without relying on scale.
+
+   - Files: =assets/models/towers/=, =assets/manifest.ron=, =src/visuals.rs=
+   - Acceptance:
+     - [ ] All eleven families are visually distinct at tier 1.
+     - [ ] Tiers above 1 are distinguishable without relying on sprite scale.
+     - [ ] A tier-3 branch visibly indicates which branch it became.
+     - [ ] A review grid shows every family at every tier.
+
+** TODO [#A] Animate creep walk, tower idle and attack, and death :@content:
+   :PROPERTIES:
+   :ID:         content-005
+   :EFFORT:     1w
+   :BLOCKED-BY: content-003, content-004
+   :END:
+   Nothing animates today: entities are static coloured quads that teleport to
+   their new transform. Creeps need a walk cycle whose rate follows their
+   effective speed (so a slowed creep visibly slows, exposing the slow that today
+   only shows as a durability change), towers need an idle and an attack matched
+   to the fire cadence, and both need a death animation played before despawn.
+
+   - Files: =assets/models/=, =assets/manifest.ron=, =src/visuals.rs= (or a new =src/animation.rs=)
+   - Acceptance:
+     - [ ] A creep's walk-cycle rate tracks its effective speed including slow.
+     - [ ] A tower's attack animation plays once per shot, matched to the cooldown.
+     - [ ] Death plays to completion before the sprite despawns.
+     - [ ] Animation systems do not run on a windowless dedicated server (=D15=).
+
+** TODO [#B] Produce VFX for impacts, splash, status effects, crit and leak :@content:
+   :PROPERTIES:
+   :ID:         content-006
+   :EFFORT:     1w
+   :BLOCKED-BY: content-005, sim-009
+   :END:
+   Towers damage invisibly on a cooldown with no projectile entities (=D13=), so
+   a player cannot see where damage came from or why a creep survived. Add muzzle
+   flashes, impacts, splash indicators, slow/frost, poison, stun, crit, a
+   gold-rush aura and — most importantly — a leak effect at the destination,
+   because a leak is the moment a mistake becomes visible.
+
+   - Files: =assets/vfx/=, =src/vfx.rs= (or =src/visuals.rs=), =assets/manifest.ron=
+   - Acceptance:
+     - [ ] Each effect is a distinct, pooled sprite effect with a documented duration (tune).
+     - [ ] Splash renders as a ring sized to the tower's actual splash radius.
+     - [ ] Slow, poison and stun markers key off the sim's status effects (=sim-009=), never off a local guess.
+     - [ ] A leak plays a visible effect at the destination / Life Zone.
+
+** TODO [#B] Produce the audio set and a mixing policy :@content:
+   :PROPERTIES:
+   :ID:         content-007
+   :EFFORT:     1w
+   :BLOCKED-BY: content-001
+   :END:
+   There is no audio anywhere in the project. The original reused WC3 unit
+   sounds; this project needs its own set for ambient loop, wave start, boss
+   spawn, leak, build/upgrade/sell, crit, game over, victory and UI clicks. The
+   leak/life-lost sound is the priority, because in the original it is the primary
+   feedback for a player's mistake and it must never be missed.
+
+   - Files: =assets/audio/=, =assets/manifest.ron=, =src/audio.rs=
+   - Acceptance:
+     - [ ] Every listed event has a distinct sound and a defined playback priority.
+     - [ ] The leak alarm ducks the music bed and is never cut off mid-play.
+     - [ ] Music loops seamlessly and is muteable and volume-controllable.
+     - [ ] Audio systems are absent on a dedicated server (=D15=).
+
+** TODO [#B] Choose and ship the fonts used by the panels :@content:
+   :PROPERTIES:
+   :ID:         content-008
+   :EFFORT:     1d
+   :BLOCKED-BY: content-001, ui-017
+   :END:
+   The HUD uses Bevy's default font at =font_size: 18= and nothing is chosen
+   deliberately. Pick and bundle a font that supports the panel layouts in
+   ui-017, including tabular numerals for timers and gold (so values do not
+   jitter) and a documented fallback, and record its licence in the attribution
+   record (content-010).
+
+   - Files: =assets/fonts/=, =assets/manifest.ron=, =src/ui/theme.rs=
+   - Acceptance:
+     - [ ] A bundled font covers the glyphs the panels need, with a documented fallback face.
+     - [ ] Tabular numerals are used for timers and gold so digits do not jitter.
+     - [ ] The font renders at every UI scale from ui-017 without clipping.
+     - [ ] The font's licence and source are listed in content-010's attribution record.
+
+** TODO [#C] Produce the loading screen, map previews and UI icon art :@content:ui:
+   :PROPERTIES:
+   :ID:         content-009
+   :EFFORT:     1d
+   :BLOCKED-BY: content-001
+   :END:
+   The original has a custom loading screen and a custom minimap; the game opens
+   straight into the match today with no loading state. Produce a loading screen,
+   a per-map preview referenced by the map data, and the icon set (tower families
+   with tier decoration, creep kinds, armour types) that the panels and the
+   minimap consume.
+
+   - Files: =assets/ui/=, =assets/manifest.ron=, =src/loading.rs= (or =src/visuals.rs=)
+   - Acceptance:
+     - [ ] A loading screen is shown until the manifest resolves, and a missing asset surfaces a readable error rather than a blank window.
+     - [ ] Each map ships a preview image referenced by its map data (=map-007=).
+     - [ ] A build-panel icon exists for every family, with tier conveyed by decoration rather than a per-tier drawing.
+     - [ ] The loading screen reports progress and never shows an empty window.
+
+** TODO [#A] Build the asset pipeline, manifest and hot reload :@content:
+   :PROPERTIES:
+   :ID:         content-010
+   :EFFORT:     1w
+   :BLOCKED-BY: content-001
+   :END:
+   Define how assets are authored, stored, licensed and loaded, and make a single
+   =manifest.ron= map every model key to its files so art and the balance data can
+   never drift apart. Include hot reload for iteration and a licence/attribution
+   record that release-011 consumes; the on-disk layout also determines whether
+   modding is possible at all (=release-011=).
+
+   - Files: =assets/manifest.ron=, =build.rs= (or =scripts/check-assets=), =CI=, =docs/assets.md=
+   - Acceptance:
+     - [ ] One manifest maps every model key to its files and is loaded at startup.
+     - [ ] CI fails when a balance key has no manifest entry, or a manifest entry is referenced by nothing.
+     - [ ] Hot reload re-reads a changed asset in a dev build without a recompile.
+     - [ ] A licence/attribution record lists every asset's source and licence (=release-011=).
+
+** TODO [#B] Make the game accessible without relying on colour alone :@content:ui:
+   :PROPERTIES:
+   :ID:         content-011
+   :EFFORT:     1d
+   :BLOCKED-BY: content-001, ui-017
+   :END:
+   Armour type and player colour are the only channels distinguishing units
+   today, and colour alone is not accessible. Provide colour-blind-safe
+   armour-type and tier coding (shape or icon as well as hue), text scaling, and
+   a rule that no information is conveyed by colour only; this constrains
+   content-002 through content-006 and the UI palette (=ui-017=).
+
+   - Files: =assets/ui/=, =docs/accessibility.md=, =src/ui/theme.rs=
+   - Acceptance:
+     - [ ] Armour type and tier are conveyed by shape or icon as well as by colour.
+     - [ ] At least one colour-blind-safe palette is selectable and honoured by every player-coloured surface.
+     - [ ] Text scaling from ui-017 enlarges all UI text without clipping.
+     - [ ] A documented accessibility checklist is handed to the release checklist (=release-013=).
+
+* Non-goals
+  - Not a Warcraft III asset clone: no Blizzard art, names, sounds or textures
+    may be used or imitated closely (=content-001=).
+  - No gameplay or balance numbers: creep and tower stats live in
+    [[file:04-waves.org][04-waves.org]] and [[file:05-towers.org][05-towers.org]]; this file only names art
+    for them.
+  - No UI layout decisions: where a panel sits is [[file:10-ui.org][10-ui.org]]; this file
+    supplies assets and the palette.
+  - No voice acting, licensed music or third-party audio that is not
+    licence-clear.
+  - No new TODO keywords; only the six in the header are used.
+
+* Open questions
+  - *2D sprites or 3D models?* Recommended default: 2D sprites for the first
+    pass, because the sim is top-down and the original's units read as billboards;
+    revisit only if a specific effect demands 3D.
+  - *Hot reload in release builds?* Recommended default: dev-only, compiled out of
+    release to keep the shipped binary's asset loading deterministic.
+  - *One tileset per map or a shared base?* Recommended default: a shared base
+    tileset plus per-map decoration, so a new map is data, not a new art set.
+  - *How to make the icon set?* Recommended default: generate icons from the model
+    keys with tier decoration, so a new tier never needs a hand-drawn icon.
+  - *Air/armour slot icon.* The original substitutes a vulture icon for the armour
+    slot on air waves. Recommended default: a distinct neutral air glyph, not a
+    copy of any original icon, defined in =content-001=.

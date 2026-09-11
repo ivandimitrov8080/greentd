@@ -1,0 +1,316 @@
+#+TITLE: greentd — economy
+#+SUBTITLE: Gold, income, bounty, sell values, gambling, lumber, food and the leaver split
+#+TODO: TODO NEXT IN-PROGRESS WAITING BLOCKED | DONE CANCELLED
+#+TAGS: FOUNDATION(f) SIM(s) MAP(m) WAVES(w) TOWERS(t) ECON(e) BUILDER(b) LOBBY(l) NET(n) UI(u) CONTENT(c) TEST(x) RELEASE(r)
+#+FILETAGS: :greentd:
+#+STARTUP: overview indent
+
+This file plans the per-player economy: the resource model that replaces
+=Player { gold, kills, connected }=, end-of-wave gold, income, bounty, sell
+values, food, lumber, gambling, transmute, the leaver split and the HUD data
+contract.  It touches =src/sim.rs= (the =src/sim/economy.rs= and
+=src/sim/rng.rs= modules introduced by [[file:02-simulation.org][02-simulation.org]] =sim-001=),
+=src/game.rs=, =src/protocol.rs=, =src/server.rs=, =src/client.rs= and
+=assets/balance/economy.ron=.  Numbers research could not confirm are marked
+=(tune)=.
+
+* Resource model
+
+** TODO [#A] Replace the flat =Player= record with a full resource model                                                         :@econ:
+   :PROPERTIES:
+   :ID:         econ-001
+   :EFFORT:     1w
+   :END:
+   =Player= is ={ gold: u32, kills: u32, connected: bool }=, and that plus a
+   scattering of literals in =game.rs= and =sim.rs= is the entire economy (D18).
+   A player needs gold plus lumber and food, and the HUD needs income, interest
+   and a tower count, none of which the record can hold.
+
+   - Files: =src/sim/mod.rs=, =src/sim/economy.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] =Player= holds gold, lumber and food (used and cap) plus kills, income, interest and a tower count.
+     - [ ] =START_GOLD= and every other economy literal move to =assets/balance/economy.ron= (found-004).
+     - [ ] Adding a resource is a data change and not a new struct field plus a new literal in each site.
+     - [ ] =players.entry(who).or_default()= no longer mints a zero-gold record that diverges from =add_player= (D8).
+
+* Income and bounty
+
+** TODO [#A] Pay end-of-wave gold starting at 200 and rising 10–20 per wave                                                      :@econ:
+   :PROPERTIES:
+   :ID:         econ-002
+   :EFFORT:     1d
+   :BLOCKED-BY: econ-001
+   :END:
+   The original grants gold at the end of each wave, starting at 200 and rising
+   by 10–20 per wave, but the sim has no end-of-wave payout at all: gold only
+   comes from kills, and =Player.gold= simply starts at the invented
+   =START_GOLD = 300=.
+
+   - Files: =src/sim/economy.rs=, =src/sim/mod.rs=, =assets/balance/economy.ron=
+   - Acceptance:
+     - [ ] A wave completion triggers a gold payout to every connected player.
+     - [ ] The payout starts at 200 and increases by a per-wave increment in the 10–20 range; the exact curve is data and marked  =(tune)=.
+     - [ ] The payout is emitted as a sim event the server can log and the HUD can read.
+     - [ ] A disconnected player is not paid.
+     - [ ] A test advances N waves and asserts the cumulative payout matches the data curve.
+
+** TODO [#A] Implement per-player income from difficulty, modes and skills                                                       :@econ:
+   :PROPERTIES:
+   :ID:         econ-003
+   :EFFORT:     1d
+   :BLOCKED-BY: econ-001, lobby-001
+   :END:
+   Base income by difficulty is Easy 0, Normal 2, Hard 4, Very Hard 6 and Chaos
+   8; each enabled game mode adds +2, each disabled tower adds +2, and the
+   Income Bonus skill adds +1 for all players per take up to +5 per player.
+
+   - Files: =src/sim/economy.rs=, =src/game.rs=, =assets/balance/economy.ron=
+   - Acceptance:
+     - [ ] Base income is difficulty data with exactly the values 0/2/4/6/8.
+     - [ ] Each enabled game mode adds +2 and each disabled tower adds +2, both taken from the lobby settings ([[file:08-lobby.org][08-lobby.org]]).
+     - [ ] The Income Bonus skill adds +1 for every player per take, capped at 5 per player ([[file:07-builder.org][07-builder.org]] =builder-005=).
+     - [ ] The file states whether income is paid on a timer, at end of wave, or both, and a test asserts the chosen behaviour.
+
+** TODO [#A] Scale per-creep bounty by kind, wave and difficulty                                                                 :@econ:
+   :PROPERTIES:
+   :ID:         econ-004
+   :EFFORT:     1d
+   :BLOCKED-BY: econ-001, waves-001, waves-004
+   :END:
+   Bounty today is =6 + self.wave / 2=, one formula for every creep.  The
+   original pays bounty per creep by kind and wave, applies the difficulty
+   multiplier (Easy 75%, Normal 100%, Hard 125%, Very Hard 150%, Chaos 200–400%),
+   and adds periodic bonuses.
+
+   - Files: =src/sim/economy.rs=, =assets/balance/economy.ron=, =src/sim/waves.rs=
+   - Acceptance:
+     - [ ] Bounty is per creep kind and per wave, from data, replacing the =6 + wave/2= literal.
+     - [ ] The difficulty multiplier is applied: Easy 75%, Normal 100%, Hard 125%, Very Hard 150%, Chaos 200–400%.
+     - [ ] "Every 10 waves 1k gold bounty", the raised final-wave bounty of 300 and the 50-gold Gold Rush kill are representable as data and marked  =(tune)=.
+     - [ ] Bounty paid is visible in the telemetry of econ-012.
+
+** TODO [#A] Attribute kills and route bounty to the last hitter                                                                 :@econ:
+   :PROPERTIES:
+   :ID:         econ-005
+   :EFFORT:     1d
+   :BLOCKED-BY: econ-001, econ-004
+   :END:
+   Bounty already goes to =creep.last_hit_by=, but there is no assist credit and
+   no rule for the confirmed "players below average kills gain bonus gold at the
+   end of each wave" behaviour.  Attribution must survive a hit that deals zero
+   net damage through the armour matrix
+   ([[file:02-simulation.org][02-simulation.org]] =sim-009=).
+
+   - Files: =src/sim/economy.rs=, =src/sim/combat.rs=, =src/sim/mod.rs=
+   - Acceptance:
+     - [ ] Bounty for a kill is paid to the creep's =last_hit_by=.
+     - [ ] A hit that deals zero net damage still updates =last_hit_by=, so the armour matrix cannot steal a kill.
+     - [ ] A player below the average kill count receives the end-of-wave bonus gold.
+     - [ ] Kill credit from a damage-over-time or trap effect routes to that effect's owner.
+     - [ ] A test asserts a kill contested by two towers pays exactly one bounty.
+
+* Spending, food and lumber
+
+** TODO [#A] Make sell values per-difficulty and refund the owner                                                                 :@econ:
+   :PROPERTIES:
+   :ID:         econ-006
+   :EFFORT:     1d
+   :BLOCKED-BY: econ-001, audit-001, tower-017
+   :END:
+   Selling is ability-based with "different sell values for the selected
+   difficulty"; one variant returns 100% at level 1 and 50% above it, while
+   =try_sell= refunds the caller (D2) with a flat 70%.  The intent mechanics —
+   the two-click confirm, swap and the floating text — live in
+   [[file:05-towers.org][05-towers.org]] =tower-017=; this task owns the values and the refund destination.
+
+   - Files: =src/sim/economy.rs=, =assets/balance/economy.ron=, =src/client.rs=
+   - Acceptance:
+     - [ ] Sell value is data per difficulty and per tier, replacing the flat 70% literal.
+     - [ ] The refund is credited to the tower's owner, closing D2.
+     - [ ] The sell value is visible to the seller as floating text before the sale commits.
+     - [ ] A test sells a level-1 and a level-5 tower and asserts the configured percentages.
+     - [ ] The exact sell percentages are marked  =(tune)= as only their shape is confirmed.
+
+** TODO [#A] Implement the food cap and reject builds at the limit                                                               :@econ:
+   :PROPERTIES:
+   :ID:         econ-007
+   :EFFORT:     1d
+   :BLOCKED-BY: econ-001
+   :END:
+   Later versions cap food at 10, charge food for every tower, and exempt Aura
+   towers and Trap blueprints; the Food Bonus skill adds +1 up to +5.
+   =try_build= has no food concept, so the build action must reject once the cap
+   is reached, which needs a new =Reject= variant (D25).
+
+   - Files: =src/sim/economy.rs=, =src/sim/mod.rs=, =src/protocol.rs=
+   - Acceptance:
+     - [ ] The food cap, the per-tower food cost and the Aura/Trap exemptions from [[file:05-towers.org][05-towers.org]] (=tower-013=, =tower-015=) are data; the cap defaults to 10  =(tune)=.
+     - [ ] The Food Bonus skill adds +1 to the cap up to +5 ([[file:07-builder.org][07-builder.org]] =builder-007=).
+     - [ ] A build is rejected with a new =NotEnoughFood= reason when it would exceed the cap.
+     - [ ] Food is returned when a tower is sold or destroyed.
+     - [ ] A test builds up to the cap and asserts the next build is rejected and charged nothing.
+
+** TODO [#B] Decide and implement lumber as a second resource                                                                   :@econ:
+   :PROPERTIES:
+   :ID:         econ-008
+   :EFFORT:     1d
+   :BLOCKED-BY: econ-001
+   :END:
+   Later versions "use Lumber" and let you "Trade Wood to Upgrade Towers", but
+   lumber's source and sink are not confirmed.  Model it as a real resource with
+   a data-driven source and sink and decide whether it is on by default.
+
+   - Files: =src/sim/economy.rs=, =assets/balance/economy.ron=, =src/protocol.rs=
+   - Acceptance:
+     - [ ] Lumber is a resource on =Player= with a HUD field.
+     - [ ] Where lumber comes from (per-wave grant, creep drops or conversion) and what it buys (upgrades or research) is stated in data and documented.
+     - [ ] Whether lumber is enabled is a match setting, and the default is recorded.
+     - [ ] When lumber is disabled, no lumber is granted or spent and the HUD hides it.
+     - [ ] All lumber numbers are marked  =(tune)= as research could not confirm them.
+
+** TODO [#B] Implement Transmute as a timed tower-to-gold conversion                                                             :@econ:
+   :PROPERTIES:
+   :ID:         econ-010
+   :EFFORT:     1d
+   :BLOCKED-BY: econ-001, tower-014
+   :END:
+   A Transmute ability converts a target into gold (or the reverse) with a
+   15-minute cooldown and 1200 range, shared with the Spell tower's Transmute
+   ([[file:05-towers.org][05-towers.org]] =tower-014=).  The cooldown and range are  =(tune)= as only
+   their order of magnitude is confirmed.
+
+   - Files: =src/sim/economy.rs=, =src/sim/abilities.rs=, =assets/balance/economy.ron=
+   - Acceptance:
+     - [ ] Transmute has a cooldown and range in data, defaulting to 15 minutes and 1200  =(tune)=.
+     - [ ] Transmuting a tower credits its owner gold and removes or replaces the tower as the data specifies.
+     - [ ] A cast in cooldown or out of range is rejected with a reason.
+     - [ ] Transmute's effect on the economy is recorded by the econ-012 telemetry.
+
+* Gambling
+
+** TODO [#A] Implement gambling, jackpots and the Gamble Bonus skill                                                             :@econ:
+   :PROPERTIES:
+   :ID:         econ-009
+   :EFFORT:     1w
+   :BLOCKED-BY: econ-001, found-009
+   :END:
+   The map has a Gamble ability, a jackpot, =-jackpot= and =-greed [PlyNum]=
+   commands, and a Gamble Bonus skill (+15 to the roll per take, up to +75 /
+   7.5%); the jackpot base was raised from 25 to 30, and one version makes the
+   first gamble free.  All of it must be server-authoritative and use the match
+   RNG ([[file:00-foundation.org][00-foundation.org]] =found-009=).
+
+   - Files: =src/sim/economy.rs=, =src/sim/rng.rs=, =src/protocol.rs=
+   - Acceptance:
+     - [ ] A Gamble intent is server-authoritative: the server rolls and reports the outcome, and the client never decides it.
+     - [ ] The roll draws from the match RNG so a replay reproduces every outcome.
+     - [ ] The jackpot accumulates from failed gambles, pays out on a win, then resets; the base is 30 and the payout maths is marked  =(tune)=.
+     - [ ] The Gamble Bonus skill adds +15 per take up to +75 and is summed into the roll ([[file:07-builder.org][07-builder.org]] =builder-009=).
+     - [ ] The =-jackpot= and =-greed [PlyNum]= commands have the same effect as the corresponding UI actions.
+     - [ ] A test with a fixed seed reproduces an exact jackpot and payout sequence.
+
+* Match lifecycle and telemetry
+
+** TODO [#A] Split a leaver's gold among the remaining players                                                                    :@econ:
+   :PROPERTIES:
+   :ID:         econ-011
+   :EFFORT:     1d
+   :BLOCKED-BY: econ-001, net-001
+   :END:
+   "If a player leaves, his current gold will be split among the remaining
+   players."  =remove_player= today only clears =connected=, leaving the gold
+   stranded and the towers orphaned (D27).  The split must be authoritative and
+   must not depend on the leaving peer's last packet
+   ([[file:09-networking.org][09-networking.org]] =net-001=).
+
+   - Files: =src/sim/economy.rs=, =src/sim/mod.rs=, =src/server.rs=
+   - Acceptance:
+     - [ ] When a player leaves, their current gold is divided among the remaining connected players.
+     - [ ] The rounding rule for a remainder is defined and neither creates nor destroys gold.
+     - [ ] A leaver with no remaining connected teammates triggers no split.
+     - [ ] The fate of the leaver's towers is out of scope here and is a tower-side rule ([[file:05-towers.org][05-towers.org]]); those towers pay no bounty to a disconnected key.
+     - [ ] D27 is closed.
+
+** TODO [#B] Record per-wave economy telemetry for balancing                                                                     :@econ:
+   :PROPERTIES:
+   :ID:         econ-012
+   :EFFORT:     2h
+   :BLOCKED-BY: econ-002, econ-004
+   :END:
+   The difficulty curve cannot be tuned by playing 36 waves.  Record per-wave
+   gold earned (income, bounty, bonuses) against gold spent, per player and in
+   aggregate, so the curve can be plotted offline.
+
+   - Files: =src/sim/economy.rs=, =docs/balance.org=, =src/sim/mod.rs=
+   - Acceptance:
+     - [ ] Per wave, each player's income, bounty, bonus and total spending are recorded.
+     - [ ] Telemetry is emitted as data a tool can read (a log line or a dump) without changing sim state.
+     - [ ] Telemetry is recomputable from the sim event stream and is therefore not replicated.
+     - [ ] A headless run writes a file usable to plot gold over waves.
+
+** TODO [#A] Define starting resources for a fresh and a mid-match player                                                        :@econ:
+   :PROPERTIES:
+   :ID:         econ-013
+   :EFFORT:     1d
+   :BLOCKED-BY: econ-001, lobby-001
+   :END:
+   =START_GOLD = 300= is an invented value (Green TD Evolution settled on 500,
+   one Green Circle TD used 2000; the original is unknown), and a player joining
+   mid-match starts at wave N with only that and no catch-up (D24).
+
+   - Files: =src/sim/economy.rs=, =src/game.rs=, =assets/balance/economy.ron=
+   - Acceptance:
+     - [ ] The starting gold is data and marked  =(tune)=; the default is recorded and differs from the unconfirmed =START_GOLD = 300=.
+     - [ ] Starting food and lumber (if enabled) are data.
+     - [ ] A mid-match joiner receives a documented catch-up: at minimum the cumulative end-of-wave gold they missed, configurable per match.
+     - [ ] D24 is closed.
+
+** TODO [#B] Define the economy HUD data contract                                                                               :@econ:
+   :PROPERTIES:
+   :ID:         econ-014
+   :EFFORT:     1d
+   :BLOCKED-BY: econ-001
+   :END:
+   =PlayerView= carries only =gold= and =kills=, so the HUD cannot show income,
+   interest, food, lumber or a sell value.  Decide what the server replicates
+   versus what the client derives from shared data, keeping the client a dumb
+   renderer.
+
+   - Files: =src/protocol.rs=, =src/sim/economy.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] =PlayerView= (or its successor) carries every per-player number the HUD shows, and nothing the client can derive.
+     - [ ] The client renders gold, income, interest, food and lumber without simulating.
+     - [ ] Floating text (income, bounty, sell value) has a defined replication or derivation rule.
+     - [ ] The contract is documented, and a test asserts every displayed field has a source.
+
+* Non-goals
+
+  - Not the wave contents or the difficulty definitions
+    ([[file:04-waves.org][04-waves.org]], [[file:08-lobby.org][08-lobby.org]]); this file only consumes their
+    multipliers and settings.
+  - Not the builder-skill implementations
+    ([[file:07-builder.org][07-builder.org]]); the Income, Food, Gamble and Gold bonuses are budgeted
+    here and implemented there.
+  - Not the HUD widget layout ([[file:10-ui.org][10-ui.org]]); only the data contract is
+    defined here.
+  - Not the tower-side sell/swap intent mechanics
+    ([[file:05-towers.org][05-towers.org]] =tower-017=); this file owns the values and the refund
+    destination.
+
+* Open questions
+
+  - Exact end-of-wave gold curve (200 start, 10–20 step).  Recommended default:
+    start 200, +15 per wave  =(tune)=.
+  - Starting gold.  Recommended default: 500 (Evolution)  =(tune)=.
+  - Whether income ticks on a timer, at wave end, or both.  Recommended default:
+    at end of wave only, to keep it replayable.
+  - Food cap.  Recommended default: 10  =(tune)=.
+  - Whether lumber is on by default.  Recommended default: off for the faithful
+    36-wave modes, on for the Evolution-style modes.
+  - Jackpot base and payout maths.  Recommended default: base 30, payout
+    = 2 × base + accumulated  =(tune)=.
+  - Transmute conversion rate, and whether it may create gold from nothing.
+    Recommended default: converts at the tower's current sell value and never
+    creates gold outright.
+  - "Every 10 waves 1k gold" and "final waves 300".  Recommended default:
+    implement both as data toggles, marked  =(tune)=.

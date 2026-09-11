@@ -1,0 +1,371 @@
+#+TITLE: greentd — waves
+#+SUBTITLE: The creep catalogue, the finite wave table, wave kinds, difficulty scaling and every game mode's wave variant
+#+TODO: TODO NEXT IN-PROGRESS WAITING BLOCKED | DONE CANCELLED
+#+TAGS: FOUNDATION(f) SIM(s) MAP(m) WAVES(w) TOWERS(t) ECON(e) BUILDER(b) LOBBY(l) NET(n) UI(u) CONTENT(c) TEST(x) RELEASE(r)
+#+FILETAGS: :greentd:
+#+STARTUP: overview indent
+
+Waves are the pace of the match: which creeps, how many, how tough and how
+fast. Today =start_wave= in =src/sim.rs= emits one anonymous creep from three
+formulas and loops forever — no armour, no air, no immune wave, no boss, no
+hero, no difficulty and no modes. This file specifies the creep catalogue, the
+finite wave table, the wave kinds, difficulty scaling and each mode's wave
+variant, as data under =assets/balance= (decide-data-driven). The sim machinery
+that consumes this data lives in [[file:02-simulation.org][02-simulation.org]].
+
+* The creep catalogue
+
+** TODO [#A] Model the creep catalogue as data   :@waves:
+   :PROPERTIES:
+   :ID:         waves-001
+   :EFFORT:     1w
+   :END:
+   Creeps are uniform today: =start_wave= sets =hp = 45 * (1 + 0.28*(w-1))=,
+   =speed = 55 + 2*(w-1)= and =bounty = 6 + w/2= inline, so a creep has no name,
+   armour type, air flag or model (D11, D18). Define a creep catalogue as the
+   unit of balance and the join key between the wave table and the art pass.
+
+   - Files: =assets/balance/creeps.ron=, =src/game.rs=, =src/sim.rs=
+   - Acceptance:
+     - [ ] Every entry declares id, model key, health, regen, armour type, movement type (ground/air), speed, bounty, leak cost, size and flags (boss/hero/immune/spell-immune).
+     - [ ] The loader rejects an entry with a missing field or an unknown armour type, and rejects =air= movement with a ground-only flag.
+     - [ ] The catalogue contains at least one air creep and one Divine-armour (immune) creep, both referenced by the wave table.
+     - [ ] The catalogue is hashed into the protocol version so a peer with different creep data is rejected (net-001).
+
+** TODO [#C] Decide and implement creep health regeneration   :@waves:
+   :PROPERTIES:
+   :ID:         waves-017
+   :EFFORT:     2h
+   :BLOCKED-BY: waves-001
+   :END:
+   The catalogue carries =regen=, but nothing consumes it yet, so it is dead
+   data. Decide whether it is per-second, whether it is suppressed while under
+   attack, and how it interacts with poison ([[file:02-simulation.org][02-simulation.org]] =sim-008=),
+   and make it live.
+
+   - Files: =src/sim.rs=, =assets/balance/creeps.ron=
+   - Acceptance:
+     - [ ] =regen= is applied each tick and never raises =hp= above =max_hp=.
+     - [ ] The decision on suppression by incoming damage is recorded as a note in =creeps.ron=.
+     - [ ] Regeneration never resurrects a creep once =hp <= 0=.
+     - [ ] A test asserts a wounded, unattacked creep recovers at the catalogue rate.
+
+** TODO [#C] Define the creep ability vocabulary   :@waves:
+   :PROPERTIES:
+   :ID:         waves-018
+   :EFFORT:     2h
+   :BLOCKED-BY: waves-001
+   :END:
+   The =abilities= field is only useful if its vocabulary is fixed. Enumerate
+   the abilities the original's creeps actually use (heal, haste, spell
+   immunity, and the one changelog mention of "Creep Teleporting" =(tune)=) with
+   a data shape, so a wave can be made interesting without code.
+
+   - Files: =assets/balance/creeps.ron=, =src/sim.rs=
+   - Acceptance:
+     - [ ] The ability vocabulary is an explicit closed list with parameters.
+     - [ ] Each ability has an implementation hook in the sim ([[file:02-simulation.org][02-simulation.org]] =sim-020=) or an explicit =TODO= saying it is unimplemented.
+     - [ ] An unknown ability name in data is a load-time error, not silently ignored.
+     - [ ] "Creep Teleporting" is either implemented or explicitly marked unimplemented =(tune)=.
+
+* The wave table
+
+** TODO [#A] Make the wave table finite and choose the default length   :@waves:
+   :PROPERTIES:
+   :ID:         waves-002
+   :EFFORT:     1w
+   :BLOCKED-BY: waves-001
+   :END:
+   =start_wave= loops =wave += 1= forever and derives everything from formulas,
+   so it cannot express "wave 30 is a hero wave". Replace it with an explicit
+   finite table. *Decision:* ship 60 waves as the default (Lineage B "Evolution",
+   which contains the 36-wave "PROs" line as a prefix), with 36 selectable as a
+   match-length setting over the same file.
+
+   - Files: =assets/balance/waves.ron=, =src/game.rs=, =src/sim.rs=
+   - Acceptance:
+     - [ ] =waves.ron= is an explicit finite list; adding or retuning a wave is a data edit with no code change.
+     - [ ] The 60-wave default and the 36-wave prefix variant are both expressible as a match-length setting using one file, and the reasoning is recorded as a =Decision= note.
+     - [ ] Retuning wave 20 changes only wave 20; a test asserts waves 1-19 and 21 are unchanged.
+     - [ ] The formula from =start_wave= is no longer used inside the finite range (fixes D18).
+
+** TODO [#A] Define the wave kinds and their combinations   :@waves:
+   :PROPERTIES:
+   :ID:         waves-003
+   :EFFORT:     1w
+   :BLOCKED-BY: waves-001, waves-002
+   :END:
+   The original's waves are typed and a wave can be several kinds at once. Model
+   Normal, Air, Immune (Divine armour, every 5th wave, hurt only by Chaos), Boss
+   (three boss levels), Hero (hero armour; hero towers deal 300% versus hero
+   armour) and Bonus, each with a documented behaviour and notification.
+
+   - Files: =assets/balance/waves.ron=, =src/sim.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] Each wave declares one or more kinds and a wave may carry several simultaneously (for example air + boss).
+     - [ ] Immune waves use Divine armour and appear at least every 5 waves; the sim lets only Chaos damage hurt them ([[file:02-simulation.org][02-simulation.org]] =sim-002=).
+     - [ ] Boss waves appear as three boss levels; a killed hero creep is removed permanently and does not re-enter the wave; hero towers deal 300% versus hero armour (tower-001).
+     - [ ] Air waves contain only air creeps and towers whose filter excludes air cannot target them (tower-001).
+
+** TODO [#B] Model wave composition as spawn groups   :@waves:
+   :PROPERTIES:
+   :ID:         waves-015
+   :EFFORT:     2h
+   :BLOCKED-BY: waves-002
+   :END:
+   A wave is often several creep types — a fast body behind a tank, or an air
+   escort with a ground body — but a wave entry is currently a single kind. Let a
+   wave hold an ordered list of spawn groups.
+
+   - Files: =assets/balance/waves.ron=, =src/sim.rs=
+   - Acceptance:
+     - [ ] A wave entry holds an ordered list of groups, each naming a creep id and a count.
+     - [ ] A single-group wave behaves exactly as the simple case.
+     - [ ] Group order is spawn order along the path.
+     - [ ] The total count across groups is what Swarm doubles and what the multiboard reports.
+
+** TODO [#C] Validate wave and creep data at load   :@waves:
+   :PROPERTIES:
+   :ID:         waves-016
+   :EFFORT:     1d
+   :BLOCKED-BY: waves-001, waves-002, waves-003
+   :END:
+   Hand-tuned data drifts. Fail loudly at load rather than spawning a broken
+   wave, so authors get errors at startup instead of mid-match.
+
+   - Files: =assets/balance/waves.ron=, =assets/balance/creeps.ron=, =src/game.rs=
+   - Acceptance:
+     - [ ] The loader rejects a wave referencing an unknown creep id.
+     - [ ] The loader warns when the immune cadence (every 5) or boss cadence (roughly every 10) is broken, naming the offending wave.
+     - [ ] The loader rejects an air wave containing a ground-only creep and vice versa.
+     - [ ] All problems are reported in one pass, not just the first.
+
+* Difficulty
+
+** TODO [#A] Apply the five difficulty multipliers and Chaos variants   :@waves:
+   :PROPERTIES:
+   :ID:         waves-004
+   :EFFORT:     1d
+   :BLOCKED-BY: waves-002, lobby-002
+   :END:
+   There is no difficulty. Add the five documented difficulties as data, plus
+   Chaos variants that randomise each wave's HP between two values. The original
+   has a bug where leaving Chaos during setup leaves the chaos state active; that
+   must be impossible here.
+
+   - Files: =assets/balance/difficulty.ron=, =src/game.rs=, =src/sim.rs=
+   - Acceptance:
+     - [ ] The five difficulties carry the health and bounty multipliers below as data, applied to creeps at spawn.
+     - [ ] Chaos variants randomise each wave's HP between two data-defined values, using the seeded RNG ([[file:02-simulation.org][02-simulation.org]] =sim-012=).
+     - [ ] Switching from a Chaos difficulty to a non-Chaos one during setup clears the chaos state; a regression test reproduces the original bug's input sequence and asserts it does not occur.
+     - [ ] Difficulty is fixed match state agreed by every peer; no client holds a different multiplier from the host.
+
+   | Difficulty | HP     | Bounty | Income |
+   |------------+--------+--------+--------|
+   | Easy       | 75%    | 75%    | 0      |
+   | Normal     | 100%   | 100%   | 2      |
+   | Hard       | 125%   | 125%   | 4      |
+   | Very Hard  | 150%   | 150%   | 6      |
+   | Chaos      | 200-400% =(tune)= | 200-400% =(tune)= | 8 |
+
+* Modes
+
+** TODO [#A] Implement Endless mode with per-wave growth   :@waves:
+   :PROPERTIES:
+   :ID:         waves-005
+   :EFFORT:     1w
+   :BLOCKED-BY: waves-002
+   :END:
+   After the finite table the original keeps spawning, gaining armour and health
+   each wave; combined with Random Waves it runs to 300 waves. Implement Endless
+   as the only consumer of the old formula.
+
+   - Files: =src/sim.rs=, =src/game.rs=, =assets/balance/waves.ron=
+   - Acceptance:
+     - [ ] Past the last table wave, spawning continues and each wave gains the data-defined health and armour growth.
+     - [ ] The creep model exposes a numeric armour value so "armour growth" is meaningful alongside the discrete armour type ([[file:02-simulation.org][02-simulation.org]] =sim-003=).
+     - [ ] Endless preserves the normal kind cadence (immune every 5, boss every 10).
+     - [ ] When Random Waves is also enabled, Endless stops at wave 300 and the match ends with an explicit result (see =waves-006=).
+
+** TODO [#B] Implement Random Waves mode   :@waves:
+   :PROPERTIES:
+   :ID:         waves-006
+   :EFFORT:     1w
+   :BLOCKED-BY: waves-002
+   :END:
+   Random Waves draws from a 301-unit pool across 7 armour types (43 per type);
+   Divine-armour random waves are *not* immune, and bosses can generate. It also
+   interacts with the Endless cap.
+
+   - Files: =assets/balance/random-waves.ron=, =src/sim.rs=
+   - Acceptance:
+     - [ ] The pool holds 301 units distributed as 43 per each of the 7 armour types; the loader rejects a pool that does not.
+     - [ ] A random wave on Divine armour is not treated as immune and does not require Chaos to damage.
+     - [ ] Bosses can generate randomly and obey the normal boss rules (=waves-003=).
+     - [ ] With Endless also enabled, Random Waves respects the 300-wave cap (=waves-005=).
+
+** TODO [#B] Implement Swarm mode   :@waves:
+   :PROPERTIES:
+   :ID:         waves-007
+   :EFFORT:     2h
+   :BLOCKED-BY: waves-002
+   :END:
+   Swarm doubles the creeps per wave, excluding bosses. It is a data multiplier
+   over the wave table applied after player-count scaling.
+
+   - Files: =assets/balance/modes.ron=, =src/sim.rs=
+   - Acceptance:
+     - [ ] Swarm doubles the per-wave count and leaves boss waves at their normal count.
+     - [ ] The doubling is applied after difficulty and player-count scaling and is identical on every peer.
+     - [ ] A test asserts a boss wave under Swarm is not doubled while a normal wave is.
+     - [ ] The multiplier comes from =modes.ron=, not a code literal.
+
+** TODO [#B] Implement Blitz mode   :@waves:
+   :PROPERTIES:
+   :ID:         waves-008
+   :EFFORT:     1d
+   :BLOCKED-BY: sim-007
+   :END:
+   Blitz spawns waves on a timer instead of after the previous wave is cleared,
+   which is impossible while the sim has no wave-completion concept. It depends
+   on the wave-completion state from [[file:02-simulation.org][02-simulation.org]] =sim-007=.
+
+   - Files: =assets/balance/modes.ron=, =src/sim.rs=
+   - Acceptance:
+     - [ ] In Blitz the next wave starts on the timer regardless of live creeps; in normal mode it waits for a clear or a timeout.
+     - [ ] The mode reads =sim-007='s =WaveCleared= event and does not reimplement clear detection.
+     - [ ] A test runs two full waves without clearing the first and asserts both spawn under Blitz but only one under normal.
+     - [ ] The mode is data in =modes.ron=.
+
+** TODO [#B] Implement Speed mode   :@waves:
+   :PROPERTIES:
+   :ID:         waves-009
+   :EFFORT:     2h
+   :BLOCKED-BY: waves-008, sim-007
+   :END:
+   Speed shortens the wave timer and forces creep movespeed to 400 =(tune)=. It
+   is a data change over the timer from =sim-007= and the creep speed field.
+
+   - Files: =assets/balance/modes.ron=, =src/sim.rs=
+   - Acceptance:
+     - [ ] Speed reduces the wave timer to the data-defined value.
+     - [ ] Speed forces creep movement speed to 400 =(tune)=, overriding the catalogue speed but still allowing slows ([[file:02-simulation.org][02-simulation.org]] =sim-008=).
+     - [ ] A test asserts a Speed creep moves at 400 and a slowed one below it.
+     - [ ] The 400 value is data and is marked =(tune)=.
+
+** TODO [#B] Implement Headhunter mode   :@waves:
+   :PROPERTIES:
+   :ID:         waves-010
+   :EFFORT:     1d
+   :BLOCKED-BY: waves-002, sim-006
+   :END:
+   Headhunter spawns random bosses; killing one gives everyone gold and leaking
+   one depletes all lives for an instant loss. It reuses the boss kind
+   (=waves-003=) and the leak event from [[file:02-simulation.org][02-simulation.org]] =sim-006=.
+
+   - Files: =assets/balance/modes.ron=, =src/sim.rs=
+   - Acceptance:
+     - [ ] Headhunter injects randomly chosen bosses into waves using the seeded RNG.
+     - [ ] Killing a Headhunter boss grants gold to all connected players, applied once per boss.
+     - [ ] Leaking a Headhunter boss ends the match immediately with a defeat.
+     - [ ] The mode is data in =modes.ron= and interacts correctly with the active lose rule (=sim-005=).
+
+** TODO [#B] Implement Gold Rush mode   :@waves:
+   :PROPERTIES:
+   :ID:         waves-011
+   :EFFORT:     1d
+   :BLOCKED-BY: waves-002, sim-009
+   :END:
+   Above 60% HP a creep being attacked has a 10% chance to enter a gold rush,
+   gaining health, armour and movespeed; leaking it costs 5 lives and the killer
+   gets 50 gold. It needs the damage hook ([[file:02-simulation.org][02-simulation.org]] =sim-009=)
+   and the leak/lives model (=sim-006=).
+
+   - Files: =assets/balance/modes.ron=, =src/sim.rs=
+   - Acceptance:
+     - [ ] A creep above 60% HP that is attacked rolls a 10% chance to enter a gold rush with the data-defined gains.
+     - [ ] Leaking a gold-rushing creep deducts 5 lives rather than the standard leak cost.
+     - [ ] The killer of a gold-rushing creep receives 50 gold.
+     - [ ] The 10% roll uses the seeded RNG so peers agree ([[file:02-simulation.org][02-simulation.org]] =sim-012=).
+
+* Timing and pacing
+
+** TODO [#A] Define the wave timing model and early-send   :@waves:
+   :PROPERTIES:
+   :ID:         waves-012
+   :EFFORT:     1d
+   :BLOCKED-BY: sim-007
+   :END:
+   Timing today is a flat =WAVE_INTERVAL = 20.0= with the first wave at 3.0 s and
+   an unbounded =CallWave= (D6). Design the real model here — inter-wave gap,
+   wave-clear rule, and a bounded "call next wave early" mechanic — even though
+   the authority and cooldown fix itself lives in the audit (audit-001).
+
+   - Files: =src/sim.rs=, =src/game.rs=, =assets/balance/waves.ron=
+   - Acceptance:
+     - [ ] The wave interval is data per mode and difficulty, not the =WAVE_INTERVAL = 20.0= literal.
+     - [ ] The first-wave delay and the inter-wave gap are separate, documented values.
+     - [ ] The "call next wave early" mechanic is specified: who may call it, whether it costs or rewards, and its cooldown (enforcement is audit-001 and D6).
+     - [ ] Early-send cannot spawn two waves in one step.
+
+* Tooling and communication
+
+** TODO [#B] Build a wave balancing harness   :@waves:
+   :PROPERTIES:
+   :ID:         waves-013
+   :EFFORT:     1w
+   :BLOCKED-BY: waves-002, sim-002
+   :END:
+   Tuning 60 waves by playing them is not viable. Build a harness that computes a
+   wave's total effective HP against a given tower set, so a change can be judged
+   from a table instead of a playtest.
+
+   - Files: =tests/wave_balance.rs=, =src/sim.rs=
+   - Acceptance:
+     - [ ] The harness reports, per wave, total effective HP after armour/damage multipliers against a named tower loadout.
+     - [ ] It reports per-wave gold cost to clear versus bounty earned, so income can be checked.
+     - [ ] It runs headless with no window and is part of the test suite (test-001).
+     - [ ] Its numbers come from the same data files the sim spawns from, so it cannot drift.
+
+** TODO [#B] Add wave announcements and the info commands   :@waves:
+   :PROPERTIES:
+   :ID:         waves-014
+   :EFFORT:     1d
+   :BLOCKED-BY: waves-003, sim-011
+   :END:
+   The client cannot tell a wave began (D5) and there are no =-waves= / =-air= /
+   =-immune= / =-boss= / =-hero= info commands. Publish the current and next wave
+   descriptors as data and answer the commands from the same table.
+
+   - Files: =src/protocol.rs=, =src/server.rs=, =assets/balance/waves.ron=
+   - Acceptance:
+     - [ ] A wave-start announcement carries the wave number and the lead creep's name and armour type.
+     - [ ] =-waves= lists the next five waves' descriptors; =-air=, =-immune=, =-boss= and =-hero= list the waves containing each kind.
+     - [ ] Announcements come from the same table the sim spawns from and never disagree with it.
+     - [ ] Announcements survive the wave-clear transition without duplicating or skipping a wave number.
+
+* Non-goals
+
+  - The sim step loop, projectile handling and the lose/win rules: [[file:02-simulation.org][02-simulation.org]].
+  - The tower roster, tiers, auras and target filters: [[file:05-towers.org][05-towers.org]].
+  - Income, bounty tables and gold scaling: [[file:06-economy.org][06-economy.org]].
+  - The lobby, difficulty selection UI and game-mode toggles: [[file:08-lobby.org][08-lobby.org]].
+  - The multiboard and toasts that render announcements: [[file:10-ui.org][10-ui.org]].
+  - Creep art, models and animation: [[file:11-content.org][11-content.org]].
+
+* Open questions
+
+  - *Exact creep HP/speed/bounty curves per wave.* Not documented. Default:
+    seed the table from today's =hp = 45*(1+0.28*(w-1))=, =speed = 55+2*(w-1)=,
+    =bounty = 6+w/2=, all =(tune)=.
+  - *Exact damage-vs-armour multipliers used by the harness.* See
+    [[file:02-simulation.org][02-simulation.org]] =sim-002=; all =(tune)=.
+  - *Which waves are boss and hero waves.* "3 boss levels" and a wave-30 Illidan
+    hero are the only confirmations. Default: bosses at 10/20/30, hero at 30
+    =(tune)=.
+  - *Are immune waves fully immune or only resistant?* Default: full immunity
+    to non-Chaos, =(tune)= (=sim-002=).
+  - *Exact Speed-mode timer and movespeed.* 400 movespeed is quoted; the timer
+    is not. Default: 400 and a halved interval, =(tune)=.
+  - *Which tower loadout the harness should judge against.* Not decided. Default:
+    a fixed reference loadout of the three existing towers, =(tune)=.

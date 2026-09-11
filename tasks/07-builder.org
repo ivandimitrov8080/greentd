@@ -1,0 +1,259 @@
+#+TITLE: greentd — builder
+#+SUBTITLE: The builder hero, XP, skill points, emergency towers, mana and the Command Book
+#+TODO: TODO NEXT IN-PROGRESS WAITING BLOCKED | DONE CANCELLED
+#+TAGS: FOUNDATION(f) SIM(s) MAP(m) WAVES(w) TOWERS(t) ECON(e) BUILDER(b) LOBBY(l) NET(n) UI(u) CONTENT(c) TEST(x) RELEASE(r)
+#+FILETAGS: :greentd:
+#+STARTUP: overview indent
+
+This file plans the builder hero that the client does not yet have at all: its
+entity and position, XP and levels, skill points, the seven skills, its mana
+pool, auto-blink and the Command Book.  It touches =src/sim.rs= (the new
+=src/sim/builder.rs= module), =src/protocol.rs=, =src/server.rs=,
+=src/client.rs=, =src/visuals.rs= and =assets/balance/builder.ron=.  Numbers
+research could not confirm are marked =(tune)=.
+
+* The builder entity
+
+** TODO [#A] Introduce the builder as a player-owned hero entity                                                                 :@builder:
+   :PROPERTIES:
+   :ID:         builder-001
+   :EFFORT:     1w
+   :END:
+   The client has no builder at all: a left-click is translated straight into
+   =ClientCmd::Build { x, y, kind }= in =src/client.rs= with no unit and no
+   position.  Give each player a builder unit with a position on the map and make
+   the build command originate from it; that is also what gives range-limited
+   building and auto-blink anything to measure.
+
+   - Files: =src/sim/builder.rs=, =src/protocol.rs=, =src/visuals.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] Each player owns exactly one builder with a position on the map, replicated to every peer.
+     - [ ] A =ClientCmd::Build= is validated against the builder's position and is no longer accepted unconditionally.
+     - [ ] The builder is an authority-owned sim entity; a client cannot teleport it arbitrarily.
+     - [ ] A player with no builder cannot build.
+
+** TODO [#A] Give the builder a mana pool                                                                                       :@builder:
+   :PROPERTIES:
+   :ID:         builder-010
+   :EFFORT:     1d
+   :BLOCKED-BY: builder-001
+   :END:
+   The builder's mana pays for emergency towers and skills, and the original
+   raised its starting mana to 20.  Regeneration comes from intelligence
+   (=builder-006=).
+
+   - Files: =src/sim/builder.rs=, =assets/balance/builder.ron=
+   - Acceptance:
+     - [ ] The builder has current and maximum mana, both replicated to its owner.
+     - [ ] Starting mana is data, defaulting to 20  =(tune)=.
+     - [ ] Mana regenerates from intelligence at a data rate, ticked on whole sim ticks.
+     - [ ] Mana is spent server-side, and an insufficient-mana action is rejected with a reason.
+
+** TODO [#C] Auto-blink the builder to long-distance orders                                                                     :@builder:
+   :PROPERTIES:
+   :ID:         builder-011
+   :EFFORT:     2h
+   :BLOCKED-BY: builder-001
+   :END:
+   The builder auto-blinks if ordered further than 1200 units, so the player is
+   never waiting on a slow walk.  With no builder today there is nothing to
+   blink.
+
+   - Files: =src/sim/builder.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] A move order further than 1200 units in a straight line blinks the builder instead of walking it.
+     - [ ] The blink threshold is data and defaults to 1200.
+     - [ ] A blink never lands the builder in a region it may not enter.
+     - [ ] The blink is authoritative: the server sets the builder's position, not the client.
+
+* XP, levels and skills
+
+** TODO [#A] Give the builder XP from kills and levels up to 30                                                                  :@builder:
+   :PROPERTIES:
+   :ID:         builder-002
+   :EFFORT:     1d
+   :BLOCKED-BY: builder-001
+   :END:
+   "The builder is a hero, each time you kill an enemy you gain 10xp, maximum
+   level 30, each level takes 100 kills."  The XP source is creep kills, so it
+   hooks the kill-attribution path
+   ([[file:02-simulation.org][02-simulation.org]] =sim-009=), and every number is  =(tune)= as the curve
+   is unconfirmed.
+
+   - Files: =src/sim/builder.rs=, =src/sim/mod.rs=, =assets/balance/builder.ron=
+   - Acceptance:
+     - [ ] The builder gains 10 xp for a creep kill credited to its owner.
+     - [ ] One level per 100 kills (equivalently 1000 xp per level) is data and marked  =(tune)=.
+     - [ ] The maximum level is 30 and is data.
+     - [ ] XP is awarded only for kills credited to the owner, consistent with [[file:06-economy.org][06-economy.org]] =econ-005=.
+     - [ ] A test kills N creeps and asserts the resulting level and XP remainder.
+
+** TODO [#A] Add skill points and a server-authoritative skill tree                                                              :@builder:
+   :PROPERTIES:
+   :ID:         builder-003
+   :EFFORT:     1w
+   :BLOCKED-BY: builder-002
+   :END:
+   Every level grants a skill point, and the seven skills are Emergency Tower,
+   Income Bonus, Intelligence Bonus, Food Bonus, Crit Bonus, Gamble Bonus and
+   Gold Bonus.  Spending must be server-authoritative so a client cannot grant
+   itself skills, and a re-spec rule must be stated.
+
+   - Files: =src/sim/builder.rs=, =src/protocol.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] Each level grants exactly one skill point, and unspent points persist across waves.
+     - [ ] The seven skills exist with per-skill maximum takes from data.
+     - [ ] Spending a point is an authority-checked intent; an over-cap or unaffordable spend is rejected with a reason.
+     - [ ] The re-spec rule (never, once per match, or free) is stated and enforced server-side.
+     - [ ] The total points spendable cannot exceed the points earned.
+
+* The skill tree
+
+** TODO [#B] Implement the Emergency Tower skill                                                                                :@builder:
+   :PROPERTIES:
+   :ID:         builder-004
+   :EFFORT:     1d
+   :BLOCKED-BY: builder-003, tower-016
+   :END:
+   Emergency Tower summons five tower types (Chaos, Frost, Siege, Air, Bouncing)
+   and each level raises their damage, attack speed, range and mana cost.  The
+   summoned entity is defined in [[file:05-towers.org][05-towers.org]] =tower-016=; this task owns
+   only the skill's level scale and mana cost.
+
+   - Files: =src/sim/builder.rs=, =assets/balance/builder.ron=, =src/sim/abilities.rs=
+   - Acceptance:
+     - [ ] The skill summons one of the five named types chosen by the player.
+     - [ ] Per-level damage, attack speed, range and mana cost are data.
+     - [ ] Summoning deducts the mana cost and fails with a reason when mana is insufficient.
+     - [ ] The skill cannot be used without a valid placement cell.
+     - [ ] The five types and their scaling are marked  =(tune)= where unconfirmed.
+
+** TODO [#B] Implement the Income Bonus skill                                                                                   :@builder:
+   :PROPERTIES:
+   :ID:         builder-005
+   :EFFORT:     2h
+   :BLOCKED-BY: builder-003, econ-003
+   :END:
+   Income Bonus grants +1 income to *all* players each take, up to 5 gold per
+   player.  The income it feeds is defined in [[file:06-economy.org][06-economy.org]] =econ-003=;
+   this task owns the take count and the global application.
+
+   - Files: =src/sim/builder.rs=, =assets/balance/builder.ron=
+   - Acceptance:
+     - [ ] Each take adds +1 income to every player, not only to the buyer.
+     - [ ] The maximum is 5 takes per player and is data.
+     - [ ] A sixth take is rejected with a reason.
+     - [ ] The bonus is included in the income computed by =econ-003=.
+
+** TODO [#B] Implement the Intelligence Bonus skill and define intelligence                                                      :@builder:
+   :PROPERTIES:
+   :ID:         builder-006
+   :EFFORT:     1d
+   :BLOCKED-BY: builder-003, builder-010
+   :END:
+   Intelligence Bonus gives +2 intelligence up to 10 takes, for mana and
+   regeneration.  Intelligence itself is undefined in this project, so this task
+   must give it a concrete meaning: maximum mana and mana regeneration.
+
+   - Files: =src/sim/builder.rs=, =assets/balance/builder.ron=
+   - Acceptance:
+     - [ ] Each take adds +2 intelligence, capped at 10 takes, both data.
+     - [ ] Intelligence maps to maximum mana and mana regeneration by a stated data-driven formula.
+     - [ ] Raising intelligence immediately raises the builder's mana cap without refilling it for free unless the data says so.
+     - [ ] A test spends an Intelligence point and asserts the new mana cap and regen.
+
+** TODO [#B] Implement the Food Bonus skill                                                                                     :@builder:
+   :PROPERTIES:
+   :ID:         builder-007
+   :EFFORT:     2h
+   :BLOCKED-BY: builder-003, econ-007
+   :END:
+   Food Bonus adds +1 food cap per take up to +5, feeding the food cap defined
+   in [[file:06-economy.org][06-economy.org]] =econ-007=.
+
+   - Files: =src/sim/builder.rs=, =assets/balance/builder.ron=
+   - Acceptance:
+     - [ ] Each take adds +1 to the owner's food cap, up to +5, both data.
+     - [ ] The cap increase is reflected immediately in what the player may build.
+     - [ ] A sixth take is rejected with a reason.
+     - [ ] The bonus is included in the food cap computed by =econ-007=.
+
+** TODO [#B] Implement the Crit Bonus skill                                                                                     :@builder:
+   :PROPERTIES:
+   :ID:         builder-008
+   :EFFORT:     2h
+   :BLOCKED-BY: builder-003, tower-018
+   :END:
+   Crit Bonus adds +2% crit chance and +20% crit damage per take, up to 5 takes,
+   and is one of the sources the crit system sums
+   ([[file:05-towers.org][05-towers.org]] =tower-018=).
+
+   - Files: =src/sim/builder.rs=, =assets/balance/builder.ron=
+   - Acceptance:
+     - [ ] Each take adds +2% crit chance and +20% crit damage, both data.
+     - [ ] The maximum is 5 takes and is data.
+     - [ ] The bonus is summed into the crit chance and multiplier computed by =tower-018=.
+     - [ ] A test asserts the final crit chance for a known number of takes.
+
+** TODO [#B] Implement the Gamble Bonus and Gold Bonus skills                                                                    :@builder:
+   :PROPERTIES:
+   :ID:         builder-009
+   :EFFORT:     1d
+   :BLOCKED-BY: builder-003, econ-009
+   :END:
+   Gamble Bonus adds +15 to a gamble roll per take up to +75, and Gold Bonus
+   gives all players 100 × wave gold, decreasing 10 per subsequent take; the
+   gamble itself is [[file:06-economy.org][06-economy.org]] =econ-009=.
+
+   - Files: =src/sim/builder.rs=, =assets/balance/builder.ron=
+   - Acceptance:
+     - [ ] Gamble Bonus adds +15 per take to the roll, capped at +75, both data.
+     - [ ] Gold Bonus pays all players a coefficient times the current wave on the first take, and the coefficient decreases by 10 per subsequent take (100, 90, 80 …)  =(tune)=.
+     - [ ] The Gold Bonus coefficient has a stated floor and never becomes zero or negative.
+     - [ ] Both bonuses are applied server-side and appear in the [[file:06-economy.org][06-economy.org]] =econ-012= telemetry.
+
+* Interface
+
+** TODO [#B] Expose the info and camera commands through a Command Book                                                           :@builder:
+   :PROPERTIES:
+   :ID:         builder-012
+   :EFFORT:     1d
+   :BLOCKED-BY: builder-001, ui-001
+   :END:
+   The builder has a Command Book (spellbook) for camera and info commands.  The
+   typed chat commands =-air=, =-immune=, =-boss=, =-hero=, =-zoom=, =-autocam=,
+   =-clear=, =-jackpot=, =-dinfo=, =-gm=, =-greed=, =-income=, =-waves=, =-gmd=,
+   =-autoclear=, =-restart= and =-commands= should be reachable as buttons.
+
+   - Files: =src/client.rs=, =src/protocol.rs=, =assets/balance/builder.ron=
+   - Acceptance:
+     - [ ] Every listed command has a Command Book button that performs the same action as its typed form.
+     - [ ] The panel is data-driven, so a command can be added without a new match arm per button.
+     - [ ] A command that changes authoritative state (such as =-restart= or =-greed=) still goes through the authority checks of its underlying intent.
+     - [ ] The camera commands are client-local and are never sent to the server.
+
+* Non-goals
+
+  - Not the summonable tower entity itself ([[file:05-towers.org][05-towers.org]]
+    =tower-016=); this file owns only the skill that summons it.
+  - Not the economy numbers the bonuses feed
+    ([[file:06-economy.org][06-economy.org]]): the skill contributes a delta, and the economy file owns
+    the totals.
+  - Not the crit system or the food cap
+    ([[file:05-towers.org][05-towers.org]] =tower-018=, [[file:06-economy.org][06-economy.org]] =econ-007=); this
+    file only supplies the skill contributions.
+  - Not the lobby's difficulty and mode selection
+    ([[file:08-lobby.org][08-lobby.org]]).
+
+* Open questions
+
+  - XP curve.  Recommended default: 10 xp per kill, 1000 xp (100 kills) per
+    level, max level 30, all  =(tune)=.
+  - Starting mana.  Recommended default: 20  =(tune)=.
+  - Re-spec policy.  Recommended default: none — skills are permanent once
+    spent.
+  - Intelligence to mana.  Recommended default: max mana = 100 + 10 × int,
+    regen = 1 + 0.1 × int per second, both  =(tune)=.
+  - Gold Bonus coefficient.  Recommended default: 100, decreasing 10 per take,
+    with a floor of 10  =(tune)=.
+  - Auto-blink threshold.  Recommended default: 1200 units  =(tune)=.

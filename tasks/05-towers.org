@@ -1,0 +1,453 @@
+#+TITLE: greentd — towers
+#+SUBTITLE: The eleven tower families, tiers, branching, targeting, auras, traps, spells, research and crits
+#+TODO: TODO NEXT IN-PROGRESS WAITING BLOCKED | DONE CANCELLED
+#+TAGS: FOUNDATION(f) SIM(s) MAP(m) WAVES(w) TOWERS(t) ECON(e) BUILDER(b) LOBBY(l) NET(n) UI(u) CONTENT(c) TEST(x) RELEASE(r)
+#+FILETAGS: :greentd:
+#+STARTUP: overview indent
+
+This file plans the tower system: the data model that replaces =TowerStats=
+and the =kind: u8= / =level: u8= pair, the branching upgrade graph, the eleven
+families, target filters, auras, traps, spells, research, crits and the
+build/sell lifecycle.  It touches =src/game.rs=, =src/sim.rs= (the
+=src/sim/combat.rs=, =src/sim/projectiles.rs= and =src/sim/aura.rs= modules
+introduced by [[file:02-simulation.org][02-simulation.org]] =sim-001=),
+=src/map.rs=, =src/protocol.rs=, =src/server.rs=, =src/client.rs= and
+=assets/balance/towers.ron=.  Every number the original's research could not
+confirm is marked =(tune)=.
+
+* Data model and the upgrade graph
+
+** TODO [#A] Replace =TowerStats= and the kind/level pair with a data-driven tower tree                                    :@towers:
+   :PROPERTIES:
+   :ID:         tower-001
+   :EFFORT:     1w
+   :BLOCKED-BY: found-004
+   :END:
+   =tower_stats(kind)= returns a flat struct ={ name, cost, range, damage,
+   cooldown, splash, slow }= and =Tower= carries a =kind: u8= into it plus an
+   unbounded =level: u8= (D18).  The original instead has eleven families with
+   per-tier stats and an explicit upgrade relation, so a tower's identity must
+   be a family id plus a tier in a loaded table.
+
+   - Files: =assets/balance/towers.ron=, =src/game.rs=, =src/sim.rs=
+   - Acceptance:
+     - [ ] =TowerStats=, the =tower_stats(kind)= function and =TOWER_KIND_COUNT= no longer exist anywhere in =src/=.
+     - [ ] =Tower= stores a family id and a tier, and no integer doubles as its identity.
+     - [ ] A tower record declares cost, per-tier stats, upgrade edge(s), food cost, target filter, damage type, projectile key and abilities, loaded from =assets/balance/towers.ron=.
+     - [ ] The loader rejects a record naming an unknown damage type, target filter or upgrade target.
+     - [ ] Both peers load the same file and its hash is part of the protocol version (found-004).
+
+** TODO [#A] Upgrade along explicit edges and branch into different towers from tier 3                                          :@towers:
+   :PROPERTIES:
+   :ID:         tower-002
+   :EFFORT:     1w
+   :BLOCKED-BY: tower-001
+   :END:
+   =try_upgrade= does =t.level += 1= and =Sim::upgrade_cost= is
+   =base * (level + 1) / 2=, so the integer level  *is* the tower.  In the
+   original several families upgrade into *different* towers from tier 3, and a
+   fresh tower can be jumped straight to level 5 or 10 — none of which a counter
+   can express.
+
+   - Files: =src/sim.rs=, =src/game.rs=, =assets/balance/towers.ron=
+   - Acceptance:
+     - [ ] An upgrade follows an edge to a (family, tier) pair and may change the family.
+     - [ ] =level += 1= no longer appears in =try_upgrade=.
+     - [ ] A family may have more than one outgoing edge at a tier, so branching from tier 3 is representable.
+     - [ ] A fresh level-1 tower can jump directly to level 5 or level 10 when the data provides the chain, paying the summed edge cost.
+     - [ ] =try_upgrade= returns a rejection, never a panic, when no edge exists for the requested target.
+
+* Attack behaviour and targeting
+
+** TODO [#A] Model attack profiles for single, splash, multi-shot, bounce and aura                                              :@towers:
+   :PROPERTIES:
+   :ID:         tower-003
+   :EFFORT:     1w
+   :BLOCKED-BY: tower-001
+   :END:
+   The only attack shapes today are single-target and one =splash= radius on
+   Cannon (D13).  The families need distinct profiles — splash with falloff,
+   multi-shot over N targets, chain bounce and area auras — each realised as a
+   sim projectile rather than instant damage ([[file:02-simulation.org][02-simulation.org]] =sim-010=).
+
+   - Files: =src/sim/combat.rs=, =assets/balance/towers.ron=, =src/sim/projectiles.rs=
+   - Acceptance:
+     - [ ] =AttackProfile= is a closed enum with single-target, splash (radius plus falloff), multi-shot (N targets), bounce (chain length plus per-jump falloff) and aura variants.
+     - [ ] A family's profile is data, and the sim contains no per-family match arm for attack shape.
+     - [ ] Damage is resolved when the projectile from =sim-010= arrives, not on the fire tick.
+     - [ ] Two splash profiles with different falloff deal different damage to a second creep, asserted by a test.
+
+** TODO [#A] Enforce ground/air and armour target filters on every shot                                                          :@towers:
+   :PROPERTIES:
+   :ID:         tower-004
+   :EFFORT:     1d
+   :BLOCKED-BY: tower-001
+   :END:
+   Every tower fires at the creep furthest along the path with no filter, so
+   nothing expresses "Siege cannot hit air" or "Air is anti-air only" (D11), and
+   the scan is the O(towers x creeps) cost behind D16.  Add a per-tower target
+   filter and reuse the targeting-policy selection from
+   [[file:02-simulation.org][02-simulation.org]] =sim-004= so the two cannot disagree.
+
+   - Files: =src/sim/combat.rs=, =assets/balance/towers.ron=, =src/sim/mod.rs=
+   - Acceptance:
+     - [ ] Each tower carries a target filter over ground/air and over the armour types it may damage.
+     - [ ] A Siege tower never selects an air creep and an Air tower never selects a ground creep.
+     - [ ] The policy used to choose among legal targets is the one from =sim-004=, not a second implementation.
+     - [ ] An illegal target is rejected before the =sim-010= projectile is created, so no wasted shot is rendered.
+     - [ ] A test covers ground/air crossed with immune/non-immune for one representative family.
+
+* The tower families
+
+** TODO [#A] Implement the Siege family: splash damage that cannot hit air                                                       :@towers:
+   :PROPERTIES:
+   :ID:         tower-005
+   :EFFORT:     1d
+   :BLOCKED-BY: tower-003, tower-004
+   :END:
+   Siege is a Primary tower with splash damage and an explicit ground-only
+   filter.  With Research it is one of the two damage sources that stay
+   effective against Hero armour in the original.
+
+   - Files: =assets/balance/towers.ron=, =src/sim/combat.rs=
+   - Acceptance:
+     - [ ] Siege's ground-only filter is data, and an air creep is never damaged by it.
+     - [ ] Siege damage splashes to every creep inside the data-defined radius of the impact point.
+     - [ ] Siege's damage type and armour multipliers are data, including its effectiveness against Hero armour.
+     - [ ] The tier chain reaches 23 tiers, the confirmed count in Green TD PROs 18.3.
+     - [ ] A test places Siege against a ground wave and an air wave and asserts zero damage to air.
+
+** TODO [#A] Implement the Air family: anti-air only with siege damage                                                           :@towers:
+   :PROPERTIES:
+   :ID:         tower-006
+   :EFFORT:     1d
+   :BLOCKED-BY: tower-003, tower-004
+   :END:
+   Air is a Primary tower that can only hit air and deals siege damage; air
+   creeps themselves carry fortified armour, so the damage type matters against
+   them, not just the filter.
+
+   - Files: =assets/balance/towers.ron=, =src/sim/combat.rs=
+   - Acceptance:
+     - [ ] Air's air-only filter is data, and a ground creep is never selected.
+     - [ ] Air's damage type is siege and its armour multipliers are data.
+     - [ ] An Air tower alone on a ground wave fires zero shots, asserted by a test.
+     - [ ] The tier chain reaches 13 to 14 tiers, the confirmed counts (13 in PROs 18.3, 14 in v36).
+
+** TODO [#A] Implement the Shuriken/Bouncing family with chain falloff                                                           :@towers:
+   :PROPERTIES:
+   :ID:         tower-007
+   :EFFORT:     1d
+   :BLOCKED-BY: tower-003
+   :END:
+   Shuriken (Bouncing) strikes one target and chains to a bounded number of
+   further targets, hitting up to 5, with a reduced attack speed.  The chain
+   must be deterministic so both peers resolve the same hits.
+
+   - Files: =assets/balance/towers.ron=, =src/sim/combat.rs=
+   - Acceptance:
+     - [ ] Bounce chain length is data and defaults to 5, the confirmed figure.
+     - [ ] Per-jump damage falloff, including a zero-falloff variant, is data.
+     - [ ] A target is not struck twice in one chain unless the data says so.
+     - [ ] Chain target choice is deterministic and identical on both peers (found-009).
+     - [ ] The tier chain reaches 11 to 12 tiers (11 in PROs 18.3, 12 Multishot/Bouncing in v36).
+
+** TODO [#A] Implement the Chaos family as the answer to Divine armour                                                           :@towers:
+   :PROPERTIES:
+   :ID:         tower-008
+   :EFFORT:     1d
+   :BLOCKED-BY: tower-004
+   :END:
+   Chaos is a Primary tower that is strong late, expensive, and the only
+   effective answer to Divine (immune) armour; from tier 5 up its damage is
+   boosted.  A community report puts a Chaos tower at roughly 5000 gold
+   =(tune)=.
+
+   - Files: =assets/balance/towers.ron=, =src/sim/combat.rs=
+   - Acceptance:
+     - [ ] Chaos's damage type is chaos, and the armour matrix gives it non-zero damage against Divine armour while every other type gives zero.
+     - [ ] The same matrix makes Chaos weak against the other armour types, per data.
+     - [ ] The tier-5-and-up damage boost is data, not a formula.
+     - [ ] The tier chain reaches 4 to 6 tiers (5 in PROs 18.3, 4 in v36).
+     - [ ] A cost on the order of 5000 gold per tower  =(tune)= is represented as data.
+
+** TODO [#A] Implement the Frost family: 30% slow with a per-tier AOE                                                            :@towers:
+   :PROPERTIES:
+   :ID:         tower-009
+   :EFFORT:     1d
+   :BLOCKED-BY: tower-003
+   :END:
+   Frost slows by 30% and its slow area grows with tier; the changelog notes
+   "Increased Frost slow to 30%" and "Frost Tower 1 has the correct AOE".  The
+   current Frost hardcodes =slow = 0.55= and zero splash, neither of which
+   matches.  The slow stacking rule is owned by
+   [[file:02-simulation.org][02-simulation.org]] =sim-008=.
+
+   - Files: =assets/balance/towers.ron=, =src/sim/combat.rs=
+   - Acceptance:
+     - [ ] Frost's slow is 30%, and it stacks by the rule in =sim-008=.
+     - [ ] The AOE radius is per-tier data, and a higher tier affects a strictly larger radius.
+     - [ ] The =slow = 0.55= literal and the zero splash in =tower_stats= are gone.
+     - [ ] The tier chain reaches 5 to 7 tiers (7 in PROs 18.3, 6 in v36).
+
+** TODO [#A] Implement the Poison family: damage over time plus slow                                                             :@towers:
+   :PROPERTIES:
+   :ID:         tower-010
+   :EFFORT:     1d
+   :BLOCKED-BY: tower-003
+   :END:
+   Poison deals single-target damage over time plus a slow ("reduced slow poison
+   slow to 30%"); later tiers gain stronger crits ("Poison Towers 15 and up now
+   have better crit strikes"), which contradicts a blanket "Poison never crits"
+   rule and must be settled in the data rather than special-cased.
+
+   - Files: =assets/balance/towers.ron=, =src/sim/combat.rs=
+   - Acceptance:
+     - [ ] Poison applies a damage-over-time effect to one target, ticked on whole ticks, with per-tier values in data.
+     - [ ] Poison slows the target by 30%.
+     - [ ] Whether Poison can crit is explicit data: either never, or enabled from a stated tier.
+     - [ ] A damage-over-time tick that kills a creep attributes the kill for bounty (=sim-009=).
+     - [ ] The tier chain reaches 19 tiers, the confirmed count in both PROs 18.3 and v36.
+
+** TODO [#A] Implement the Bash family and its stun interaction with movement                                                    :@towers:
+   :PROPERTIES:
+   :ID:         tower-011
+   :EFFORT:     1d
+   :BLOCKED-BY: tower-003
+   :END:
+   Bash stuns on hit with a chance and duration taken from data.  Stun is a new
+   effect layered on the slow already present on =Creep= (=slow_mult= plus
+   =slow_timer=) and must stop a stunned creep from advancing.
+
+   - Files: =assets/balance/towers.ron=, =src/sim/effects.rs=, =src/sim/combat.rs=
+   - Acceptance:
+     - [ ] Bash has data-defined stun chance and duration per tier.
+     - [ ] A stunned creep advances zero distance for the whole stun duration.
+     - [ ] Stun and slow coexist without either cancelling the other.
+     - [ ] The tier chain reaches 6 tiers, the confirmed count.
+
+** TODO [#A] Implement the Research family and its global upgrades                                                               :@towers:
+   :PROPERTIES:
+   :ID:         tower-012
+   :EFFORT:     1w
+   :BLOCKED-BY: tower-001
+   :END:
+   Research is a Secondary tower that buys category-wide upgrades — multishot
+   (up to 5 targets), attack speed (+10%), damage and "Ultimate Power"
+   (+7500 damage) — that apply to *all* of the buyer's towers.  It needs an
+   authority-checked purchase and the research UI hook.
+
+   - Files: =assets/balance/towers.ron=, =src/sim/mod.rs=, =src/protocol.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] Research levels exist as data for multishot target count (up to 5), attack speed (+10%), damage and Ultimate Power (+7500 damage); the +7500 is marked  =(tune)= as it could not be re-derived.
+     - [ ] A purchased research applies to every tower of the affected category owned by the purchaser, recomputed from one place.
+     - [ ] Purchase is an authority-checked intent; a client cannot apply a research it did not buy.
+     - [ ] The research UI hook exposes available and purchased levels without simulating.
+
+** TODO [#A] Implement the Aura family: one building, five selectable auras                                                      :@towers:
+   :PROPERTIES:
+   :ID:         tower-013
+   :EFFORT:     1w
+   :BLOCKED-BY: tower-001
+   :END:
+   The Aura tower is a Support building with five selectable auras (three old
+   plus two new; examples include Damage, Speed, Armour, Crippling, Gold and
+   Critical), limited to one per owner, unlocked at wave 15 in later versions,
+   and it costs no food.  Buffs and debuffs must be recomputed whenever it is
+   built, sold or upgraded.
+
+   - Files: =assets/balance/towers.ron=, =src/sim/aura.rs=, =src/sim/mod.rs=
+   - Acceptance:
+     - [ ] One Aura building offers five selectable auras, and the selection is match state visible to every peer.
+     - [ ] At most one Aura tower per owner exists; a second is rejected with a reason.
+     - [ ] An enemy-armour-reduction aura reduces the armour of affected creeps and is recomputed on the aura tower's build, sell and upgrade.
+     - [ ] Building an Aura tower before the unlock wave is rejected; the wave defaults to 15 and is data  =(tune)=.
+     - [ ] The Aura tower costs no food.
+
+** TODO [#A] Implement the Spell family with mana, cooldown and its targeting oddity                                             :@towers:
+   :PROPERTIES:
+   :ID:         tower-014
+   :EFFORT:     1w
+   :BLOCKED-BY: tower-001
+   :END:
+   The Spell tower casts Stasis Trap, Roar, Inner Fire, Bloodlust, Raise Dead
+   and Transmute: Roar lasts 45 s, Inner Fire and Bloodlust have range 1000 and
+   a 1 s cooldown, and Raise Dead minions last 120 s.  The original lets the
+   tower target anything except the Aura tower, an oddity worth reproducing
+   explicitly rather than by accident.
+
+   - Files: =assets/balance/towers.ron=, =src/sim/abilities.rs=, =src/protocol.rs=
+   - Acceptance:
+     - [ ] Each of the six spells exists as castable data with mana cost, cooldown and range (1000 where confirmed).
+     - [ ] Roar's duration is 45 s and Raise Dead minions last 120 s, both as data.
+     - [ ] A cast is rejected with a reason when mana or cooldown prevents it.
+     - [ ] The tower cannot target the Aura tower, expressed as a data-driven target exclusion and covered by a test.
+
+** TODO [#A] Implement the Trap family placed on the path                                                                       :@towers:
+   :PROPERTIES:
+   :ID:         tower-015
+   :EFFORT:     1w
+   :BLOCKED-BY: tower-001, map-006
+   :END:
+   Traps (Fire, Earth, Darkness, Iron, Immolation, Blood and more) are placed on
+   the track itself, autocast, are limited to one per type, and several have
+   mine limits and area effects.  This needs the path-placement permission from
+   [[file:03-map.org][03-map.org]] =map-006=, because =src/map.rs= today makes "on the path"
+   exactly where a tower may *not* go.
+
+   - Files: =assets/balance/towers.ron=, =src/sim/combat.rs=, =src/sim/effects.rs=
+   - Acceptance:
+     - [ ] A trap may occupy a path cell a tower cannot, via =map-006='s placement rule.
+     - [ ] At most one of each trap type exists per player.
+     - [ ] A trap autocasts when a creep enters its trigger area, with no player input.
+     - [ ] Mine-type traps enforce a data-defined limit and detonate over a data-defined area.
+     - [ ] At least the seven named traps (Fire, Earth, Darkness, Iron, Immolation, Blood and one more) exist as data.
+     - [ ] The path exception is scoped to traps and does not make ordinary towers path-buildable.
+
+** TODO [#B] Implement emergency towers summoned by the builder                                                                 :@towers:
+   :PROPERTIES:
+   :ID:         tower-016
+   :EFFORT:     1d
+   :BLOCKED-BY: tower-001
+   :END:
+   The builder's Emergency Tower skill summons Chaos, Frost, Siege, Air and
+   Bouncing towers temporarily; they need no grass and cost mana rather than
+   gold.  This is the placement exception the builder depends on and is separate
+   from the normal build path; the skill itself is
+   [[file:07-builder.org][07-builder.org]] =builder-004=.
+
+   - Files: =assets/balance/towers.ron=, =src/sim/abilities.rs=, =src/protocol.rs=
+   - Acceptance:
+     - [ ] An emergency tower can be placed on any cell the builder may reach, including cells that fail =is_buildable=.
+     - [ ] Emergency towers expire after a data-defined lifetime and are then removed.
+     - [ ] Emergency towers cost mana and no gold, and refund nothing on expiry.
+     - [ ] The five summoned types are Chaos, Frost, Siege, Air and Bouncing, as data.
+
+* Combat modifiers
+
+** TODO [#A] Implement the custom critical-strike system                                                                        :@towers:
+   :PROPERTIES:
+   :ID:         tower-018
+   :EFFORT:     1d
+   :BLOCKED-BY: tower-004
+   :END:
+   The original runs a custom crit system where "all damage can crit", with a
+   Crit Bonus skill worth +2% chance and +20% damage up to five times.  Crits
+   must ride the deterministic match RNG ([[file:00-foundation.org][00-foundation.org]] =found-009=)
+   so both peers agree, and a tower must be able to opt out.
+
+   - Files: =src/sim/combat.rs=, =src/sim/rng.rs=, =assets/balance/towers.ron=
+   - Acceptance:
+     - [ ] Every tower's crit chance and multiplier come from data, with contributions from skills, auras and research summed in one place.
+     - [ ] A crit roll draws from the match RNG at one defined point in the tick.
+     - [ ] A damage event carries whether it crit and the multiplier applied.
+     - [ ] A tower configured never to crit overrides any global crit contribution (used by Poison as in tower-010).
+     - [ ] A test fixes the seed and asserts a known crit sequence.
+
+* Build, sell and upgrade lifecycle
+
+** TODO [#A] Implement sell, swap and refund to the tower's owner                                                                :@towers:
+   :PROPERTIES:
+   :ID:         tower-017
+   :EFFORT:     1d
+   :BLOCKED-BY: tower-002, audit-001
+   :END:
+   =try_sell= refunds the *caller*, not the tower's owner (D2), and always uses
+   a flat 70% with no difficulty variation.  The original sells through an
+   ability with per-difficulty values (one variant returns 100% at level 1 and
+   50% above it), shows the value as floating text, and takes two clicks to sell
+   an Aura tower or a Trap.  The ownership hole D1 is closed in
+   [[file:01-current-code-audit.org][01-current-code-audit.org]] =audit-001=; this task references it rather than
+   duplicating it.
+
+   - Files: =src/sim/mod.rs=, =src/protocol.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] The refund is issued to the tower's owner, closing D2.
+     - [ ] Sell value is per-difficulty and per-tier data; the flat 70% literal is gone.
+     - [ ] The client shows the sell value as floating text before the sale commits.
+     - [ ] Selling an Aura tower or a Trap requires two confirmations.
+     - [ ] Swap exchanges two cells atomically and only for towers the caller may command, reusing the authority check from =audit-001=.
+
+** TODO [#B] Publish tower upgrade data the client can render without simulating                                               :@towers:
+   :PROPERTIES:
+   :ID:         tower-019
+   :EFFORT:     1d
+   :BLOCKED-BY: tower-001
+   :END:
+   The client is a dumb renderer and may not run the sim, so it cannot compute
+   affordability or the next tier by evaluating the upgrade graph.  Decide what
+   is replicated per tower (family, tier, any cached next-edge cost) versus
+   derived from the shared balance file both peers load.
+
+   - Files: =src/protocol.rs=, =src/game.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] The client can show the current tier, the legal next tier(s), their cost, and affordability for the selected tower using only replicated fields plus the shared balance file.
+     - [ ] The minimal set of replicated fields is documented, and anything derivable is not replicated.
+     - [ ] Tooltip cost equals the cost the server charges for the same upgrade.
+     - [ ] The client never evaluates the upgrade graph to decide whether an action is legal.
+
+** TODO [#B] Support disabling up to three towers per match                                                                     :@towers:
+   :PROPERTIES:
+   :ID:         tower-020
+   :EFFORT:     1d
+   :BLOCKED-BY: lobby-001, lobby-002
+   :END:
+   Up to three of the eleven towers can be disabled before a match, each worth
+   +2 income to every player.  A disabled tower must be both unbuildable and
+   absent from the build panel, and the selection is owned by the lobby
+   ([[file:08-lobby.org][08-lobby.org]] =lobby-001=, =lobby-002=).
+
+   - Files: =src/sim/mod.rs=, =src/protocol.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] At most three towers may be disabled, and the selection comes from the lobby settings.
+     - [ ] A build of a disabled tower is rejected with a reason.
+     - [ ] A disabled tower is absent from the build panel and its hotkey does nothing.
+     - [ ] Each disabled tower adds +2 to every player's income, applied once and consistent with [[file:06-economy.org][06-economy.org]] =econ-003=.
+
+* Balance
+
+** TODO [#B] Author the balance table for the first playable set                                                                 :@towers:
+   :PROPERTIES:
+   :ID:         tower-021
+   :EFFORT:     1w
+   :BLOCKED-BY: tower-005, tower-006, tower-009, tower-010
+   :END:
+   M2's exit criterion is a playable tower set, so at least the Primary families
+   plus Frost and Poison need concrete costs, damage, range, cooldowns and tier
+   counts in =assets/balance/towers.ron=.  The per-tier cost, damage, range and
+   rate values were never confirmed by research, so every such number is marked
+    =(tune)= and is expected to move in the content pass.
+
+   - Files: =assets/balance/towers.ron=, =docs/balance.org=
+   - Acceptance:
+     - [ ] Siege, Air, Shuriken/Bouncing, Chaos, Frost and Poison each have a complete per-tier table from tier 1 to their confirmed top tier.
+     - [ ] Build cost, upgrade cost, food cost, range, damage, attack rate and splash/falloff are present for every tier.
+     - [ ] Every unconfirmed number carries a =(tune)= annotation.
+     - [ ] A full match plays with only these families and no missing-data panic.
+     - [ ] The table is loaded by both peers and its hash is part of the protocol version.
+
+* Non-goals
+
+  - Not the creep-side armour/damage matrix; this file only consumes the seven-
+    by-seven table from [[file:02-simulation.org][02-simulation.org]] =sim-004=.
+  - Not the builder hero, its XP or its skill points
+    ([[file:07-builder.org][07-builder.org]]); this file only provides the emergency-tower entity the
+    skill summons (=tower-016=).
+  - Not the wider economy of gold, food or lumber
+    ([[file:06-economy.org][06-economy.org]]) beyond the per-tower costs stored in the tower data.
+  - Not projectile or impact art and audio
+    ([[file:11-content.org][11-content.org]]).
+
+* Open questions
+
+  - Shuriken (11 vs 12) and Chaos (4 vs 5/6) tier counts differ between
+    versions.  Recommended default: the PROs 18.3 counts (Shuriken 11, Chaos 5).
+  - Whether Poison crits at all.  Recommended default: no crit at low tiers,
+    enabled from tier 15 to match the confirmed note.
+  - Whether the Aura tower unlocks at wave 15 or is always available.
+    Recommended default: wave 15  =(tune)=.
+  - Per-tier cost, damage, range and rate are unknown.  Recommended default: a
+    smooth geometric curve seeded from the existing =src/game.rs= values (Basic
+    80, Cannon 150, Frost 120), all  =(tune)=.
+  - Whether a crit may apply against Divine armour.  Recommended default: only
+    chaos-type crits apply against Divine.

@@ -1,0 +1,310 @@
+#+TITLE: greentd — Testing: harness, determinism, replay, fuzz, benchmarks
+#+SUBTITLE: The automated safety net for the simulation, the rules and the network
+#+TODO: TODO NEXT IN-PROGRESS WAITING BLOCKED | DONE CANCELLED
+#+TAGS: FOUNDATION(f) SIM(s) MAP(m) WAVES(w) TOWERS(t) ECON(e) BUILDER(b) LOBBY(l) NET(n) UI(u) CONTENT(c) TEST(x) RELEASE(r)
+#+FILETAGS: :greentd:
+#+STARTUP: overview indent
+
+This plan touches a new =tests/= and =benches/= tree, =src/sim.rs= (a state hash
+and =#[cfg(test)]= helpers), =src/server.rs=, =src/protocol.rs=, new =src/bot.rs=
+and =src/replay.rs=, and the CI pipeline from [[file:00-foundation.org][00-foundation.org]]
+=found-007=. There are currently zero tests (=D17=), even though =Sim= was
+written to be a testable =step(dt) -> Vec<SimEvent>= state machine over HashMaps.
+
+* Tasks
+
+** TODO [#A] Build the headless simulation test harness :@test:
+   :PROPERTIES:
+   :ID:         test-001
+   :EFFORT:     1d
+   :END:
+   The minimum everything else needs: a way to construct a =Sim= with a fixed
+   seed, run N =step= calls with no window and no sockets, and assert on the
+   resulting state and on the returned =SimEvent=s. =Sim::new()= already exists
+   and =step= already returns events, so this is a harness rather than a
+   refactor; it fixes =D17= and is the foundation of the whole file.
+
+   - Files: =tests/sim.rs= (or a =#[cfg(test)] mod tests= in =src/sim.rs=), =Cargo.toml= dev-dependencies
+   - Acceptance:
+     - [ ] A test builds =Sim::new()=, runs N =step= calls and asserts on state.
+     - [ ] The suite runs under =cargo test= with no window and no OS sockets opened.
+     - [ ] A helper sets up players, towers and waves so later tests need no boilerplate.
+     - [ ] =SimEvent=s can be collected and asserted per tick, and a fixed seed is threaded in.
+
+** TODO [#A] Determinism test: same seed and command log, same state hash :@test:
+   :PROPERTIES:
+   :ID:         test-002
+   :EFFORT:     1w
+   :BLOCKED-BY: test-001, sim-012
+   :END:
+   The same seed and the same input sequence must produce a byte-identical state
+   after a long run (10000 ticks). This is expected to fail today, because =Sim=
+   iterates =HashMap=s for creeps, towers and players while applying damage, and
+   float results depend on application order. Note the dependency on =sim-012=,
+   which is where the deterministic iteration and seeding this relies on is
+   established; the failure before it is done is the point of the test.
+
+   - Files: =src/sim.rs= (a state-hash function), =tests/determinism.rs=
+   - Acceptance:
+     - [ ] A state hash covers creeps, towers, players, =wave= and =over=.
+     - [ ] Two runs with the same seed and command log produce the same hash over 10000 ticks.
+     - [ ] Container iteration order is pinned (ordered or sorted keys) as provided by =sim-012=.
+     - [ ] The 10000-tick run completes inside the CI time budget.
+
+** TODO [#A] Rule tests for build, upgrade, sell and call-wave :@test:
+   :PROPERTIES:
+   :ID:         test-003
+   :EFFORT:     1w
+   :BLOCKED-BY: test-001
+   :END:
+   =try_build=, =try_upgrade=, =try_sell= and =call_wave= each return
+   =Result<(), Reject>= and today only a subset of their paths is exercised.
+   Cover the acceptance and rejection matrices, every =Reject= variant, ownership,
+   gold, food, bounds, path and occupancy, and reuse the call-wave costing rule
+   from =audit-005= so the two cannot disagree.
+
+   - Files: =tests/rules.rs=
+   - Acceptance:
+     - [ ] Every =Reject= variant (=NotEnoughGold=, =Occupied=, =PathBlocked=, =OutOfBounds=, =BadKind=, =NoSuchTower=, =MatchOver=) is triggered by a test.
+     - [ ] A rejected command leaves the state hash unchanged from before it.
+     - [ ] Ownership is enforced: a foreign player cannot upgrade or sell another player's tower (=D1=, =D2=).
+     - [ ] Gold, food, bounds, path and occupancy are each tested on both sides of the boundary.
+     - [ ] Call-wave cost and cooldown match the rule defined in =audit-005=.
+
+** TODO [#A] Lose and win rule tests for both lineages and special modes :@test:
+   :PROPERTIES:
+   :ID:         test-004
+   :EFFORT:     1d
+   :BLOCKED-BY: test-001, sim-005, decide-default-lineage
+   :END:
+   The two lineages have different lose conditions, and modes change them again:
+   a normal leak versus a boss leak, Gold Rush's five lives, Headhunter's instant
+   loss. Test both rules from =sim-005= and the boundary value in each direction,
+   against the default chosen by =decide-default-lineage=.
+
+   - Files: =tests/lose_win.rs=
+   - Acceptance:
+     - [ ] Both lose rules from =sim-005= are covered, including the boundary in each direction.
+     - [ ] A normal leak and a boss leak produce the documented life costs.
+     - [ ] Gold Rush's five lives and Headhunter's instant loss are covered.
+     - [ ] Reaching the end of the finite wave table produces a win, not a crash.
+
+** TODO [#A] Wave generator tests for counts, curves, kinds and modes :@test:
+   :PROPERTIES:
+   :ID:         test-005
+   :EFFORT:     1w
+   :BLOCKED-BY: test-001, waves-013
+   :END:
+   This fixes the class of bug where a hand-written constant matches nothing:
+   wave counts, the hp/speed/bounty curves, the immune cadence, and the
+   air/boss/hero composition all drift silently today because nothing checks
+   them. Assert them against the wave data and announcement shape in =waves-013=,
+   across the mode combinations (Swarm, Random Waves, Blitz, Endless).
+
+   - Files: =tests/waves.rs=
+   - Acceptance:
+     - [ ] Wave counts and the hp, speed and bounty curves match the data within a stated tolerance.
+     - [ ] Immune waves occur on the documented cadence (every fifth wave).
+     - [ ] Air, boss and hero composition is asserted per wave band.
+     - [ ] Each mode combination (Swarm, Random Waves, Blitz, Endless) generates without a panic and matches a golden.
+
+** TODO [#A] Economy tests for income, bounty, refunds, food and gambling :@test:
+   :PROPERTIES:
+   :ID:         test-006
+   :EFFORT:     1w
+   :BLOCKED-BY: test-001
+   :END:
+   Gold moves through several paths — per-wave income, end-of-wave payout, bounty
+   on kill, sell refunds, the gamble, and the leaver split — and none is tested.
+   Cover each, including jackpot accumulation and reset and the leaver split,
+   which must never make a survivor's balance negative (=audit-015=).
+
+   - Files: =tests/economy.rs=
+   - Acceptance:
+     - [ ] Income and end-of-wave payout match the balance tables.
+     - [ ] Bounty routes to the last hitter and a sell refunds the documented fraction.
+     - [ ] Food accounting and the Food Bonus behave as documented.
+     - [ ] The jackpot accumulates and resets correctly, and the leaver split from =audit-015= never produces a negative balance (=D27=).
+
+** TODO [#A] Tower tests for tiers, targeting, effects, auras and crits :@test:
+   :PROPERTIES:
+   :ID:         test-007
+   :EFFORT:     1w
+   :BLOCKED-BY: test-001
+   :END:
+   Towers are where most of the game's rules live: tier and branch legality,
+   target filtering (Siege cannot hit air, Air is anti-air only), splash/bounce/
+   multi-shot target counts, slow/poison/stun stacking, aura recomputation on
+   build/sell/upgrade, trap placement on the path, and crit determinism.
+
+   - Files: =tests/towers.rs=
+   - Acceptance:
+     - [ ] Tier and branch legality is asserted against the upgrade graph.
+     - [ ] Siege cannot acquire air and the Air tower acquires only air.
+     - [ ] Splash, bounce and multi-shot hit exactly the documented target counts.
+     - [ ] Slow, poison and stun stacking follows the documented rule (=sim-009=).
+     - [ ] Auras recompute on build, sell and upgrade; traps place on the path; crits are deterministic under a fixed seed.
+
+** TODO [#A] Netcode tests: version, rate limit, ownership and reconnect :@test:
+   :PROPERTIES:
+   :ID:         test-008
+   :EFFORT:     1w
+   :BLOCKED-BY: test-001, net-001, net-002, net-004
+   :END:
+   =ClientCmd= arrives from untrusted peers, so the handshake, the validation
+   choke point and the identity model must be tested adversarially. Cover
+   protocol-version mismatch rejection, rate limiting, ownership enforcement from
+   a foreign peer, commands from an unregistered player, and reconnect identity
+   takeover.
+
+   - Files: =tests/net.rs=
+   - Acceptance:
+     - [ ] A mismatched protocol version is rejected at the handshake (=net-001=).
+     - [ ] A command beyond the token bucket is rate-limited rather than executed (=net-005=).
+     - [ ] A foreign peer cannot upgrade or sell another player's tower, and an unregistered peer cannot act (=D8=).
+     - [ ] A reconnect with the same identity takes over the same player without duplicating it (=D9=).
+
+** TODO [#B] Property tests for the simulation's invariants :@test:
+   :PROPERTIES:
+   :ID:         test-009
+   :EFFORT:     1w
+   :BLOCKED-BY: test-001, test-003
+   :END:
+   Generate long random command sequences and assert the invariants that must
+   hold no matter what the players do. This is the adversarial twin of the
+   golden tests: it asserts the things that are cheap to break and expensive to
+   notice — NaN positions, negative gold, an uncapped live-creep count, a build
+   on the path — and it fuzzes the message decoder alongside them.
+
+   - Files: =tests/props.rs=, =fuzz/= (=cargo-fuzz=), =Cargo.toml= (=proptest= or =quickcheck=)
+   - Acceptance:
+     - [ ] Generated command sequences never drive gold below zero.
+     - [ ] No creep position or health is ever NaN or infinite.
+     - [ ] A creep at or below zero health is always reaped, and the creep cap is never exceeded without ending the match.
+     - [ ] A build on the path is never accepted, and the decoder never panics on arbitrary bytes.
+
+** TODO [#B] Bot players that play a full match headlessly :@test:
+   :PROPERTIES:
+   :ID:         test-010
+   :EFFORT:     1w
+   :BLOCKED-BY: test-001, test-009
+   :END:
+   An unattended long match is both a realistic load for the sim and the seed of
+   an eventual single-player mode. Bots build a plausible defence using only the
+   public command interface, so a bot match exercises the same paths a human
+   does; N bots run a full match headlessly and the result feeds the benchmark
+   cases in test-012 and the curve in test-014.
+
+   - Files: =src/bot.rs=, =tests/bots.rs=
+   - Acceptance:
+     - [ ] A bot builds towers using only the public command interface, never by mutating the sim directly.
+     - [ ] A nine-bot match runs unattended to a defined end state.
+     - [ ] Bot seeds are fixed, so a bot match is itself reproducible.
+     - [ ] A bot survives its configured difficulty's first N waves (tune), and the number is recorded.
+
+** TODO [#A] Replay format and golden replay tests :@test:
+   :PROPERTIES:
+   :ID:         test-011
+   :EFFORT:     1w
+   :BLOCKED-BY: test-001, sim-012, found-009
+   :END:
+   Record =(seed, match settings, timestamped commands)= and replay it through
+   the sim, then assert the final state hash. This doubles as the regression
+   format for balance changes and as the payload of a bug report. It depends on
+   =sim-012= for the deterministic transitions a replay asserts, on =found-009=
+   for the seeded RNG that makes a replay reproducible, and on =found-007= for
+   running the committed goldens in CI.
+
+   - Files: =src/replay.rs=, =tests/replay.rs=, =tests/golden/=
+   - Acceptance:
+     - [ ] A recorded log replays to the same final hash as the live match.
+     - [ ] The format records the seed, the match settings and command timestamps, and rejects a future version cleanly.
+     - [ ] Committed golden replays run in CI (=found-007=) against a seeded sim (=found-009=).
+     - [ ] A replay file can be attached to a bug report bundle (=release-008=).
+
+** TODO [#B] Benchmarks for sim tick, target acquisition and replication :@test:
+   :PROPERTIES:
+   :ID:         test-012
+   :EFFORT:     1d
+   :BLOCKED-BY: test-001, sim-013, net-016
+   :END:
+   Three numbers decide whether the game scales: the cost of one =Sim::step= at
+   the target scale, the cost of target acquisition (O(towers x creeps), roughly
+   115k distance tests at the current caps, =D16=), and the cost of encoding and
+   decoding a replication update. Benchmarks run at 100/500/1000 creeps and
+   100/300 towers and are compared against the budget from =sim-013= and the
+   bandwidth target from =net-016=.
+
+   - Files: =benches/=, =Cargo.toml= (=criterion=)
+   - Acceptance:
+     - [ ] A benchmark measures =Sim::step= at 100, 500 and 1000 creeps and at 100 and 300 towers.
+     - [ ] A benchmark measures replication encode/decode and bandwidth at the same loads (=net-016=).
+     - [ ] The =D16= target-acquisition query has its own benchmark.
+     - [ ] Each benchmark has a stated budget from =sim-013= and is tracked for regression in CI.
+
+** TODO [#A] Run every test in CI, quarantining flaky ones :@test:
+   :PROPERTIES:
+   :ID:         test-013
+   :EFFORT:     1d
+   :BLOCKED-BY: found-007, test-001
+   :END:
+   A test that does not run is not a safety net. Wire the suite into the CI
+   pipeline from =found-007=: unit, rule, property, replay and network tests on
+   every change, benchmarks on a schedule, and an explicit rule that a flaky test
+   is quarantined and tracked rather than deleted. The layers it covers:
+
+   | Layer             | Owner                                    |
+   |-------------------+------------------------------------------|
+   | Headless sim      | test-001..test-007, test-014             |
+   | Network + hostile | test-008, test-009                       |
+   | Replay + bots     | test-010, test-011                       |
+   | Performance       | test-012                                 |
+   | Pipeline          | [[file:00-foundation.org][00-foundation.org]] =found-007= |
+
+   - Files: CI configuration (the pipeline from =found-007=)
+   - Acceptance:
+     - [ ] =cargo test= for the whole =tests/= tree runs in CI on every push.
+     - [ ] Benchmarks run on a schedule and are compared against the recorded budgets.
+     - [ ] A flaky test is moved to a quarantine target and tracked, never deleted.
+     - [ ] A deliberately failing test fails the pipeline; a docs-only commit passes.
+
+** TODO [#B] Balance regression harness for the difficulty curve :@test:
+   :PROPERTIES:
+   :ID:         test-014
+   :EFFORT:     1w
+   :BLOCKED-BY: test-001, waves-013, econ-012
+   :END:
+   The original's balance was hand-tuned across dozens of waves, so a per-wave
+   "defence gold needed" curve is a genuinely useful regression: a change to the
+   tables either holds the curve or moves it visibly. Compute the curve from the
+   wave data (=waves-013=) and the economy data (=econ-012=) at a fixed
+   difficulty and compare it against a committed golden.
+
+   - Files: =tests/difficulty.rs=, =tests/golden/=
+   - Acceptance:
+     - [ ] The harness computes per-wave defence gold needed at a fixed difficulty from =waves-013= and =econ-012=.
+     - [ ] The resulting curve is stored as a committed golden file.
+     - [ ] A drift beyond a stated tolerance fails the test and names the offending wave.
+     - [ ] The tolerance and its justification are documented next to the golden.
+
+* Non-goals
+  - No balancing: this file measures the curve, it does not change it. The
+    numbers live in [[file:04-waves.org][04-waves.org]], [[file:05-towers.org][05-towers.org]] and
+    [[file:06-economy.org][06-economy.org]].
+  - No UI or renderer tests beyond the headless sim; the panels are
+    [[file:10-ui.org][10-ui.org]]. A window never opens in this suite.
+  - No manual QA scripts or checklists; those belong to
+    [[file:13-release.org][13-release.org]] =release-013=.
+  - No new TODO keywords; only the six in the header are used.
+
+* Open questions
+  - *Property-test crate?* Recommended default: =proptest=, for its shrinking
+    and its strategies.
+  - *Benchmark harness?* Recommended default: =criterion= with a wall-clock
+    budget, so a regression is a percentage, not a single noisy number.
+  - *Where do golden files live?* Recommended default: =tests/golden/=, committed,
+    regenerated only by an explicit script so an accidental update is visible.
+  - *Quarantine mechanism?* Recommended default: a quarantine target gated behind
+    =#[ignore]= plus a tracked issue, run on a nightly schedule.
+  - *Target scale for test-012.* Recommended default: 1000 creeps and 300 towers
+    (tune), aligned with the caps stated in [[file:13-release.org][13-release.org]] =release-012=.

@@ -1,0 +1,453 @@
+#+TITLE: greentd — simulation
+#+SUBTITLE: The authoritative =Sim= state machine: step phases, combat rules, targeting, projectiles, RNG and the win/lose conditions
+#+TODO: TODO NEXT IN-PROGRESS WAITING BLOCKED | DONE CANCELLED
+#+TAGS: FOUNDATION(f) SIM(s) MAP(m) WAVES(w) TOWERS(t) ECON(e) BUILDER(b) LOBBY(l) NET(n) UI(u) CONTENT(c) TEST(x) RELEASE(r)
+#+FILETAGS: :greentd:
+#+STARTUP: overview indent
+
+This file plans the authoritative simulation that lives in =src/sim.rs= (later
+split into =src/sim/*=), the one component that decides every outcome. It fixes
+the creep data model and adds the armour/damage system (=src/game.rs=,
+=assets/balance/*.ron=), defines how the sim talks to the network through
+=src/protocol.rs= and =src/server.rs=, and pins the win/lose conditions that
+[[file:03-map.org][03-map.org]] and [[file:04-waves.org][04-waves.org]] feed. Wave *content* lives in
+[[file:04-waves.org][04-waves.org]]; this file owns only the machinery that consumes it.
+
+* The sim's public surface and the step loop
+
+** TODO [#A] Give =Sim= a documented surface and ordered =step= phases   :@sim:
+   :PROPERTIES:
+   :ID:         sim-001
+   :EFFORT:     1w
+   :END:
+   =step(dt)= currently runs spawn, move, fire, damage, reap and the overrun
+   check as unnamed inline loops inside one function, so no later task can test
+   a phase in isolation and the contract with =server.rs= is implicit. Fix the
+   boundary first: name the phases in order and keep =Sim= free of any
+   networking type (it must not import =lightyear=).
+
+   - Files: =src/sim.rs=, =src/sim/mod.rs=, =src/server.rs=
+   - Acceptance:
+     - [ ] =step= is a short function calling one named method per phase, in the documented order below.
+     - [ ] The order is written in a doc comment and a test asserts a creep spawned on tick N cannot be damaged on tick N.
+     - [ ] =grep -rn lightyear src/sim= returns nothing, enforced by a CI check.
+     - [ ] =Creep=, =Tower= and =Player= fields are written only by =step= and the documented =try_*= entry points, never from =server.rs=.
+
+   | # | Phase     | Responsibility                                            |
+   |---+-----------+-----------------------------------------------------------|
+   | 1 | spawn     | wave timer, spawn points, creep construction              |
+   | 2 | move      | advance =dist=, tick status effects, resolve arrival      |
+   | 3 | acquire   | per-tower target selection via the target policy          |
+   | 4 | fire      | create projectiles / schedule shots, spend cooldowns      |
+   | 5 | damage    | resolve projectiles, apply damage and bounty              |
+   | 6 | reap      | remove dead creeps, fire kill events                      |
+   | 7 | leak      | creeps past the Life Zone, lives decrement                |
+   | 8 | win/lose  | evaluate the active lose rule and the victory condition   |
+
+** TODO [#A] Quantise sim time into integer ticks   :@sim:
+   :PROPERTIES:
+   :ID:         sim-015
+   :EFFORT:     1d
+   :BLOCKED-BY: sim-001
+   :END:
+   Warcraft III advanced creep logic on fixed logical ticks and this project
+   runs at 30 Hz, but =step= takes a raw =f32 dt= from =time.delta_secs()=, so
+   timers accumulate float error and are not reproducible. Convert every
+   outcome-affecting duration to a whole number of ticks.
+
+   - Files: =src/sim.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] =TICK_HZ: u32 = 30= exists and =step= advances the sim by whole ticks.
+     - [ ] Every timer on =Creep=, =Tower= and =Sim= (cooldown, slow, stun, wave timer) is an integer tick count.
+     - [ ] Creep =dist= may stay =f32= (speed integrated over whole ticks) and is the only such field, with a comment stating why.
+     - [ ] Stepping with a jittery real-frame delta yields the same state as stepping the same number of whole ticks.
+
+* Creeps, armour and combat
+
+** TODO [#A] Add damage and armour types with a data-driven multiplier table   :@sim:
+   :PROPERTIES:
+   :ID:         sim-002
+   :EFFORT:     1w
+   :BLOCKED-BY: sim-001
+   :END:
+   Every creep is identical today because there is no damage or armour type
+   (D11), so no tower can be strong or weak against anything and the Divine
+   armour "Immune" waves are unrepresentable. Add =DamageType=
+   (Normal/Piercing/Siege/Magic/Chaos/Hero/Divine) and =ArmourType=
+   (Light/Medium/Heavy/Fortified/Normal/Hero/Divine/Unarmoured) with the
+   multiplier table loaded as data; the original's =-dinfo= command prints this
+   table, so it must be derivable at runtime.
+
+   - Files: =src/game.rs=, =src/sim.rs=, =assets/balance/combat.ron=
+   - Acceptance:
+     - [ ] =DamageType= and =ArmourType= enumerate exactly the variants above and nothing else.
+     - [ ] The =7x8= multiplier table loads from =assets/balance/combat.ron= (found-004) and is not compiled in.
+     - [ ] A pure function =(DamageType, ArmourType) -> f32= returns exactly 0.0 for every non-Chaos type against Divine armour.
+     - [ ] The =-dinfo= table is generated from the same data the sim uses, so it cannot disagree with combat.
+     - [ ] A unit test checks every cell for a finite, non-negative value. Initial multipliers are marked =(tune)= because research could not confirm them.
+
+** TODO [#A] Replace the flat =Creep= struct with a data-driven creep kind   :@sim:
+   :PROPERTIES:
+   :ID:         sim-003
+   :EFFORT:     1w
+   :BLOCKED-BY: sim-002
+   :END:
+   =start_wave= computes =hp=, =base_speed= and =bounty= from the wave number
+   alone, so a creep has no identity, no armour type and no flags (D11). Give
+   =Creep= a =CreepKindId= referencing the balance catalogue and carry the
+   fields waves need: armour type, air/ground, bounty, regen, boss, hero,
+   spell-immune and immune flags.
+
+   - Files: =src/sim.rs=, =src/game.rs=, =assets/balance/creeps.ron=
+   - Acceptance:
+     - [ ] =Creep= keeps =dist=, =hp=, =max_hp=, =slow_*= and =last_hit_by=, and gains =kind: CreepKindId= plus =armour=, =is_air=, =bounty=, =regen=, =is_boss=, =is_hero=, =spell_immune= and =is_immune=.
+     - [ ] No field of =Creep= is derived from =self.wave= inside =step=; per-wave numbers come from the wave table ([[file:04-waves.org][04-waves.org]] =waves-001=, =waves-002=).
+     - [ ] =CreepKindId= is stable and usable as the join key into =assets/balance/creeps.ron= and the replicated model key.
+     - [ ] A test builds creeps of two kinds and asserts their armour types and air flags differ.
+
+** TODO [#A] Model status effects as a stacking list, not one slow slot   :@sim:
+   :PROPERTIES:
+   :ID:         sim-008
+   :EFFORT:     1d
+   :BLOCKED-BY: sim-003
+   :END:
+   =Creep= stores a single =slow_mult= + =slow_timer= applied with =.min=, so
+   two slows cannot stack and poison, stun/bash, cripple and aura debuffs have
+   nowhere to live. Replace it with an effects list, each entry with an integer
+   tick duration and a stated stacking rule.
+
+   - Files: =src/sim.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] Slow, poison (damage over time), stun/bash, cripple and armour reduction are each representable on a creep with an integer tick duration.
+     - [ ] The stacking rule per effect is stated and tested (default: strongest slow wins and refreshes; poisons stack up to a cap).
+     - [ ] A stunned creep does not advance =dist= for the stun's duration.
+     - [ ] =slow_mult= and =slow_timer= are removed from =Creep= and nothing else reads them.
+
+** TODO [#A] Centralise damage application, splash and kill attribution   :@sim:
+   :PROPERTIES:
+   :ID:         sim-009
+   :EFFORT:     1d
+   :BLOCKED-BY: sim-002, sim-003
+   :END:
+   Damage is applied inline in the fire loop, splash hits everything in radius
+   with no falloff, and gold, assists and the "lowest kills gets bonus gold"
+   rule are decided in the reap pass. Funnel all damage through one path that
+   handles armour multipliers (sim-002), crits, splash falloff, overkill and
+   attribution.
+
+   - Files: =src/sim.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] All damage flows through one =apply_damage(src, target, amount, DamageType)= path; no other code writes =creep.hp=.
+     - [ ] Armour and damage types from =sim-002= are applied inside that path, so a Chaos-vs-Divine hit and a Normal-vs-Fortified hit differ predictably.
+     - [ ] Splash damage falls off with distance and overkill is clamped at the target's remaining HP for attribution.
+     - [ ] Bounty goes to =last_hit_by=; assists and the lowest-kills bonus are emitted as events, not applied silently.
+
+** TODO [#B] Model spawn invulnerability and the non-blocking ghost rule   :@sim:
+   :PROPERTIES:
+   :ID:         sim-018
+   :EFFORT:     1d
+   :BLOCKED-BY: sim-003
+   :END:
+   The original spawns creeps with brief invulnerability and a "Ghost (Visible)"
+   ability so a fresh wave cannot be blocked or melted at the spawn point;
+   neither exists here, so a spawn-camping tower kills a wave for free. Make
+   both configurable rather than implicit.
+
+   - Files: =src/sim.rs=, =assets/balance/combat.ron=
+   - Acceptance:
+     - [ ] A creep takes no damage during a configurable spawn-invulnerability window expressed in ticks.
+     - [ ] Creeps never block or collide with each other on the path; only towers and the path constrain them.
+     - [ ] Both the window and the flag come from data, with unconfirmed defaults marked =(tune)=.
+     - [ ] A test spawns a wave on top of a firing tower and asserts no creep loses HP during the window.
+
+** TODO [#B] Define creep abilities the sim can execute   :@sim:
+   :PROPERTIES:
+   :ID:         sim-020
+   :EFFORT:     1w
+   :BLOCKED-BY: sim-003, sim-008
+   :END:
+   The original's creeps are not passive: some heal, some haste, some are
+   spell-immune. With =is_hero=, =spell_immune= and the effects list in place,
+   the sim needs a closed ability vocabulary with a defined activation point in
+   the step order.
+
+   - Files: =src/sim.rs=, =assets/balance/creeps.ron=
+   - Acceptance:
+     - [ ] Creep abilities are a closed enum evaluated at one documented phase of =step= (see =sim-001=).
+     - [ ] =spell_immune= creeps ignore debuffs from =sim-008= but still take damage.
+     - [ ] At least one ability per family (heal, haste, spell immunity) has a sim implementation.
+     - [ ] An ability name in data that is not in the enum is a load error, not a silent no-op.
+
+* Targeting and projectiles
+
+** TODO [#A] Extract target acquisition into a named, indexed policy   :@sim:
+   :PROPERTIES:
+   :ID:         sim-004
+   :EFFORT:     1w
+   :BLOCKED-BY: sim-003
+   :END:
+   Targeting is an inline linear scan that always picks the creep furthest
+   along the path, identical for every tower, and it is O(towers x creeps) — D16.
+   Replace it with a =TargetPolicy= enum (=FurthestAlongPath=, =Nearest=,
+   =Strongest=, =Weakest=, =AirPriority=, =First=) selectable per tower, backed
+   by a spatial index so acquisition is not a full cross product.
+
+   - Files: =src/sim.rs=, =assets/balance/towers.ron=
+   - Acceptance:
+     - [ ] =TargetPolicy= has exactly the six variants above and each tower reads its default from data.
+     - [ ] =FurthestAlongPath= reproduces today's behaviour exactly, so existing balance does not silently change.
+     - [ ] Acquisition uses a spatial index (for example a uniform grid over the path) instead of scanning every creep per tower (closes D16).
+     - [ ] A benchmark shows acquisition time grows sub-quadratically when creeps and towers double.
+
+** TODO [#A] Add sim-side projectiles between fire and damage   :@sim:
+   :PROPERTIES:
+   :ID:         sim-010
+   :EFFORT:     1w
+   :BLOCKED-BY: sim-002, sim-004
+   :END:
+   Towers damage instantly on a cooldown with no projectile entity, so there are
+   no tracers, a shot cannot miss a creep killed mid-flight, and multi-shot,
+   bounce and chain have nowhere to live (D13). Add sim-side projectile state
+   (speed, target, homing vs ballistic, arrival) resolved in the damage phase.
+
+   - Files: =src/sim.rs=, =src/protocol.rs=, =src/server.rs=
+   - Acceptance:
+     - [ ] The step order is spawn -> move -> acquire -> fire -> projectiles -> damage -> reap, so a shot fired this tick lands later (see =sim-001=).
+     - [ ] A projectile carries source tower, target (or aim point), payload and homing-vs-ballistic mode.
+     - [ ] A homing projectile whose target dies before arrival re-targets or fizzles by a stated rule; a ballistic one lands at its aim point regardless.
+     - [ ] Projectile state is replicated additively for rendering and the client never resolves damage itself (net-001).
+
+* Waves, leakage and match flow
+
+** TODO [#A] Implement both lose rules behind one data-driven =LoseRule=   :@sim:
+   :PROPERTIES:
+   :ID:         sim-005
+   :EFFORT:     1w
+   :BLOCKED-BY: decide-default-lineage
+   :END:
+   "Green TD" is two lineages with different lose conditions, and =sim.rs=
+   hardcodes one of them — =OVERRUN_CAP = 150= — which matches neither (D19;
+   Lineage A documents 600/700/800/1000). Implement both as data:
+   =LoseRule::Overrun { cap }= (too many creeps alive at once) and
+   =LoseRule::Lives { lives, boss_leak_cost }= (a creep reaching the Life Zone
+   costs lives; a boss costs 10; 0 lives is defeat).
+
+   - Files: =src/sim.rs=, =src/game.rs=, =src/protocol.rs=
+   - Acceptance:
+     - [ ] =LoseRule= is an enum with exactly the =Overrun= and =Lives= variants above and is a field of the match settings.
+     - [ ] Under =Overrun= the match ends when live creeps exceed =cap=, and the literal =OVERRUN_CAP = 150= is deleted.
+     - [ ] Under =Lives= a boss leak costs =boss_leak_cost= (default 10) and 0 lives is defeat; =SimEvent= gains =CreepLeaked=, =LivesLost= and =GameOver= carrying remaining lives.
+     - [ ] The default rule for a fresh match comes from the lobby setting (lobby-003), not a hardcoded constant.
+     - [ ] The inactive rule is never consulted, proven by a test that runs =Lives= mode past the old 150-creep point without ending.
+
+** TODO [#A] Define creep leakage and the Life Zone hand-off   :@sim:
+   :PROPERTIES:
+   :ID:         sim-006
+   :EFFORT:     1d
+   :BLOCKED-BY: sim-005
+   :END:
+   Creeps advance =dist= and wrap with =rem_euclid= inside =Path::sample=, so
+   nothing can ever leak and the =Lives= rule from =sim-005= has no trigger.
+   Define the end-of-path behaviour: the creep is removed (not killed), lives
+   are decremented, effects fire, and in Gold Rush mode the leak costs 5 lives.
+
+   - Files: =src/sim.rs=, =src/map.rs=
+   - Acceptance:
+     - [ ] A creep whose =dist= reaches the path end ([[file:03-map.org][03-map.org]] =map-002=, =map-003=) is removed from =self.creeps= and never sampled past the end.
+     - [ ] A leak emits =SimEvent::CreepLeaked= and =LivesLost= with the creep id and its leak cost.
+     - [ ] Under =LoseRule::Overrun= on a closed ring the sim never leaks; a test asserts the path never reports arrival there.
+     - [ ] A Gold Rush creep ([[file:04-waves.org][04-waves.org]] =waves-011=) leaks for 5 lives, read from creep flags and not hardcoded.
+
+** TODO [#A] Detect wave completion and model the inter-wave gap   :@sim:
+   :PROPERTIES:
+   :ID:         sim-007
+   :EFFORT:     1d
+   :BLOCKED-BY: sim-005
+   :END:
+   Waves spawn on a blind 20 s timer and never "complete", which is why Blitz
+   (spawn on a timer) and normal play (spawn when cleared) are indistinguishable
+   and end-of-wave gold has nowhere to land. Add wave-clear detection and an
+   explicit inter-wave state, consumed by [[file:04-waves.org][04-waves.org]] =waves-008=
+   and =waves-012=.
+
+   - Files: =src/sim.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] The sim emits =SimEvent::WaveCleared(w)= exactly when the last creep spawned by wave =w= is gone and none of its creeps remain.
+     - [ ] =WaveCleared= fires once per wave and never for a wave with creeps still in flight, leakers included.
+     - [ ] An inter-wave gap (duration plus phase) is explicit in =Sim= instead of the flat =WAVE_INTERVAL= countdown.
+     - [ ] A test clears a wave early and asserts =WaveCleared= precedes the next =WaveStarted=.
+
+* Events and the network boundary
+
+** TODO [#A] Define the full sim event stream and its replication policy   :@sim:
+   :PROPERTIES:
+   :ID:         sim-011
+   :EFFORT:     1w
+   :BLOCKED-BY: sim-005
+   :END:
+   =SimEvent= has four variants and =ServerNotice= duplicates one of them
+   (=WaveStarted=), which is how D5 (a wave notice the server never sends)
+   happened. Expand =SimEvent= to everything the client needs and classify each
+   variant as replicated or local-only.
+
+   - Files: =src/sim.rs=, =src/protocol.rs=, =src/server.rs=
+   - Acceptance:
+     - [ ] =SimEvent= covers spawn, kill, leak, wave start, wave clear, bounty/gold change, build/upgrade/sell, crit, ability cast, game over and victory.
+     - [ ] Each variant is annotated replicated or local-only, and a test enumerates the set so a new variant must declare itself.
+     - [ ] =ServerNotice::WaveStarted= is removed or driven by =SimEvent::WaveStarted= (closes D5).
+     - [ ] No event carries nondeterministic data such as a wall-clock time or an address-derived key.
+
+** TODO [#A] Replace =MatchView::phase: u8= with a typed match phase   :@sim:
+   :PROPERTIES:
+   :ID:         sim-014
+   :EFFORT:     1d
+   :BLOCKED-BY: sim-011
+   :END:
+   =MatchView::phase= is a =u8= initialised to 0 in =setup_match= and never
+   written again (D4), so the HUD cannot tell whether the match is running or
+   over. Introduce an explicit =Phase= enum in the sim, replicate it, and stop
+   =sync_match= from freezing the HUD at defeat.
+
+   - Files: =src/game.rs=, =src/sim.rs=, =src/server.rs=
+   - Acceptance:
+     - [ ] =Phase= is an enum (Lobby -> Setup -> Running -> Victory -> Defeat -> Restarting) and =MatchView::phase= carries it instead of a =u8=.
+     - [ ] The sim advances the phase at the documented transitions and =GameOver= sets =Defeat=.
+     - [ ] =sync_match= keeps publishing wave and lives after =Defeat= so the HUD is not frozen (fixes the D4 symptom).
+     - [ ] =Phase= is the only source of "is the match over"; no display path reads =Sim::over= directly.
+
+* Determinism, replay and performance
+
+** TODO [#A] Make =step= deterministic and replayable from a seed   :@sim:
+   :PROPERTIES:
+   :ID:         sim-012
+   :EFFORT:     1w
+   :BLOCKED-BY: found-009
+   :END:
+   =Sim= iterates =HashMap=s for creeps and towers, so tick order depends on
+   hash order and two runs of the same inputs can diverge; there is also no
+   seeded RNG for the crits and modes that will need one. Give the sim a
+   match-owned seeded RNG resource and remove every order dependence from
+   =step=.
+
+   - Files: =src/sim.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] Any iteration whose order affects state uses an ordered structure (a =BTreeMap= or a sorted id list), never a =HashMap=.
+     - [ ] Randomness comes only from the match-owned seeded RNG; =step= never reads a global generator or wall-clock time.
+     - [ ] Running the same seed and the same ordered intent list twice yields byte-identical state hashes.
+     - [ ] A test perturbs the seed and asserts the state hash changes, proving randomness flows through the sim.
+
+** TODO [#B] Snapshot and restore the whole sim   :@sim:
+   :PROPERTIES:
+   :ID:         sim-016
+   :EFFORT:     1d
+   :BLOCKED-BY: sim-012
+   :END:
+   Tests and replays both want to freeze a match and resume it without replaying
+   thirty waves. Provide a total, serde-serialisable snapshot of every field that
+   affects the next tick, including RNG state, with a round-trip test.
+
+   - Files: =src/sim.rs=, =tests/snapshot.rs=
+   - Acceptance:
+     - [ ] =Sim::snapshot()=/=restore()= cover creeps, towers, players, effects, projectiles, RNG state, tick counter, wave state and phase.
+     - [ ] A sim snapshotted at tick N and restored produces the same state hash as the original at tick N+k.
+     - [ ] Restore is total: no field can silently keep a previous value.
+     - [ ] The snapshot type is serde-serialisable and is used by the replay harness (test-001).
+
+** TODO [#B] Make the command log the only mutation path   :@sim:
+   :PROPERTIES:
+   :ID:         sim-017
+   :EFFORT:     1d
+   :BLOCKED-BY: sim-012
+   :END:
+   For "seed plus commands" to reproduce a match, every mutation must arrive as
+   a recorded command applied at a tick boundary, but =server.rs= calls
+   =try_build= and friends directly as packets arrive. Record validated intents
+   as an ordered, tick-keyed list so a replay is exactly re-running it.
+
+   - Files: =src/sim.rs=, =src/server.rs=
+   - Acceptance:
+     - [ ] Every state-changing intent passes through a recorded command entry tagged with the tick it applies on.
+     - [ ] Replaying a command log from a seed reproduces the recorded state hashes tick for tick.
+     - [ ] Commands sharing a tick have a deterministic order (sender order, then command id).
+     - [ ] Duplicate or out-of-order log entries are detected as divergence, not applied silently.
+
+** TODO [#B] Compute a per-tick state hash for desync and test assertions   :@sim:
+   :PROPERTIES:
+   :ID:         sim-021
+   :EFFORT:     2h
+   :BLOCKED-BY: sim-012
+   :END:
+   Determinism (sim-012) is only useful if it is observable. Add a cheap hash
+   over the sim's decision-relevant state, used by replay tests to assert
+   equality and by the server to detect divergence.
+
+   - Files: =src/sim.rs=
+   - Acceptance:
+     - [ ] =Sim::state_hash()= hashes every decision-relevant field (positions quantised, hp, timers, RNG state, phase).
+     - [ ] Two sims fed identical seeds and intents produce equal hashes every tick.
+     - [ ] The hash is cheap enough to compute every tick inside the =sim-013= budget.
+     - [ ] The hash is exposed to tests and is not replicated per frame (see the networking file).
+
+** TODO [#B] Set and measure a sim tick budget   :@sim:
+   :PROPERTIES:
+   :ID:         sim-013
+   :EFFORT:     1w
+   :BLOCKED-BY: sim-004
+   :END:
+   D16 records about 115k distance tests per tick at the current caps, but
+   nothing states what the sim may cost. Profile at the intended caps (hundreds
+   of creeps, hundreds of towers) at 30 Hz, write a per-tick budget, and add a
+   benchmark so the number is enforced rather than hoped for.
+
+   - Files: =src/sim.rs=, =benches/sim_bench.rs=
+   - Acceptance:
+     - [ ] A written budget (a target in milliseconds per tick at 30 Hz at the intended caps) exists and is referenced by the benchmark.
+     - [ ] A criterion benchmark drives a synthetic worst-case sim (creeps and towers at cap, all firing) for many ticks.
+     - [ ] The benchmark fails or warns when the budget is exceeded.
+     - [ ] The caps used are the same constants the match uses, not a private copy.
+
+* Metrics and observability
+
+** TODO [#C] Accumulate per-player and per-tower sim metrics   :@sim:
+   :PROPERTIES:
+   :ID:         sim-019
+   :EFFORT:     2h
+   :BLOCKED-BY: sim-011
+   :END:
+   =Player= tracks only =gold= and =kills=, so the multiboard (ui-001) and the
+   balance pass cannot show damage dealt, leaks taken or gold earned. Accumulate
+   these as counters the sim already updates and expose them through the event
+   stream so they stay recomputable.
+
+   - Files: =src/sim.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] =Player= tracks kills, leaks, gold earned and total damage dealt; each tower tracks damage dealt this match.
+     - [ ] The counters are derivable from =SimEvent=s, so they are a cache, not a second source of truth.
+     - [ ] Counters reset on a rematch and are not replicated (recomputed client-side from events).
+     - [ ] A test sums the events of a short match and matches the counters exactly.
+
+* Non-goals
+
+  - Tower families, tiers, branching, auras and traps: [[file:05-towers.org][05-towers.org]].
+  - Income, bounty tables, gambling, lumber and food: [[file:06-economy.org][06-economy.org]].
+  - Wave content, the creep catalogue and the wave table: [[file:04-waves.org][04-waves.org]].
+  - Map geometry, lanes, the Life Zone's shape and build regions: [[file:03-map.org][03-map.org]].
+  - Transport, prediction, interpolation and reconnection: [[file:09-networking.org][09-networking.org]].
+  - HUD, toasts and floating text: [[file:10-ui.org][10-ui.org]].
+
+* Open questions
+
+  - *Exact damage-vs-armour multipliers.* Research confirmed the table exists
+    and that Divine armour resists everything but Chaos, but not the numbers.
+    Default: stock WC3-like values in =combat.ron=, every cell =(tune)=.
+  - *Is Divine armour fully immune or merely resistant?* Some versions say
+    "killable only by Chaos"; others imply reduction. Default: full immunity to
+    non-Chaos, =(tune)=.
+  - *Starting lives for =LoseRule::Lives=.* Unconfirmed. Default: 100 =(tune)=.
+  - *Slow/effect stacking rule.* Nobody documented it. Default: strongest wins
+    with duration refresh for slows; poisons stack up to a cap.
+  - *Does a Lineage A ring creep loop forever?* Default: yes, =Overrun= needs
+    creeps to accumulate (conflicts with "stop at the ring end" — see
+    [[file:03-map.org][03-map.org]]).
+  - *How many boss levels and at which waves?* Confirmed "3 boss levels", not
+    which waves. Default: waves 10/20/30 =(tune)=.

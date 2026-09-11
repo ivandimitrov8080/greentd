@@ -1,0 +1,232 @@
+#+TITLE: greentd — foundation
+#+SUBTITLE: Build, configuration, headless operation, logging, data-driven balance and CI
+#+TODO: TODO NEXT IN-PROGRESS WAITING BLOCKED | DONE CANCELLED
+#+TAGS: FOUNDATION(f) SIM(s) MAP(m) WAVES(w) TOWERS(t) ECON(e) BUILDER(b) LOBBY(l) NET(n) UI(u) CONTENT(c) TEST(x) RELEASE(r)
+#+FILETAGS: :greentd:
+#+STARTUP: overview indent
+
+This plan touches =src/main.rs=, =src/config.rs=, =src/balance.rs=,
+=assets/balance/*.ron=, =src/visuals.rs=, =src/sim.rs=, =src/game.rs=,
+=src/server.rs=, =src/client.rs=, =Cargo.toml= and CI. None of it is player-visible
+and none of it is optional, and =found-004= is the loader named by the
+=decide-data-driven= decision in [[file:README.org][README.org]].
+
+* Headless operation and configuration
+
+** TODO [#A] Run the server headless with no window and no VisualsPlugin              :@found:
+   :PROPERTIES:
+   :ID:         found-001
+   :EFFORT:     1d
+   :END:
+
+   =src/main.rs= adds =VisualsPlugin= in the =server= arm, so a "dedicated" server
+   opens a window, creates a camera and spawns 768 =MapTile= sprites in
+   =setup_camera_and_map=. That is D15: a headless box cannot run a match at all,
+   and CI (found-007) cannot start one. Split the app builder so a server build
+   adds no window or GPU plugins, and only a rendering peer adds =VisualsPlugin=.
+
+   - Files: =src/main.rs=, =src/visuals.rs=, =src/server.rs=
+   - Acceptance:
+     - [ ] The =server= arm adds no =VisualsPlugin=, requests no primary window, and creates no camera or =MapTile= entity.
+     - [ ] =cargo run -- server= reaches the listening state with =DISPLAY= unset and no GPU, without panicking.
+     - [ ] =host= and =client= modes still render exactly as they do today.
+     - [ ] =src/main.rs= no longer builds a =WindowPlugin= primary window titled ="Green TD - server"= in server mode.
+
+** TODO [#A] Centralise mode, addresses, ports, tick rate, map and log level in one config    :@found:
+   :PROPERTIES:
+   :ID:         found-002
+   :EFFORT:     1d
+   :END:
+
+   =TICK_HZ= (=src/main.rs=), the bind literals =127.0.0.1:5100= and
+   =127.0.0.1:5000= (main.rs, =NetConfig.bind=), =SERVER_ADDR= (=src/server.rs=) and
+   the log filter are all compiled in, so no run can be pointed at another host or
+   an ephemeral port and CI cannot bind a free one. Introduce one =Config= built
+   before any plugin from CLI args, environment variables and an optional config
+   file.
+
+   - Files: =src/main.rs=, =src/config.rs= (new), =src/server.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] A single =Config= resource carries run mode, server address, bind address, tick rate, map selection, balance-file path and log level.
+     - [ ] Precedence is documented and tested: CLI arg beats env var beats config file beats built-in default.
+     - [ ] The literals =TICK_HZ=, =SERVER_ADDR= and the =127.0.0.1:5100= bind are gone; every reader goes through =Config=.
+     - [ ] =cargo run -- client --server 10.0.0.5:5000= joins a non-local host with no recompile.
+     - [ ] An unparseable value exits non-zero, naming the key and the bad value.
+
+* Observability
+
+** TODO [#B] Structure logs on stable targets and write a per-match log file          :@found:
+   :PROPERTIES:
+   :ID:         found-003
+   :EFFORT:     1d
+   :END:
+
+   Bare =info!/warn!/debug!= through =server.rs=, =client.rs= and =sim.rs= have no
+   stable target and no policy, so =RUST_LOG= cannot isolate a subsystem and a
+   post-mortem has nothing durable to read. Keep Bevy's =LogPlugin= (it already
+   bridges =tracing=) and define the levels, then add a per-match file so a desync
+   can be diagnosed after the fact.
+
+   - Files: =src/main.rs=, =src/server.rs=, =src/client.rs=, =src/sim.rs=, =Cargo.toml=
+   - Acceptance:
+     - [ ] Logs use stable targets (=greentd::net=, =greentd::sim=, =greentd::replication=, =greentd::commands=), and =RUST_LOG= can enable or silence any one without a rebuild.
+     - [ ] A one-page level policy is written down: what belongs at =error=, =warn=, =info=, =debug= and =trace=.
+     - [ ] A match writes a per-match log file whose name carries the start time and whose path is configurable (found-002).
+     - [ ] A rejected client command logs at =debug= with the peer key and the =Reject= reason, never at =info=.
+     - [ ] The commented-out =log= dependency block in =Cargo.toml= is removed with a one-line rationale.
+
+* Balance as data
+
+** TODO [#A] Load tower, creep, wave, difficulty and mode data from RON              :@found:
+   :PROPERTIES:
+   :ID:         found-004
+   :EFFORT:     1w
+   :END:
+
+   This is the task the =decide-data-driven= decision in [[file:README.org][README.org]] refers
+   to, and it fixes D18: today =START_GOLD=, =OVERRUN_CAP= and =WAVE_INTERVAL= live
+   in =src/game.rs=, =tower_stats= is a =match= holding three inline literals, and
+   the wave formulas =45.0 * (1.0 + 0.28 * (w-1))=, =55.0 + 2.0 * (w-1)= and
+   =6 + wave / 2= are inline in =Sim::start_wave=. Move all of it to
+   =assets/balance/*.ron=, loaded by both peers and hashed into the protocol version.
+
+   - Files: =assets/balance/= (new), =src/balance.rs= (new), =src/game.rs=, =src/sim.rs=, =src/protocol.rs=, =Cargo.toml=
+   - Acceptance:
+     - [ ] A =ron= dependency (and the matching Bevy asset feature) is added, and =assets/balance/*.ron= deserialise through serde into typed tables for towers, creeps, waves, difficulties and game modes.
+     - [ ] Cross-references are validated at load: every tower tier chain is monotonic and acyclic, every wave index is in range, and every model key named by a wave or a tower resolves.
+     - [ ] A validation failure aborts startup with the offending field path (for example =waves[7].creeps[0].model=) and a non-zero exit.
+     - [ ] The loader computes a stable hash over the normalised data, unchanged by field ordering, and exposes it for the protocol version ([[file:09-networking.org][09-networking.org]] =net-001=).
+     - [ ] Loading the same assets twice yields byte-identical hashes; a missing or malformed file fails loudly rather than falling back to defaults.
+     - [ ] A test mutates a value in an in-memory table and observes the change in =Sim::step= output, proving nothing is cached from a const.
+
+* Code structure, errors and determinism
+
+** TODO [#B] Split the flat crate into =sim/=, =data/=, =net= and =ui= modules       :@found:sim:
+   :PROPERTIES:
+   :ID:         found-005
+   :EFFORT:     1w
+   :END:
+
+   The crate is seven flat modules (=sim=, =game=, =map=, =protocol=, =server=,
+   =client=, =visuals=) and =src/sim.rs= already mixes combat, waves and economy. It
+   will not hold eleven tower families, thirty-six waves and five difficulties
+   without becoming unnavigable, and the split is cheapest now while the code is
+   small. =Sim= must stay free of every networking type.
+
+   - Files: =src/main.rs=, =src/sim/= (new), =src/data/= (new), =src/net/= (new), =src/ui/= (new)
+   - Acceptance:
+     - [ ] =src/sim.rs= becomes a =sim/= folder with combat, waves and economy in their own files, and =Sim= imports no =lightyear= or =bevy= networking type.
+     - [ ] Balance types and their loader move under =data/=, the protocol and messages move under =net/=, and visuals plus HUD move under =ui/=.
+     - [ ] =cargo build= and =cargo test= are green after the move, with no behaviour change.
+     - [ ] The layout is written down in the module doc at the top of =src/main.rs=, so a new contributor knows where a change belongs.
+
+** TODO [#A] Replace parse-time panics with one startup error type                    :@found:
+   :PROPERTIES:
+   :ID:         found-006
+   :EFFORT:     2h
+   :BLOCKED-BY: found-002
+   :END:
+
+   =main= and =spawn_server= parse addresses with
+   =.parse().expect("valid server addr")= (=src/main.rs= lines 64, 68, 84, 85;
+   =src/server.rs= line 60), and =Path::sample= unwraps a float comparison at
+   =src/map.rs= line 83. A typo therefore aborts with a backtrace, and the same
+   mistake must not survive into the balance loader or the network path.
+
+   - Files: =src/main.rs=, =src/server.rs=, =src/config.rs=, =src/map.rs=
+   - Acceptance:
+     - [ ] A single =StartupError= enum covers config parsing and balance loading, and =main= prints it and exits non-zero with no backtrace.
+     - [ ] No =unwrap()= or =expect()= remains on data parsed from argv, an environment variable, or a =*.ron= asset.
+     - [ ] =Path::sample= handles a NaN distance without unwrapping and without panicking.
+     - [ ] The policy distinguishes =StartupError= (programmer or config failure, fatal, not sent to peers) from =Reject= (expected in-game refusal, reported to the peer and carrying a reason).
+     - [ ] Test: a bad =--server= value prints the reason and exits non-zero rather than panicking.
+
+** TODO [#A] Seed a deterministic RNG owned by the sim                            :@sim:
+   :PROPERTIES:
+   :ID:         found-009
+   :EFFORT:     1d
+   :END:
+
+   Tests and replays are reproducible only if randomness is seeded and owned by the
+   match, but =src/sim.rs= has no RNG concept today. Chaos difficulty randomises
+   each wave's health and the classic hazards (=rand::thread_rng()=, a wall-clock
+   seed) would make that, and any future roll, impossible to reproduce. Add a
+   seeded =Rng= the sim owns.
+
+   - Files: =src/sim.rs=, =src/game.rs=, =assets/balance/*.ron=
+   - Acceptance:
+     - [ ] =Sim= owns a seeded RNG whose seed is a match setting, not a wall-clock call.
+     - [ ] No =rand::thread_rng()=, =rand::random()= or =Instant::now()=-derived seed is reachable from =Sim::step=.
+     - [ ] Two =Sim= instances built with the same seed and fed the same intents produce identical state after N ticks.
+     - [ ] A test seals this in: same seed gives identical output; a different seed changes at least one observable.
+
+** TODO [#C] Mark the local player instead of inferring identity                      :@net:
+   :PROPERTIES:
+   :ID:         found-010
+   :EFFORT:     2h
+   :END:
+
+   D30: =update_hud= in =src/client.rs= decides who "me" is by taking =me.single()=
+   over every =PlayerView= it happens to hold, which is a coincidence, not an
+   identity, and breaks outright in host mode (=D3=, fixed by =audit-003=).
+   Introduce a =LocalPlayer= marker set by whoever owns the view.
+
+   - Files: =src/game.rs=, =src/client.rs=, =src/server.rs=, =src/protocol.rs=
+   - Acceptance:
+     - [ ] Exactly one =PlayerView= per peer is marked =LocalPlayer=, on both server-owned (host) and client-owned (remote) peers.
+     - [ ] =update_hud= reads gold and kills from the =LocalPlayer= query and never from =single()= over all views.
+     - [ ] The count of players in the match comes from =MatchView=, not from =me.iter().count()=.
+     - [ ] =audit-003= and =audit-028= cite this marker rather than defining a second one.
+
+* Build, tooling and CI
+
+** TODO [#A] Stand up the CI skeleton with a headless smoke test                      :@found:test:
+   :PROPERTIES:
+   :ID:         found-007
+   :EFFORT:     1d
+   :BLOCKED-BY: found-001, found-004
+   :END:
+
+   There is no CI. A pipeline needs a server that runs without a window, which is
+   why it depends on =found-001=, and it should validate the balance assets, which
+   is why it depends on =found-004=. It is also what keeps D17 fixed once the
+   harness in =audit-010= lands.
+
+   - Files: =.github/workflows/ci.yml= (new), =rust-toolchain.toml= (new)
+   - Acceptance:
+     - [ ] CI runs =cargo fmt --check=, =cargo clippy -- -D warnings=, =cargo test= and =cargo build --release=.
+     - [ ] A smoke job boots the headless server, steps the sim N times, asserts the readiness line appears, and exits cleanly on SIGTERM.
+     - [ ] CI fails the build on a balance validation error and prints the offending field path.
+     - [ ] The pipeline is green on a commit that only touches documentation.
+
+** TODO [#B] Pin workspace dependencies and document the bevy/lightyear upgrade path    :@found:
+   :PROPERTIES:
+   :ID:         found-008
+   :EFFORT:     2h
+   :END:
+
+   =Cargo.toml= pins =bevy = "0.19.1"= and =lightyear = { version = "0.29", ... }=
+   with =edition = "2024"=. Bevy breaks API on every minor release and lightyear
+   tracks it, so without a written upgrade path a version bump is an unbounded
+   refactor. Record the exact versions, the features actually relied on, and the
+   upgrade procedure.
+
+   - Files: =Cargo.toml=, =Cargo.lock=, [[file:README.org][README.org]] (decisions)
+   - Acceptance:
+     - [ ] The exact resolved versions (=bevy 0.19.1=, =lightyear 0.29.0=) and the required edition and MSRV (=edition 2024=) are recorded and do not contradict each other.
+     - [ ] The lightyear features in use (=std=, =client=, =server=, =replication=, =udp=, =raw_connection=) are each justified in a comment, and unused ones are removed.
+     - [ ] A one-page upgrade procedure states how to bump both crates together and what to re-check afterwards (the =build_protocol= order, and that it runs after the plugin groups and before any peer entity).
+     - [ ] CI (found-007) pins the same toolchain, so a local and a CI build cannot diverge.
+
+* Non-goals
+
+  This file is plumbing only. It deliberately excludes:
+
+  - *Gameplay content.* No towers, creeps, waves, abilities or map data beyond the
+    loader skeleton in =found-004=; those belong to =02-simulation.org= through
+    =08-lobby.org=.
+  - *Balance.* No tuned numbers. The only balance work here is moving other files'
+    literals into data, and every number the loader ships starts as a guess marked
+    =(tune)=.
+  - *Art and audio.* No sprites, animation, VFX or sound; those belong to
+    =11-content.org=.

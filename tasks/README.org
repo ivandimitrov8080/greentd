@@ -1,0 +1,305 @@
+#+TITLE: greentd — full implementation task list
+#+SUBTITLE: A faithful Warcraft III "Green TD" clone on Bevy 0.19 + lightyear 0.29
+#+TODO: TODO NEXT IN-PROGRESS WAITING BLOCKED | DONE CANCELLED
+#+TAGS: FOUNDATION(f) SIM(s) MAP(m) WAVES(w) TOWERS(t) ECON(e) BUILDER(b) LOBBY(l) NET(n) UI(u) CONTENT(c) TEST(x) RELEASE(r)
+#+FILETAGS: :greentd:
+#+STARTUP: overview indent
+
+* How to work in this directory
+  :PROPERTIES:
+  :ID:       meta-howto
+  :END:
+
+  This directory is the single source of truth for *what is left to build*. It
+  is a plan written against the code that already exists in =src/=, not against
+  an imagined greenfield project. Every task names the file it touches.
+
+  Workflow:
+
+  1. Read the *Milestones* section to find the current milestone.
+  2. Open the file for the subsystem, find the highest-priority =TODO= that is
+     not =BLOCKED=, and move it to =NEXT=.
+  3. On completing a task, tick its acceptance checkboxes, set it to =DONE=,
+     and update =:STATUS:= in the file header if the subsystem is finished.
+
+  Run =C-c a= style agenda?  No. This project has no org agenda config; entries
+  are meant to be read as a checklist. Use =org-todo= and =org-cycle= normally.
+
+** Task format (mandatory)
+   :PROPERTIES:
+   :ID:       meta-format
+   :END:
+
+   Every task heading is written exactly like this:
+
+   #+BEGIN_SRC org
+   ** TODO [#A] Imperative title, no trailing period          :@sim:
+      :PROPERTIES:
+      :ID:         widget-004
+      :EFFORT:     1d
+      :BLOCKED-BY: widget-001
+      :END:
+      Why this exists, in one or two sentences. Cite the WC3 behaviour being
+      reproduced, or the defect being fixed, by ID (=D12=).
+
+      - Files: =src/sim.rs=, =src/game.rs=
+      - Acceptance:
+        - [ ] Concrete, testable statement.
+        - [ ] Another one.
+   #+END_SRC
+
+   Rules:
+
+   - =ID= is unique across the whole directory, =subsystem-NNN=, lowercase.
+   - =EFFORT= is a rough sizing: =2h=, =1d=, =1w=. It is a schedule input, not
+     a promise.
+   - =BLOCKED-BY= lists IDs that must be =DONE= first. =BLOCKS= is the inverse
+     and is optional (it is derivable, so do not bother keeping it in sync).
+   - Priority =A= means correctness, faithfulness or blocking; =B= means
+     meaningful gameplay; =C= means polish. Anything that can lose a player's
+     match data or let a client cheat is =A= by definition.
+   - Acceptance criteria must be checkable without reading the diff. "Feels
+     better" is not an acceptance criterion.
+   - Do not use =#+TODO:= inside a task file to invent new keywords. The four
+     active states are =TODO NEXT IN-PROGRESS WAITING BLOCKED=.
+
+** Effort vocabulary
+   :PROPERTIES:
+   :ID:       meta-effort
+   :END:
+
+   | Level | Meaning                                                |
+   |-------+--------------------------------------------------------|
+   |     2h | one sitting, one file, no design decisions left open  |
+   |     1d | one file plus its tests, one design decision           |
+   |     1w | new subsystem, multiple files, protocol or data-model change |
+   |     1m | multi-week epic; should be split before starting       |
+
+* Status snapshot — what exists today
+  :PROPERTIES:
+  :ID:       status
+  :END:
+
+  =cargo run= (host), =cargo run -- server=, =cargo run -- client [port]= all
+  work. The project builds; =Cargo.lock= pins bevy 0.19.1 and lightyear 0.29.0.
+  What is implemented is a *vertical slice*: one map, one wave loop, three
+  towers, one lose condition, replicated state, and a text HUD.
+
+** Implemented
+   :PROPERTIES:
+   :ID:       status-implemented
+   :END:
+
+   - Single crate; three run modes share one =App= builder in =src/main.rs=.
+   - =src/sim.rs=: server-only authoritative state machine. =HashMap= of
+     =CreepId -> Creep=, =IVec2 -> Tower=, =PlayerKey -> Player=. Plain
+     =step(dt) -> Vec<SimEvent>=, no networking types, unit-testable in
+     principle (there are currently zero tests).
+   - Creep model: distance-along-path, =hp/max_hp=, =base_speed=,
+     =slow_mult=+ =slow_timer=, =bounty=, =last_hit_by=.
+   - Wave loop: infinite, =WAVE_INTERVAL = 20s=, first wave at 3s. Count is
+     =(4 + wave/2) * connected_players=; =hp = 45 * (1 + 0.28*(w-1))=;
+     =speed = 55 + 2*(w-1)=; =bounty = 6 + w/2=. Creeps are spread evenly
+     around the whole loop.
+   - Tower model: =kind= 0/1/2 = Basic/Cannon/Frost from =tower_stats()=;
+     unbounded =level=; per-shot tier multipliers on damage, range and rate.
+     Targeting picks the creep furthest along the path inside range. Cannon
+     splashes, Frost slows.
+   - =try_build/ try_upgrade/ try_sell/ call_wave= are the only mutators, each
+     returning =Result<(), Reject>=.
+   - Lose condition: =creeps.len() > OVERRUN_CAP (=150=)= ends the match
+     permanently.
+   - =src/map.rs=: 32x24 grid, =TILE = 32.0=, one closed ring path through four
+     corner waypoints; buildability is "not within =0.95 * TILE= of the path".
+   - =src/protocol.rs=: =ClientCmd= (C2S) and =ServerNotice= (S2C) messages,
+     one bidirectional reliable channel, six replicated components.
+   - =src/server.rs=: player identity derived from the UDP peer address, one
+     private =PlayerView= entity per player, one global =MatchView= entity,
+     sim state mirrored into replicated entities every =Update= with
+     change-diffing.
+   - =src/client.rs=: no prediction, no interpolation. Text HUD, keys 1/2/3,
+     LMB build, U upgrade, RMB sell, Space calls the next wave.
+   - =src/visuals.rs=: orthographic camera with =AutoMin= scaling, 768 tile
+     sprites, creep sprite darkened by HP fraction, tower sprite coloured by
+     kind and scaled by level. Sprites are attached by =On<Add, ..>= observers.
+
+** NOT implemented (the bulk of the game)
+   :PROPERTIES:
+   :ID:       status-missing
+   :END:
+
+   No armour or damage types; no air units; no creep variety whatsoever; no
+   finite wave table; no difficulty; no game modes; no lives/leak model; no
+   income; no bounty scaling table; no gambling; no lumber; no food; no builder
+   hero; no skills; no crits; no aura towers; no traps; no spell tower; no
+   research tower; no tower tiers or branching (3 towers × N levels is not the
+   same design — the original branches at tier 3 into different towers); no
+   projectiles; no audio; no lobby or setup phase; no kick; no restart; no
+   reconnect; no spectators; no multiboard; no tower tooltips or build panel;
+   no minimap; no camera controls; no unit-health bars; no floating damage
+   text; no tests; no CI; no data-driven balance.
+
+* The single most important correctness question — two lineages
+  :PROPERTIES:
+  :ID:       lineage
+  :END:
+
+  "Green TD" is not one map. Two lineages share the name, and they have
+  *different lose conditions*. The existing code picked one and its own comments
+  assert it is "Green TD's real lose condition", which is only true of one
+  lineage.
+
+  | Lineage | Lineage A — "Green Circle TD" | Lineage B — "Green TD" / "Green TD PROs" |
+  |---------+-------------------------------+------------------------------------------|
+  | Author  | "hit" and many forks          | KaMiKaZePeNgUiN, later GenoHacker / Sencility |
+  | Lose    | Too many creeps alive on the ring at once | Lives; a creep reaching the "Life Zone" leaks and costs lives |
+  | Threshold | 600 / 700 / 800 / 1000 depending on version | Boss leak costs 10 lives; 0 lives = defeat |
+  | Waves   | Endless                       | 36 waves (PROs) or 60 waves, then Endless |
+  | Source  | hiveworkshop thread 350930    | hiveworkshop thread 249982, wc3maps 356685 |
+
+  The current code implements Lineage A with =OVERRUN_CAP = 150=, which does not
+  even match Lineage A's documented numbers (600–1000).
+
+  **Decision:** support both, as data. The lose rule becomes a match setting
+  (=lobby-003=) with two implementations (=sim-005=). Default for a fresh match
+  should be Lineage B (lives), because "leak costs a life" is the mechanic most
+  players remember and because it gives a longer, more forgiving ramp than a
+  hard creep cap.
+
+  This is not scope creep for its own sake: it is one enum, two match settings,
+  and it prevents the project from being *wrong about the game it is cloning*.
+
+* Milestones
+  :PROPERTIES:
+  :ID:       milestones
+  :END:
+
+  Milestones are ordered so that each one ends with a playable build. A
+  milestone is done when every =[#A]= task inside it is =DONE= and the build
+  runs end-to-end.
+
+  =12-testing= is the one exception to the "each file belongs to one milestone"
+  rule: M0's exit criterion is literally "the sim has tests", so
+  [[file:12-testing.org][12-testing.org]] starts in M0 (=test-001= through =test-005=), continues
+  through M1-M5, and finishes in M6 with the golden balance test. The other
+  files each belong to exactly one milestone.
+
+  | # | Name                        | File                                   | Exit criterion |
+  |---+-----------------------------+----------------------------------------+----------------|
+  | M0 | Correct and observable      | [[file:01-current-code-audit.org][01-current-code-audit]] + [[file:00-foundation.org][00-foundation]] + [[file:12-testing.org][12-testing]] (=test-001=..=test-005=) | No client can affect another player's towers; the sim has tests; the balance numbers live in one table; server runs headless |
+  | M1 | Faithful core loop          | [[file:02-simulation.org][02-simulation]] + [[file:03-map.org][03-map]] + [[file:04-waves.org][04-waves]] | A full 60-wave match (the 36-wave short game is a prefix) with armour types, air, immune, boss and hero waves, and a real lose condition |
+  | M2 | Tower system                | [[file:05-towers.org][05-towers]] | All 11 tower families with tiers, branching, target filters, auras, traps and projectiles |
+  | M3 | Economy and builder         | [[file:06-economy.org][06-economy]] + [[file:07-builder.org][07-builder]] | Per-wave income, scaling bounty, gambling, food, and a levelling builder with skills |
+  | M4 | Modes and lobby             | [[file:08-lobby.org][08-lobby]] | Setup phase, 5 difficulties + chaos, 7 game modes, tower disabling, kick, restart |
+  | M5 | Netcode and UX              | [[file:09-networking.org][09-networking]] + [[file:10-ui.org][10-ui]] | Interpolated rendering, reconnect, spectators, multiboard, build panel, tooltips, camera controls |
+  | M6 | Content and release         | [[file:11-content.org][11-content]] + [[file:12-testing.org][12-testing]] + [[file:13-release.org][13-release]] | Art and audio pass, balance pass, packaging, docs |
+
+* Defect index (D-numbers)
+  :PROPERTIES:
+  :ID:       defects
+  :END:
+
+  These are deficiencies in the code as it stands. Each is fixed by a task in
+  [[file:01-current-code-audit.org][01-current-code-audit.org]] (except where noted). Referenced by ID from
+  other files so a task can say "fixes D9" without restating it.
+
+  =A= defects are exploitable or lose player state. =B= are fidelity gaps. =C=
+  are polish. The full write-up of each is in the audit file.
+
+  | ID  | Sev | Summary |
+  |-----+-----+---------|
+  | D1  | A   | =try_upgrade= and =try_sell= never check that the caller owns the tower. Any client can drain or destroy any other player's board. |
+  | D2  | A   | =try_sell= refunds the *caller*, not the tower's owner. |
+  | D3  | A   | Host mode replicates every =PlayerView= to everyone (=NetworkTarget::All=), so =update_hud='s =me.single()= fails and the host sees no gold or kills. |
+  | D4  | A   | =sync_match= early-returns when =sim.over=, freezing the HUD at the moment of defeat; =MatchView::phase= is never written. |
+  | D5  | A   | =ServerNotice::WaveStarted= is never sent, so the client's wave notification is dead code and players cannot tell a wave began. |
+  | D6  | A   | =CallWave= has no cooldown, cost or authority check; one client can force waves continuously and end the match. |
+  | D7  | A   | No rate limiting. =handle_cmds= drains and executes every queued command every frame. |
+  | D8  | A   | =players.entry(who).or_default()= mints a zero-gold player record for an unregistered key; diverges from =add_player='s =START_GOLD=. |
+  | D9  | A   | Identity is the UDP socket address, so reconnecting from a new port silently becomes a new player and loses gold and kills. |
+  | D10 | B   | A wave is spread evenly around the entire loop, so it has no front; and a creep can spawn already adjacent to the Life Zone. |
+  | D11 | B   | Creeps are entirely uniform — no armour type, no damage type, no air, no boss, no hero, no immune. |
+  | D12 | C   | =CreepVis= and =CreepHp= are distinct components, doubling replication updates per creep per tick. |
+  | D13 | B   | No projectile entities; towers damage invisibly on a cooldown. |
+  | D14 | B   | No client-side interpolation; creeps visibly step at 30 Hz. |
+  | D15 | B   | =VisualsPlugin= is added in =server= mode, so a dedicated server opens a window and allocates 768 sprites. |
+  | D16 | C   | Target acquisition is O(towers × creeps) per tick, ~115k distance tests at the current caps. |
+  | D17 | A   | Zero tests. The sim is written to be testable and never has been. |
+  | D18 | A   | Every balance number is a literal in =game.rs= or worse, inline in =sim.rs=. |
+  | D19 | A   | The lose condition is the other lineage's lose condition and its constant (150) matches neither. See the lineage section above. |
+  | D20 | B   | =Sim::over= is terminal; there is no restart, rematch or -restart equivalent. |
+  | D21 | B   | =Net::announced_over= is never reset, so a restarted match would not announce again. |
+  | D22 | B   | No protocol version negotiation; a mismatched client desyncs silently instead of being rejected. |
+  | D23 | B   | =spawn_client= hardcodes =127.0.0.1=; there is no way to join a remote host. |
+  | D24 | B   | A player joining mid-match starts at wave N with starting gold and no catch-up. |
+  | D25 | B   | =Reject= has no =NotOwner= and no =RateLimited= variant, so D1/D6 cannot report a reason. |
+  | D26 | C   | Grass/path colouring treats "inside the ring" and "outside the ring" identically; undocumented whether that is intended. |
+  | D27 | B   | No leaver handling: gold is not split, and towers are simply orphaned. |
+  | D28 | C   | =Path::distance_to= walks every segment; =is_buildable= is called per click on the server. Cheap now, wrong shape later. |
+  | D29 | B   | =VisualsPlugin='s =MapTile= is =#[allow(dead_code)]= and tiles are spawned as individual entities rather than a tiled render pass. |
+  | D30 | C   | No =LocalPlayer= marker; the client infers "my" state from "the one =PlayerView= I happen to hold". |
+
+* Cross-cutting decisions
+  :PROPERTIES:
+  :ID:       decisions
+  :END:
+
+** DONE Balance lives in data, not code                                  :@sim:
+   :PROPERTIES:
+   :ID:       decide-data-driven
+   :EFFORT:   1d
+   :END:
+
+   All tower stats, creep stats, wave tables, ability numbers and drop rates
+   move to RON assets under =assets/balance/=, loaded by both peers, hashed into
+   the protocol version. Rationale: the original map's numbers were tuned by
+   hand over years; this project needs to be able to do that without a
+   recompile, and needs both peers to agree on the numbers or the "dumb client"
+   model breaks (tooltips would lie).
+
+   See [[file:00-foundation.org][00-foundation.org]] =found-004=.
+
+** DONE Server is authoritative; the client never simulates                    :@net:
+   :PROPERTIES:
+   :ID:       decide-authority
+   :END:
+
+   Keep the existing model. A TD has no twitch input, so there is nothing to
+   hide latency behind; prediction would add determinism obligations for no
+   player-visible benefit. The client *does* get interpolation and a visual-only
+   "ghost" of the tower it is about to place. This decision constrains
+   [[file:09-networking.org][09-networking.org]] and [[file:10-ui.org][10-ui.org]] and should not be revisited
+   without a concrete reason.
+
+** TODO Decide the default lineage for a fresh match                     :@sim:
+   :PROPERTIES:
+   :ID:       decide-default-lineage
+   :EFFORT:   2h
+   :END:
+
+   Two lineages exist (see *The single most important correctness question*
+   above). The recommendation is Lineage B (lives). This needs an explicit
+   sign-off before =sim-005= is started, because it determines the whole
+   difficulty curve and the map's Life Zone geometry.
+
+* File index
+  :PROPERTIES:
+  :ID:       file-index
+  :END:
+
+  | File | Scope |
+  |------+-------|
+  | [[file:00-foundation.org][00-foundation.org]] | Build, config, headless mode, logging, data-driven balance loading, CI skeleton |
+  | [[file:01-current-code-audit.org][01-current-code-audit.org]] | Fixes for D1–D30; the first thing to do |
+  | [[file:02-simulation.org][02-simulation.org]] | Sim data model, armour/damage types, targeting, projectiles, RNG, lose/win rules |
+  | [[file:03-map.org][03-map.org]] | Map data model, path shapes, lanes, Life Zone, build regions, map selection |
+  | [[file:04-waves.org][04-waves.org]] | Creep catalogue, wave tables, wave kinds, difficulty scaling, endless |
+  | [[file:05-towers.org][05-towers.org]] | The 11 tower families, tiers, branching, auras, traps, spells, research, crits |
+  | [[file:06-economy.org][06-economy.org]] | Gold, income, bounty, sell values, gambling, lumber, food, leaver split |
+  | [[file:07-builder.org][07-builder.org]] | Builder hero, XP, levels, skill points, emergency towers |
+  | [[file:08-lobby.org][08-lobby.org]] | Setup phase, difficulty, chaos, game modes, tower disabling, kick, restart |
+  | [[file:09-networking.org][09-networking.org]] | Protocol v2, authority hardening, reconnection, spectators, interpolation, dedicated server, matchmaking |
+  | [[file:10-ui.org][10-ui.org]] | Multiboard, build panel, tooltips, camera, minimap, floating text, selection, notices |
+  | [[file:11-content.org][11-content.org]] | Art, animation, VFX, audio, fonts, loading screen |
+  | [[file:12-testing.org][12-testing.org]] | Unit/property tests, replay harness, bots, fuzz, benchmarks |
+  | [[file:13-release.org][13-release.org]] | Packaging, platform targets, docs, telemetry, moderation |

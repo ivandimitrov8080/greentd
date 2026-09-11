@@ -1,0 +1,411 @@
+#+TITLE: greentd — lobby and setup
+#+SUBTITLE: Setup phase, difficulty and chaos, game modes, tower disabling, kick, restart and late join
+#+TODO: TODO NEXT IN-PROGRESS WAITING BLOCKED | DONE CANCELLED
+#+TAGS: FOUNDATION(f) SIM(s) MAP(m) WAVES(w) TOWERS(t) ECON(e) BUILDER(b) LOBBY(l) NET(n) UI(u) CONTENT(c) TEST(x) RELEASE(r)
+#+FILETAGS: :greentd:
+#+STARTUP: overview indent
+
+This file plans the lobby and match setup phase: difficulty and chaos, the seven
+game modes, tower disabling, host control, kick, restart, late join and
+match-settings serialisation. It touches =src/lobby.rs= (new), =src/sim.rs=,
+=src/server.rs=, =src/game.rs=, =src/protocol.rs=, =src/client.rs=, =src/main.rs=
+and =assets/balance/*.ron=. Numbers research could not confirm are =(tune)=.
+
+* Match setup
+
+** TODO [#A] Add a Setup phase before the match runs                        :@lobby:
+   :PROPERTIES:
+   :ID:         lobby-001
+   :EFFORT:     1w
+   :END:
+   Today the match starts the moment =setup_match= spawns =MatchView=:
+   =Sim::new= sets =wave_timer = 3.0= and =tick_sim= is already stepping, so wave
+   1 spawns three seconds after the server is up with no chance to configure
+   anything. WC3 Green TD instead opens a *setup phase* ("extended time to
+   choose modes to 120 seconds") during which nothing spawns. The replicated
+   phase comes from the typed match phase in [[file:02-simulation.org][02-simulation.org]]
+   (=sim-014=).
+
+   - Files: =src/lobby.rs=, =src/sim.rs=, =src/server.rs=, =src/game.rs=,
+     =src/client.rs=
+   - Acceptance:
+     - [ ] A =Setup= phase exists between =Lobby= and =Running= in the =sim-014= phase enum, is part of the replicated match state, and is written exactly once per transition.
+     - [ ] During =Setup=, =sim.wave_timer= does not advance and =start_wave= is unreachable, so no creep is ever spawned.
+     - [ ] A countdown of the setup duration is replicated and rendered; it is the only source of remaining time on the client.
+     - [ ] A =Build=, =Upgrade=, =Sell= or =CallWave= arriving during =Setup= is rejected with a phase reason, except a build inside the designated setup area.
+     - [ ] =Lobby -> Setup -> Running -> Over= occurs exactly once each on a headless =Sim=, asserted by =test-001=.
+
+** TODO [#A] Select difficulty and apply the difficulty scalars             :@lobby:
+   :PROPERTIES:
+   :ID:         lobby-002
+   :EFFORT:     1w
+   :BLOCKED-BY: lobby-001
+   :END:
+   Difficulty is chosen during setup and then scales every wave's creep health
+   and bounty and each player's base income. The five levels and their scalars
+   are:
+
+   | Difficulty | Creep HP        | Bounty  | Base income |
+   |------------+-----------------+---------+-------------|
+   | Easy       | 75%             | 75%     | 0           |
+   | Normal     | 100%            | 100%    | 2           |
+   | Hard       | 125%            | 125%    | 4           |
+   | Very Hard  | 150%            | 150%    | 6           |
+   | Chaos      | 200-400% (tune) | ? (tune) | 8          |
+
+   Chaos Mode is a per-difficulty variant (not offered for Chaos itself) that
+   randomises each wave's health between two data-defined values and adds +2
+   income (tune). The original shipped a bug where switching from a Chaos
+   difficulty to a non-Chaos one during setup left the Chaos state active; the
+   selection here must clear it. The scalars are applied by
+   [[file:04-waves.org][04-waves.org]] (=waves-004=) and the bounty multiplier
+   by [[file:06-economy.org][06-economy.org]] (=econ-004=).
+
+   - Files: =src/game.rs=, =src/sim.rs=, =src/server.rs=, =src/lobby.rs=,
+     =assets/balance/difficulty.ron=
+   - Acceptance:
+     - [ ] =Difficulty= enumerates Easy, Normal, Hard, Very Hard and Chaos, each carrying creep-health, bounty and base-income scalars loaded from =assets/balance/difficulty.ron=, not from literals in =src/sim.rs= (D18).
+     - [ ] Every difficulty except Chaos has a Chaos Mode variant, and a Chaos Mode wave draws its health from the two-value range in data and adds +2 income.
+     - [ ] A sequence that selects a Chaos difficulty and then a non-Chaos difficulty leaves no Chaos scalar active (regression test for the original's setup bug).
+     - [ ] The chosen difficulty is locked when the phase becomes Running and is identical on every peer; no client can hold a different multiplier.
+
+** TODO [#A] Make the lose rule a match setting                            :@lobby:
+   :PROPERTIES:
+   :ID:         lobby-003
+   :EFFORT:     1w
+   :BLOCKED-BY: lobby-001
+   :END:
+   "Green TD" is two lineages with two lose conditions (see
+   [[file:README.org][README.org]], *The single most important correctness
+   question*). Expose the rule as a match setting with a
+   =LoseRule::Overrun { cap }= variant (Lineage A) and a =LoseRule::Lives { .. }=
+   variant (Lineage B), and carry the per-mode overrides: Headhunter makes a
+   leaked boss an instant loss, and Gold Rush makes a rushed creep that reaches
+   the end point cost 5 lives. This is the setting that =sim-005= implements.
+   *The default for a fresh match is pending the =decide-default-lineage=
+   sign-off in [[file:README.org][README.org]] and must not be hardcoded before it
+   lands.*
+
+   - Files: =src/sim.rs=, =src/game.rs=, =src/server.rs=, =src/lobby.rs=,
+     =src/protocol.rs=
+   - Acceptance:
+     - [ ] =LoseRule= has exactly the =Overrun { cap }= and =Lives { .. }= variants above and is a field of the match settings.
+     - [ ] The setup screen offers both rules; the fresh-match default is left unwritten until =decide-default-lineage= is DONE.
+     - [ ] Headhunter ([[file:04-waves.org][04-waves.org]] =waves-010=) sets the match to instant loss on a leaked boss, and Gold Rush (=waves-011=) charges 5 lives per leaked rush, both as match-setting overrides rather than literals in =src/sim.rs=.
+     - [ ] The chosen rule is replicated with the match and read by =sim-005=; changing it after Running starts is rejected.
+
+** TODO [#A] Select among the seven game modes                            :@lobby:
+   :PROPERTIES:
+   :ID:         lobby-004
+   :EFFORT:     1w
+   :BLOCKED-BY: lobby-001
+   :END:
+   All seven modes are mutually compatible and each adds +2 income:
+
+   - Endless - after wave 60 the game keeps spawning creeps that gain armour and
+     health every wave; with Random Waves enabled, 300 waves are generated.
+   - Gold Rush - above 60% health a creep has a 10% chance when attacked to
+     enter a gold rush (more health, armour and movespeed); a leak costs 5 lives
+     and the killer gets 50 gold.
+   - Swarm - total creeps per wave is doubled, excluding bosses.
+   - Random Waves - every wave may have a different armour type, drawn from a
+     pool of 301 units over 7 armour types (43 each, tune).
+   - Headhunter - random bosses can spawn; killing one pays all players, and a
+     leaked boss is an instant loss.
+   - Speed - the spawn interval shrinks and creep movement speed is set to 400
+     (tune).
+   - Blitz - waves spawn on a timer instead of after the current wave is
+     cleared.
+
+   Store the active set as a =GameModes= bitset in the match settings so it can
+   be tested, replicated and printed by =-gm=. The per-mode mechanics are
+   owned by [[file:04-waves.org][04-waves.org]] (=waves-005= through =waves-011=);
+   this task owns the set.
+
+   - Files: =src/sim.rs=, =src/game.rs=, =src/server.rs=, =src/lobby.rs=,
+     =src/protocol.rs=, =assets/balance/modes.ron=
+   - Acceptance:
+     - [ ] =GameModes= is a bitset with one bit per mode; all seven can be set at once with no conflict.
+     - [ ] Each set bit contributes exactly +2 to each player's income, composing with the difficulty and disabled-tower terms of =econ-003=.
+     - [ ] =-gm= prints the active mode names to the requesting player.
+     - [ ] A mode can never be half-enabled: no mode-specific code path runs unless its bit is set, and the set is replicated identically to every peer.
+
+** TODO [#B] Disable up to three towers before the match                    :@lobby:
+   :PROPERTIES:
+   :ID:         lobby-005
+   :EFFORT:     1d
+   :BLOCKED-BY: lobby-001
+   :END:
+   "Up to 3 of the 11 towers in the game may be disabled ... Disabling towers
+   will increase income by 2 for each tower." The disabled set is a match
+   setting that must hide the tower from the build panel and reject the build.
+   The tower-side catalogue half is [[file:05-towers.org][05-towers.org]] (=tower-020=).
+
+   - Files: =src/lobby.rs=, =src/game.rs=, =src/sim.rs=, =src/server.rs=,
+     =src/client.rs=, =assets/balance/towers.ron=
+   - Acceptance:
+     - [ ] At most three towers may be disabled; a fourth selection is rejected before it is stored.
+     - [ ] Each disabled tower adds exactly +2 to each player's income (=econ-003=).
+     - [ ] A disabled tower is hidden from the build panel (=ui-001=), and a build or upgrade of one is rejected with =Reject::TowerDisabled=.
+     - [ ] The disabled set is replicated, identical on every peer, and locked when the phase becomes Running.
+
+** TODO [#A] Serialise and hash the match settings                         :@lobby:
+   :PROPERTIES:
+   :ID:         lobby-016
+   :EFFORT:     1d
+   :BLOCKED-BY: lobby-002, lobby-003, lobby-004, lobby-005
+   :END:
+   The match settings must survive a restart (=lobby-010=), be reloadable for a
+   rematch, and be hashed into the protocol version so a peer that computed
+   different settings from the same lobby cannot desync. Define one serialisable
+   =MatchSettings= value and fold its hash into the negotiation of
+   [[file:09-networking.org][09-networking.org]] (=net-001=).
+
+   - Files: =src/game.rs=, =src/lobby.rs=, =src/protocol.rs=, =src/server.rs=
+   - Acceptance:
+     - [ ] A single =MatchSettings= value holds difficulty, chaos flag, mode set, disabled towers, lose rule and map id, and is serialisable.
+     - [ ] The settings survive a restart and can be saved and reloaded for a rematch with no loss.
+     - [ ] The settings hash is part of the handshake, so a peer whose settings differ is refused during negotiation (=net-001=).
+     - [ ] A round-trip =deserialise(serialise(x)) == x= holds for every field, and changing any field changes the hash.
+
+* Players and host
+
+** TODO [#A] Elect a host and transfer setup control on departure           :@lobby:
+   :PROPERTIES:
+   :ID:         lobby-006
+   :EFFORT:     1d
+   :BLOCKED-BY: lobby-001
+   :END:
+   In the original the match settings live on a "Game Setup Unit" owned by the
+   host, and if that owner leaves the unit's ownership changes to another player
+   rather than the unit being removed ("Added ownership changing of the Game
+   Setup unit if the owner of it leaves the game"). Reproduce that: the host
+   owns the settings, only the host may commit them, and if the host disconnects
+   the next connected player becomes host without losing the current selections.
+
+   - Files: =src/lobby.rs=, =src/server.rs=, =src/sim.rs=, =src/game.rs=,
+     =src/protocol.rs=
+   - Acceptance:
+     - [ ] Exactly one connected player is the host, and the host is the only player who may change the match settings after setup begins.
+     - [ ] A settings change from a non-host is rejected with a distinct reason and mutates nothing.
+     - [ ] When the host disconnects, host role transfers to a deterministic next player (lowest connected colour index) and the settings are unchanged.
+     - [ ] A test removes the host during setup and asserts the settings survive and a new host exists.
+
+** TODO [#C] Randomise modes, difficulty and tower options                  :@lobby:
+   :PROPERTIES:
+   :ID:         lobby-007
+   :EFFORT:     1d
+   :BLOCKED-BY: lobby-002, lobby-004, lobby-005
+   :END:
+   The original offers "3 ways to randomise Game Modes, Difficulty and Tower
+   Options" - one per category. Add a host-only randomise action per category
+   that draws a legal value through the same validation the manual path uses, so
+   a randomised match can never be invalid. Whether randomisation is a vote or
+   host-only is unconfirmed (tune).
+
+   - Files: =src/lobby.rs=, =src/server.rs=, =src/sim.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] Three independent randomise actions exist (modes, difficulty, tower options), each host-only.
+     - [ ] A randomised difficulty is always one of the five, and a randomised tower set never exceeds three.
+     - [ ] Randomisation draws from the seeded match RNG ([[file:02-simulation.org][02-simulation.org]] =sim-012=), so a recorded seed reproduces the same settings.
+     - [ ] The result is shown in the setup summary and can be re-randomised before the match starts.
+
+** TODO [#B] Give each player a slot, a colour and a stable name            :@lobby:
+   :PROPERTIES:
+   :ID:         lobby-008
+   :EFFORT:     1d
+   :END:
+   =-kick <Colour>= and the colour-coded multiboard both need colours as
+   first-class data, and reconnection needs a stable identity (see
+   [[file:09-networking.org][09-networking.org]] =net-002=). Assign each player a
+   slot, a colour from the fixed WC3 palette and a display name at join, and key
+   the player record on that identity rather than on the socket.
+
+   | Slot | Colour | Slot | Colour |
+   |------+--------+------+--------|
+   | 1    | Red    | 6    | Orange |
+   | 2    | Blue   | 7    | Green  |
+   | 3    | Teal   | 8    | Pink   |
+   | 4    | Purple | 9    | Gray   |
+   | 5    | Yellow |      |        |
+
+   - Files: =src/game.rs=, =src/lobby.rs=, =src/server.rs=, =src/protocol.rs=,
+     =src/client.rs=
+   - Acceptance:
+     - [ ] Each connected player has a 1-based slot, a colour from the WC3 palette and a display name, all replicated to every client.
+     - [ ] Colours are unique while connected and freed when a player leaves.
+     - [ ] A colour name resolves to at most one player, so =-kick <Colour>= (=lobby-009=) is unambiguous.
+     - [ ] The identity used here is the stable one from =net-002=, not =PlayerKey(remote.0.to_bits())= (D9).
+
+** TODO [#B] Kick a player by colour, as a leave                           :@lobby:
+   :PROPERTIES:
+   :ID:         lobby-009
+   :EFFORT:     1d
+   :BLOCKED-BY: lobby-006, lobby-008
+   :END:
+   Red (the host) can remove a player with =-kick <Colour>=. A kick is a
+   leave, so it must run the same leaver policy as a disconnect: the kicked
+   player's gold is split among the survivors and their towers follow the same
+   orphan rule. The command is rejected from any non-host.
+
+   - Files: =src/server.rs=, =src/lobby.rs=, =src/protocol.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] =-kick <Colour>= from the host removes exactly the named player and closes that player's connection.
+     - [ ] The same command from a non-host is rejected and changes nothing.
+     - [ ] The kicked player's gold is split among the remaining connected players through the leaver split (=econ-011=), and their towers follow the recorded orphan rule.
+     - [ ] An unknown or ambiguous colour is reported to the host rather than matching arbitrarily.
+
+** TODO [#B] Ready-up and start the match on red's command                 :@lobby:
+   :PROPERTIES:
+   :ID:         lobby-014
+   :EFFORT:     1d
+   :BLOCKED-BY: lobby-001, lobby-006
+   :END:
+   The setup phase ends when red starts the game or the countdown expires. Add
+   an explicit ready/start step: the host commits, a short countdown runs, and
+   the phase moves to Running once a minimum player count is met.
+
+   - Files: =src/lobby.rs=, =src/server.rs=, =src/sim.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] The host can start the match at any time during setup; each other player's ready state follows the recorded rule.
+     - [ ] A minimum player count is enforced and a start below it is refused with a reason.
+     - [ ] A short start countdown is replicated and no creep spawns until it reaches zero.
+     - [ ] The setup countdown expiring also starts the match, equal to accepting the current settings.
+
+* Match lifecycle and communication
+
+** TODO [#A] Restart the match after a defeat                              :@lobby:
+   :PROPERTIES:
+   :ID:         lobby-010
+   :EFFORT:     1w
+   :BLOCKED-BY: lobby-001
+   :END:
+   The original's =-restart= (offered on 0 lives) begins a fresh game in the
+   same lobby, and shows a 60-second timer on loss. Today =Sim::over= is terminal
+   (D20) and =Net::announced_over= is never cleared (D21), so a restarted match
+   could neither run nor announce its next defeat. Specify exactly what a
+   restart resets: creeps, towers, gold, kills, builder ("hero") levels, the wave
+   counter, the lose state and =announced_over= - but not the chosen modes,
+   difficulty, disabled towers or lose rule, which persist into the new match.
+   The mechanical =Sim::reset()= path is tracked in
+   [[file:01-current-code-audit.org][01-current-code-audit.org]] (D20, D21).
+
+   - Files: =src/sim.rs=, =src/server.rs=, =src/lobby.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] A restart resets =Sim= (=wave=, =creeps=, =towers=, per-player gold and kills, builder levels) to a fresh state and returns the phase to Setup or Running.
+     - [ ] =Net::announced_over= is cleared so the next defeat announces again (D21).
+     - [ ] Every replicated creep, tower and =PlayerView= mirror is despawned and respawned from the new sim with no orphans (D20).
+     - [ ] The match settings (modes, difficulty, disabled towers, lose rule) survive a restart unchanged.
+     - [ ] The client HUD is cleared and the game-over text removed.
+
+** TODO [#B] Decide and implement the late-join rule                       :@lobby:
+   :PROPERTIES:
+   :ID:         lobby-011
+   :EFFORT:     1d
+   :BLOCKED-BY: lobby-008
+   :END:
+   D24: a player joining mid-match starts at wave N with starting gold and no
+   catch-up, so a late join is a free loss. Decide whether mid-match join is
+   allowed at all - spectator-only versus join-with-catch-up - and, if allowed,
+   apply a single documented catch-up grant that is a function of the current
+   wave.
+
+   - Files: =src/lobby.rs=, =src/sim.rs=, =src/server.rs=, =src/protocol.rs=
+   - Acceptance:
+     - [ ] The decision (spectator-only, or join-with-catch-up) is stated here with its reason.
+     - [ ] If join-with-catch-up, the grant is a documented function of the current wave (gold, builder level and/or food) and is applied exactly once (D24).
+     - [ ] A joiner's gold is never negative and never exceeds the documented grant.
+     - [ ] A test joins at several waves and asserts the grant matches the documented function.
+
+** TODO [#B] Choose the map in setup and load it on both peers             :@lobby:
+   :PROPERTIES:
+   :ID:         lobby-012
+   :EFFORT:     1d
+   :BLOCKED-BY: map-001
+   :END:
+   Once [[file:03-map.org][03-map.org]] makes the map a RON asset (=map-001=), setup
+   must choose among the shipped maps and every peer must load the same one, with
+   world bounds and camera framing derived from it (=map-009=). Today the map is
+   four hardcoded corner waypoints in =src/map.rs= (the =RING= const), so there
+   is nothing to select.
+
+   - Files: =src/lobby.rs=, =src/game.rs=, =src/server.rs=, =src/client.rs=,
+     =src/main.rs=
+   - Acceptance:
+     - [ ] The setup screen lists the available maps and the host picks one.
+     - [ ] The selected map id is part of the replicated match settings and every peer loads the same asset.
+     - [ ] A peer lacking the selected map is refused during the handshake rather than loading a different one (=net-001=).
+     - [ ] World bounds and camera framing follow the loaded map (=map-009=).
+
+** TODO [#C] Replace the single notice string with real game messages      :@lobby:
+   :PROPERTIES:
+   :ID:         lobby-013
+   :EFFORT:     1d
+   :END:
+   The client shows feedback through one =ClientUi::notice= string and a
+   hand-rolled =notice_timer= decayed by =decay_notice=. The original has
+   floating and text game messages with a configurable duration and the commands
+   =-gmd [Num]=, =-clear= and =-autoclear=. Define the message taxonomy and
+   its duration rules here; the message log widget is
+   [[file:10-ui.org][10-ui.org]] (=ui-009=).
+
+   - Files: =src/protocol.rs=, =src/game.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] =ServerNotice= text messages carry a duration and severity, and the client can render several at once.
+     - [ ] =-gmd [Num]= sets the default message duration and takes effect on subsequent messages.
+     - [ ] =-clear= clears the sender's messages and =-autoclear= toggles clearing each message as it expires.
+     - [ ] The taxonomy distinguishes wave, leak, game over, income and reject messages so the log can colour them (=ui-009=).
+
+** TODO [#A] Replicate the lobby so everyone sees the live choices         :@lobby:
+   :PROPERTIES:
+   :ID:         lobby-015
+   :EFFORT:     1d
+   :BLOCKED-BY: lobby-002, lobby-004, lobby-005
+   :END:
+   The setup screen must show every player's name, slot, colour, difficulty,
+   modes and disabled towers, and the host's accepted configuration, updating
+   live. Define the replicated lobby-state components - one per player plus one
+   match-level summary - instead of inferring them from a =PlayerView= that only
+   carries gold and kills. The screen that renders them is
+   [[file:10-ui.org][10-ui.org]] (=ui-014=).
+
+   - Files: =src/lobby.rs=, =src/game.rs=, =src/protocol.rs=, =src/server.rs=,
+     =src/client.rs=
+   - Acceptance:
+     - [ ] A replicated per-player lobby component carries slot, colour, name, ready state, difficulty, mode set and disabled towers.
+     - [ ] A match-level component carries the current phase, the countdown and the committed settings.
+     - [ ] A change by one player is visible to all others within a tick, with no client-side guessing.
+     - [ ] =PlayerView= remains authoritative in-game state only and carries no lobby fields.
+
+* Non-goals
+
+  - The per-mode wave mechanics are owned by [[file:04-waves.org][04-waves.org]]
+    (=waves-005= .. =waves-011=); this file only stores and replicates the active
+    set.
+  - The difficulty *scaling* arithmetic is owned by
+    [[file:04-waves.org][04-waves.org]] (=waves-004=).
+  - Income and bounty arithmetic is owned by
+    [[file:06-economy.org][06-economy.org]] (=econ-003=, =econ-004=).
+  - The build-panel widget and multiboard are owned by
+    [[file:10-ui.org][10-ui.org]] (=ui-002=, =ui-003=); this file only supplies the
+    disabled set and the message taxonomy.
+  - The map file format and world bounds are owned by
+    [[file:03-map.org][03-map.org]] (=map-001=, =map-008=).
+  - The lose-rule *implementation* is owned by
+    [[file:02-simulation.org][02-simulation.org]] (=sim-005=); this file only
+    chooses the rule.
+
+* Open questions
+
+  - *Exact Chaos bounty multiplier* is not recorded in the sources consulted.
+    Recommended default: =200%= (tune) pending the balance pass.
+  - *Setup duration*: the sources say "extended ... to 120 seconds".
+    Recommended default: a data value of =120s= (tune), host-overridable.
+  - *Randomisation authority*: vote or host-only. Recommended default:
+    host-only, with a visible announcement (tune).
+  - *Kick rules*: whether a majority can outvote the host. Recommended default:
+    host-only, no vote (tune).
+  - *Default lose rule*: pending =decide-default-lineage=. Recommended default:
+    Lineage B (lives).
+  - *Observer slots*: whether an observer consumes one of the 9 slots is settled
+    in [[file:09-networking.org][09-networking.org]] =net-013=.

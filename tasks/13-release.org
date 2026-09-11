@@ -1,0 +1,289 @@
+#+TITLE: greentd — Release: packaging, platforms, docs, telemetry, moderation
+#+SUBTITLE: Getting the game into a stranger's hands, safely and repeatedly
+#+TODO: TODO NEXT IN-PROGRESS WAITING BLOCKED | DONE CANCELLED
+#+TAGS: FOUNDATION(f) SIM(s) MAP(m) WAVES(w) TOWERS(t) ECON(e) BUILDER(b) LOBBY(l) NET(n) UI(u) CONTENT(c) TEST(x) RELEASE(r)
+#+FILETAGS: :greentd:
+#+STARTUP: overview indent
+
+This plan touches =Cargo.toml= (version and profiles), =src/main.rs= (modes and
+panics), =src/protocol.rs= (version handshake), =src/server.rs= (ops), plus new
+=docs/=, =LICENSE=, =CHANGELOG.md= and packaging scripts. It comes last because
+it depends on the game being complete and the protocol frozen; it freezes the
+protocol from [[file:09-networking.org][09-networking.org]] =net-001= and builds on =decide-authority=.
+
+* Tasks
+
+** TODO [#A] Version the game and report the version and protocol version :@release:
+   :PROPERTIES:
+   :ID:         release-001
+   :EFFORT:     1d
+   :BLOCKED-BY: found-004
+   :END:
+   There is no protocol version negotiation today, so a mismatched client desyncs
+   silently instead of being rejected (=D22=), and a player who cannot join sees a
+   hang rather than a reason. Version the game (not just the crate), carry a
+   protocol version that incorporates the balance-data hash (=found-004=), and
+   surfacing both so a rejected join can say exactly what is wrong (=net-001=).
+
+   - Files: =Cargo.toml=, =src/protocol.rs=, =src/main.rs=, =CHANGELOG.md=
+   - Acceptance:
+     - [ ] The game version and the protocol version are compiled in and reported at startup and in the UI.
+     - [ ] The protocol version incorporates the balance-data hash (=found-004=).
+     - [ ] A version mismatch is rejected with a readable, specific message (=net-001=, =D22=).
+     - [ ] A human-readable changelog exists and is updated for every release.
+
+** TODO [#A] Define the build matrix and decide whether wasm is in scope :@release:
+   :PROPERTIES:
+   :ID:         release-002
+   :EFFORT:     1w
+   :BLOCKED-BY: release-001
+   :END:
+   There is nothing to download today. Define reproducible desktop builds for
+   Linux, Windows and macOS, and decide whether a web/wasm target is in scope.
+   =Cargo.toml= already carries a =wasm-release= profile inherited from the Bevy
+   template, but =lightyear='s =udp=/=raw_connection= features do not work on
+   wasm, so a web build needs a different transport or an explicit scope
+   decision.
+
+   | Target        | Transport                   | In scope for v1?      |
+   |---------------+-----------------------------+-----------------------|
+   | Linux desktop | =lightyear= udp             | yes                   |
+   | Windows       | =lightyear= udp             | yes                   |
+   | macOS         | =lightyear= udp             | yes                   |
+   | Web / wasm    | needs a udp alternative     | decision (see below)  |
+
+   - Files: CI configuration, =Cargo.toml=
+   - Acceptance:
+     - [ ] Reproducible builds exist for Linux, Windows and macOS from a tag.
+     - [ ] The wasm target is either explicitly out of scope or paired with a named transport that replaces =udp=/=raw_connection=.
+     - [ ] The wasm decision is recorded together with the =lightyear= limitation that motivates it.
+     - [ ] A fresh machine can run a downloaded build with no extra setup.
+
+** TODO [#A] Package and distribute the desktop builds :@release:
+   :PROPERTIES:
+   :ID:         release-003
+   :EFFORT:     1w
+   :BLOCKED-BY: release-002, content-010
+   :END:
+   Decide the distribution shape — archives, installers or a storefront — and
+   make asset loading work from an installed location, which is the point where
+   the asset strategy chosen in content-010 becomes load-bearing: assets that load
+   only from the repository root will not survive an install.
+
+   - Files: packaging scripts, CI configuration, =assets/=
+   - Acceptance:
+     - [ ] A distributable artifact exists per platform.
+     - [ ] Assets resolve when the game is launched from an installed path, not only from the repository root (=content-010=).
+     - [ ] The artifact declares its version and is reproducible from a tag.
+     - [ ] An uninstall or clean-up path is documented.
+
+** TODO [#A] Ship a dedicated server as a binary or flag, with a container image :@release:
+   :PROPERTIES:
+   :ID:         release-004
+   :EFFORT:     1w
+   :BLOCKED-BY: found-001
+   :END:
+   A dedicated server should be runnable without a window (the current =server=
+   mode still adds =DefaultPlugins= with a window and the 768 tile sprites,
+   =D15=). Provide it as a separate binary or a documented flag from the config
+   layer (=found-001=), plus a container image and a runbook so it can be started
+   from a command line rather than a debugger.
+
+   - Files: =src/main.rs=, =Dockerfile=, =docs/server.md=, =Cargo.toml=
+   - Acceptance:
+     - [ ] A dedicated server runs headless (no window, no =VisualsPlugin=) as a binary or via a documented flag (=found-001=).
+     - [ ] A container image exists and starts a server from a documented command.
+     - [ ] A runbook states the ports, the config, and how to read a match from the log.
+     - [ ] The dedicated build does not link the renderer where avoidable (=D15=).
+
+** TODO [#B] Define server operations: config, logging, monitoring, restart :@release:
+   :PROPERTIES:
+   :ID:         release-005
+   :EFFORT:     1w
+   :BLOCKED-BY: release-004, net-016
+   :END:
+   A server nobody can operate is not shippable. Define the configuration
+   surface, the logging targets, the monitoring metrics (the tick, bandwidth and
+   correction metrics from =net-016=), a restart-on-crash policy, and — concretely
+   — the procedure for diagnosing one failed match from its logs alone.
+
+   - Files: =docs/server-ops.md=, =CI=/ops configuration, =src/server.rs=
+   - Acceptance:
+     - [ ] Ports, tick rate, player cap and rate limits are documented and settable, not literals.
+     - [ ] The metrics from =net-016= are emitted and can be scraped or logged.
+     - [ ] Restart-on-crash is configured and verified by killing a running server.
+     - [ ] A worked example shows one match's failure diagnosed from its log.
+
+** TODO [#B] Define hosting and how players find each other :@release:
+   :PROPERTIES:
+   :ID:         release-006
+   :EFFORT:     1w
+   :BLOCKED-BY: release-004
+   :END:
+   There is no official server and no matchmaking. Decide how players meet:
+   LAN discovery, direct IP, a static relay, or a small rendezvous service, and
+   make the default work without any third-party infrastructure. This determines
+   what the connect screen (=ui-016=) has to offer and the cost model in
+   release-007.
+
+   - Files: =docs/hosting.md=, =src/ui/connect.rs=
+   - Acceptance:
+     - [ ] At least one way to find a match without an official server is documented and works (LAN or direct IP).
+     - [ ] The chosen default is stated and the alternatives are listed with their trade-offs.
+     - [ ] A rendezvous or relay service, if chosen, has a documented cost and failure mode.
+     - [ ] Joining a host by address works end to end (=ui-016=).
+
+** TODO [#A] Verify anti-cheat assumptions and define moderation :@release:
+   :PROPERTIES:
+   :ID:         release-007
+   :EFFORT:     1w
+   :BLOCKED-BY: net-002
+   :END:
+   The server is authoritative (=decide-authority=), but that only holds if
+   neither the balance data nor the replicated state hands a client an advantage.
+   Verify that both peers agree on the balance hash and that replicated state
+   reveals nothing exploitable, then define kick, mute and ban in terms of the
+   session identity — and state plainly that a ban is not durable under it (=D9=).
+
+   - Files: =docs/moderation.md=, =src/server.rs=
+   - Acceptance:
+     - [ ] The balance data is verified equal on both peers by hash, so a client cannot load stronger numbers (=found-004=).
+     - [ ] The replicated state is audited and its information exposure is documented; no hidden state leaks.
+     - [ ] Kick and mute work, and ban is defined in terms of the session identity with its non-durability stated (=D9=).
+     - [ ] An abuse-reporting path is documented and ties into release-008.
+
+** TODO [#B] Add opt-in telemetry and crash reporting :@release:
+   :PROPERTIES:
+   :ID:         release-008
+   :EFFORT:     1d
+   :BLOCKED-BY: release-005
+   :END:
+   The only way to see how the game plays across real lobbies is a crash report
+   plus a replay, and both must be opt-in and off by default. Capture panics and
+   logs to a per-session file, and let one action produce a bundle whose payload
+   is a replay from test-011, so a maintainer gets a reproducible match instead
+   of a description.
+
+   - Files: =src/telemetry.rs=, =src/main.rs= (panic hook), =docs/privacy.md=, =README.md=
+   - Acceptance:
+     - [ ] Telemetry and crash reporting are off by default and require explicit consent.
+     - [ ] The collected fields are enumerated and documented in =docs/privacy.md=.
+     - [ ] One action produces a bundle containing logs, versions and a replay that reproduces under =test-011=.
+     - [ ] A player can purge locally buffered telemetry at any time.
+
+** TODO [#B] Write the player-facing documentation :@release:
+   :PROPERTIES:
+   :ID:         release-009
+   :EFFORT:     1w
+   :BLOCKED-BY: release-003
+   :END:
+   The current README does not explain the project, and the run modes (=host=,
+   =server=, =client [port]=) are discoverable only by reading =main.rs=. Write
+   how to play, the tower roster, the modes, the difficulties and the commands,
+   generating the parts that come from data so the docs cannot drift from the
+   balance tables (=found-004=).
+
+   - Files: =README.md=, =docs/playing.md=
+   - Acceptance:
+     - [ ] A README names the run modes with their exact command lines, the ports and the balance-data directory.
+     - [ ] The tower roster, modes, difficulties and commands are documented, generated from data where possible (=found-004=).
+     - [ ] A step-by-step "host for friends" section is included and has been followed successfully.
+     - [ ] Every command listed matches the command table used by the UI (=ui-013=).
+
+** TODO [#B] Write the contributor documentation :@release:
+   :PROPERTIES:
+   :ID:         release-010
+   :EFFORT:     1d
+   :BLOCKED-BY: found-004
+   :END:
+   A newcomer cannot tell how the pieces fit. Write an architecture overview (the
+   =sim= / authority / mirror split) and task-oriented recipes: how to add a
+   tower, how to add a wave, how to add a map, and the balance-data workflow of
+   author, validate and hot reload.
+
+   - Files: =CONTRIBUTING.md=, =docs/architecture.md=
+   - Acceptance:
+     - [ ] An architecture overview names the =sim=/authority/mirror split and the module boundaries (=decide-authority=).
+     - [ ] "How to add a tower", "how to add a wave" and "how to add a map" are step-by-step against the data files (=found-004=).
+     - [ ] The balance-data workflow (author, validate, hot reload) is documented.
+     - [ ] A new contributor can build and run a match using only the docs.
+
+** TODO [#A] Licence the project and record third-party attribution :@release:
+   :PROPERTIES:
+   :ID:         release-011
+   :EFFORT:     1d
+   :BLOCKED-BY: content-010
+   :END:
+   State a project licence and attribute everything the build depends on: the
+   full =Cargo.toml= dependency set and every asset from [[file:11-content.org][11-content.org]]. The
+   asset record comes from content-010, and an unlisted asset should warn or fail
+   the build rather than slip out unattributed.
+
+   - Files: =LICENSE=, =THIRD_PARTY.md=, =Cargo.toml=, =assets/=
+   - Acceptance:
+     - [ ] The project licence is stated in =LICENSE=.
+     - [ ] Every dependency's licence is listed and is compatible with the project licence.
+     - [ ] Every asset's source and licence is listed, sourced from content-010's record.
+     - [ ] The build warns or fails on an asset that has no attribution entry.
+
+** TODO [#A] State the performance targets that define the minimum spec :@release:
+   :PROPERTIES:
+   :ID:         release-012
+   :EFFORT:     1d
+   :BLOCKED-BY: sim-013, test-012
+   :END:
+   Without a stated target there is no way to say whether the game runs. Define
+   the minimum specs per platform that must hold a 30 Hz simulation tick and a
+   60 FPS render at the intended creep and tower caps, tied to the sim budget in
+   =sim-013= and the numbers measured by the benchmarks in test-012.
+
+   - Files: =docs/performance.md=
+   - Acceptance:
+     - [ ] Minimum specs are defined per supported platform (release-002).
+     - [ ] A 30 Hz tick and 60 FPS render target is stated at the intended creep and tower caps (tune).
+     - [ ] The target cites the sim budget (=sim-013=) and the benchmark numbers (test-012).
+     - [ ] Exceeding the target blocks a release (release-013).
+
+** TODO [#A] Write the ordered release checklist :@release:
+   :PROPERTIES:
+   :ID:         release-013
+   :EFFORT:     2h
+   :BLOCKED-BY: release-011, release-012
+   :END:
+   A concrete, ordered list to run before shipping, so a release is a procedure
+   rather than a memory test. Every step names the artifact or command it
+   verifies, and the checklist is the last gate before a build is announced.
+
+   - Files: =docs/release-checklist.md=
+   - Acceptance:
+     - [ ] The checklist is ordered and every step is concrete and checkable without reading a diff.
+     - [ ] It includes: the full test suite green (test-013), benchmarks within the release-012 budget (test-012), and the version and changelog bumped (release-001).
+     - [ ] It includes a packaging smoke test on each platform from a clean machine (release-003).
+     - [ ] It includes a licence/attribution review (=release-011=) and the accessibility checklist from content-011.
+
+* Non-goals
+  - No game content authoring or balancing: assets are [[file:11-content.org][11-content.org]];
+    numbers are [[file:04-waves.org][04-waves.org]], [[file:05-towers.org][05-towers.org]] and
+    [[file:06-economy.org][06-economy.org]].
+  - No client features beyond what packaging, docs and the connect screen
+    require; those are [[file:10-ui.org][10-ui.org]] and
+    [[file:09-networking.org][09-networking.org]].
+  - No official always-on matchmaking service unless release-006 explicitly
+    chooses one; the default must work with no third-party infrastructure.
+  - No paid storefront integration until release-006 and the distribution
+    decision say so.
+  - No new TODO keywords; only the six in the header are used.
+
+* Open questions
+  - *Is wasm in scope for v1?* Recommended default: no, because
+    =lightyear='s =udp=/=raw_connection= features do not work on wasm and a
+    replacement transport is a project of its own; recorded in release-002.
+  - *Free or paid, and where?* Recommended default: free, direct download first,
+    so there is no storefront gating the update path; revisit after release-006.
+  - *Are durable bans required?* Recommended default: no for v1. Bans require a
+    persistent identity plus server-side storage (release-007); state the
+    limitation instead of promising a ban that a reconnect defeats (=D9=).
+  - *Telemetry backend?* Recommended default: none for v1. Ship opt-in local
+    bundles only (release-008) and add a backend only if release-006 needs it.
+  - *Default hosting path.* Recommended default: direct IP, with UDP broadcast
+    LAN discovery as a convenience; a static relay is the next step up.

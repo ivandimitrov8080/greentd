@@ -1,0 +1,406 @@
+#+TITLE: greentd — User interface
+#+SUBTITLE: The client's information surface, built from replicated and derived state only
+#+TODO: TODO NEXT IN-PROGRESS WAITING BLOCKED | DONE CANCELLED
+#+TAGS: FOUNDATION(f) SIM(s) MAP(m) WAVES(w) TOWERS(t) ECON(e) BUILDER(b) LOBBY(l) NET(n) UI(u) CONTENT(c) TEST(x) RELEASE(r)
+#+FILETAGS: :greentd:
+#+STARTUP: overview indent
+
+This plan touches =src/client.rs=, =src/visuals.rs=, =src/game.rs=, =src/map.rs=
+and a new =src/ui/= tree, building the surface the player sees on top of the
+state replicated by [[file:09-networking.org][09-networking.org]]. It adds no simulation: the client
+stays a dumb renderer (=decide-authority=), so every figure shown is authoritative
+state or the local build ghost, and every action is an intent, never a mutation.
+
+* Tasks
+
+** TODO [#A] Define the UI data contract and add a LocalPlayer marker :@ui:
+   :PROPERTIES:
+   :ID:         ui-001
+   :EFFORT:     1w
+   :END:
+   The client infers "my" state because =update_hud= calls =me.single()= and the
+   only =PlayerView= it happens to hold is its own; that breaks in host mode
+   (=D3=) and there is no notion of ownership at all (=D30=). Write down exactly
+   what the client learns from replication (=PlayerView=, =MatchView=,
+   =TowerVis=, =CreepVis=, =CreepHp=) versus what it derives from shared balance
+   data (=found-004=), and add an explicit =LocalPlayer= identity so the HUD and
+   selection can say "mine". Every other task in this file assumes this contract.
+
+   | HUD field          | Source                                  |
+   |--------------------+-----------------------------------------|
+   | wave, phase        | =MatchView= (replicated)                |
+   | live / overrun cap | =MatchView= (replicated)                |
+   | gold, kills        | =PlayerView= (replicated, mine only)    |
+   | tower stats/cost   | shared balance data (=found-004=)       |
+   | placement legality | shared buildability predicate           |
+
+   - Files: =src/game.rs=, =src/client.rs=, =src/protocol.rs=, a new =src/ui/mod.rs=
+   - Acceptance:
+     - [ ] A =LocalPlayer= identity is established on connect and is never inferred from how many =PlayerView= entities happen to be held (=D30=).
+     - [ ] A field-by-field table records, for each HUD value, whether it is replicated or derived from shared balance data.
+     - [ ] The HUD renders correctly both for a host holding every =PlayerView= and for a remote client holding only its own (=D3=).
+     - [ ] No HUD field is produced by a client-side simulation step.
+     - [ ] =update_hud='s =me.single()= call is removed or made total, so host mode can never silently render nothing.
+
+** TODO [#A] Build a multiboard for lives, economy, waves and timers :@ui:
+   :PROPERTIES:
+   :ID:         ui-002
+   :EFFORT:     1w
+   :BLOCKED-BY: ui-001, audit-003
+   :END:
+   The multiboard is the original's primary information surface: lives
+   remaining, wave number, gold, kills, current wave, next wave and both timers,
+   with current and next wave each showing an icon pair (the spawning unit on the
+   left, its armour type on the right, and a special air icon instead of an
+   armour icon on air waves). Today =update_hud= concatenates one =String= into a
+   single =Text= node, and it stops updating at defeat because =sync_match=
+   early-returns once =sim.over= (=D4=); the wave notice is also dead because
+   =ServerNotice::WaveStarted= is never sent (=D5=). Replace the blob with a real
+   panel driven by =MatchView= and =PlayerView=.
+
+   - Files: =src/ui/multiboard.rs=, =src/client.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] The multiboard shows lives, wave, gold, kills, current wave, next wave, creeps alive / cap and both timers.
+     - [ ] Current and next wave each render an icon pair: a unit icon plus an armour-type icon, with the air icon substituted on air waves.
+     - [ ] At game over the panel keeps rendering the final values and the over state instead of freezing at the last pre-defeat tick (=D4=).
+     - [ ] A wave start updates the panel with no client-side inference of the wave number, using the announcement data from =waves-013=.
+     - [ ] Host and remote clients render identical layouts.
+
+** TODO [#A] Build a real build panel for eleven families and their tiers :@ui:towers:
+   :PROPERTIES:
+   :ID:         ui-003
+   :EFFORT:     1w
+   :BLOCKED-BY: ui-001
+   :END:
+   Today the only way to choose a tower is the =Digit1=/=Digit2=/=Digit3= keys in
+   =player_input=, and =TOWER_KIND_COUNT= is =3=; the original has eleven families
+   with their own tiers and branching upgrades. A panel is required: one button
+   per family with its icon, cost and hotkey, the families the lobby turned off
+   hidden or disabled (=tower-020=), affordability shown, and the tier/branch
+   graph of the selected family rendered rather than a flat list.
+
+   - Files: =src/ui/build_panel.rs=, =src/game.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] Every available family renders a button with an icon, a cost and a hotkey, driven by the tower data rather than =TOWER_KIND_COUNT=.
+     - [ ] A family disabled before the match is not selectable and the button states why (=tower-020=).
+     - [ ] A family the player cannot currently afford is visually distinct from one that is disabled.
+     - [ ] The panel shows the tier and branch graph of the selected family.
+     - [ ] Selecting a button sets the build ghost and the =kind= sent in =ClientCmd::Build= without a keyboard shortcut.
+
+** TODO [#A] Derive tower tooltips from the shared balance data :@ui:towers:
+   :PROPERTIES:
+   :ID:         ui-004
+   :EFFORT:     1d
+   :BLOCKED-BY: ui-003, found-004
+   :END:
+   The original's tooltips carry cost, damage, range, attack speed and an
+   "efficiency" line, with coloured sections; it reworked the standard war3
+   game interface and tooltips. Because balance is data (=found-004=), the
+   tooltip must read the same numbers the server prices and fires with, or it
+   will lie about a tower the server treats differently.
+
+   - Files: =src/ui/tooltip.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] A tooltip shows name, cost, damage, range, attack speed and damage-per-gold.
+     - [ ] An upgrade tooltip shows the per-tier delta in each stat from the current tier to the next.
+     - [ ] Every figure comes from the shared balance data, never a literal in the UI (=D18=).
+     - [ ] The damage-vs-armour effectiveness of the tower's attack type is shown against the wave's armour types.
+     - [ ] The coloured sections use the palette defined in ui-017.
+
+** TODO [#B] Add tower selection and a context panel with upgrade and sell actions :@ui:towers:sim:
+   :PROPERTIES:
+   :ID:         ui-005
+   :EFFORT:     1d
+   :BLOCKED-BY: ui-001, ui-003
+   :END:
+   Clicking a tower in the original opens a panel with its stats, its upgrade
+   options and the exact refund a sale would return. Today =player_input= sends
+   =Upgrade= and =Sell= for the cursor cell with no feedback beyond a one-line
+   notice, and =TowerVis= carries no owner, so the client cannot tell whose tower
+   it is viewing. Selecting a tower must show the stats, the upgrade cost and the
+   sell value, and must explain why each action is unavailable.
+
+   - Files: =src/ui/selection.rs=, =src/game.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] A click on a tower selects it and shows its stats and current tier.
+     - [ ] The panel shows the exact upgrade cost and the exact refund the server would return.
+     - [ ] Upgrade and sell controls are disabled with a stated reason when unavailable (no gold, not the owner, no tower there).
+     - [ ] Another player's tower is viewable but its upgrade and sell controls are disabled.
+     - [ ] The tower's owner reaches the client as replicated data so "mine" can be decided (=ui-001=, =D1=).
+
+** TODO [#A] Add a ghost tower preview coloured by build legality :@ui:towers:
+   :PROPERTIES:
+   :ID:         ui-006
+   :EFFORT:     1d
+   :BLOCKED-BY: ui-003
+   :END:
+   =decide-authority= grants the client a purely local translucent preview of
+   the tower it is about to place, but the colour that says "legal" must come
+   from the same predicate the server uses (=is_buildable=), or the client will
+   promise a cell the server rejects. Show the pending tower at the cursor cell
+   and colour it by whether the placement is legal for every reason the server
+   can reject it.
+
+   - Files: =src/visuals.rs=, =src/client.rs=, =src/map.rs=
+   - Acceptance:
+     - [ ] A translucent preview follows the cursor cell at the selected family's footprint.
+     - [ ] The preview's colour is decided by calling the shared buildability predicate, not a reimplementation.
+     - [ ] The preview distinguishes at least: legal, on the path, occupied, out of bounds, unaffordable, no food available and disabled.
+     - [ ] The ghost is local-only and is never registered for replication.
+
+** TODO [#B] Draw creep health bars with a documented visibility rule :@ui:
+   :PROPERTIES:
+   :ID:         ui-007
+   :EFFORT:     1d
+   :BLOCKED-BY: ui-001
+   :END:
+   =track_creeps= currently darkens a creep's sprite toward black as its health
+   falls, which is nearly invisible in a crowd and cannot express an armour type.
+   Replace it with a real health bar driven by =CreepHp= and give the bar a rule
+   for when it is shown, so a full board is not a wall of bars.
+
+   - Files: =src/visuals.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] Every creep renders a health bar driven by =CreepHp=, and the sprite-darkening trick is removed.
+     - [ ] A documented visibility rule decides when bars appear (always for boss and hero, otherwise below a threshold; tune).
+     - [ ] The bar stays legible over both grass and path tile colours.
+     - [ ] Armour-type colour-coding is shared with the multiboard legend (=ui-002=).
+
+** TODO [#B] Add floating damage numbers, crits and floating text :@ui:
+   :PROPERTIES:
+   :ID:         ui-008
+   :EFFORT:     1d
+   :BLOCKED-BY: ui-007, sim-009
+   :END:
+   Floating text is how a player reads whether a tower is doing its job, and the
+   original floats a sold tower's value, emphasises crits and uses arcing text
+   tags. Damage must reach the client as events, not be inferred from successive
+   health samples. Include floating sell values, bounty popups and crit emphasis.
+
+   - Files: =src/visuals.rs=, =src/game.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] A damage event spawns a floating number at the hit location that fades within a documented time (tune).
+     - [ ] A crit renders differently from a normal hit.
+     - [ ] A sale floats the refund value and a kill floats the bounty.
+     - [ ] Simultaneous numbers are capped and coalesced, so a large splash stays readable.
+     - [ ] Damage numbers come from server events and are never derived from a health delta.
+
+** TODO [#B] Replace the single-line notice with a game message log :@ui:
+   :PROPERTIES:
+   :ID:         ui-009
+   :EFFORT:     1d
+   :BLOCKED-BY: ui-001, lobby-013
+   :END:
+   =ClientUi::notice= is a single =String= with a 2-second hand-rolled timer in
+   =decay_notice=, and a success (=ServerNotice::Ok=) clears it outright, so a
+   rejected build is erased by an unrelated success. The original has a message
+   log with a configurable duration, =-clear=, =-autoclear= and =-gmd=, with
+   colouring for =-greed= and =-dinfo= output and autoclearing of game messages.
+   Build that log against the message taxonomy the lobby defines (=lobby-013=).
+
+   - Files: =src/ui/notices.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] Messages are appended to a scrollable log with a documented maximum depth (tune).
+     - [ ] Message duration is a setting with an autoclear toggle, driven by =-gmd= and =-autoclear= (=lobby-013=).
+     - [ ] A success no longer erases an unrelated, still-relevant message.
+     - [ ] Wave start, leak, game over, income and rejects are distinguishable by category and by colour.
+
+** TODO [#B] Add camera controls: zoom, autocam, top-down, pan and centre-on-builder :@ui:
+   :PROPERTIES:
+   :ID:         ui-010
+   :EFFORT:     1d
+   :BLOCKED-BY: ui-001
+   :END:
+   The original's camera defaults to =-zoom 2500= (tune), has an =-autocam=
+   toggle, a top-down view, and auto-blinks the builder when it is ordered more
+   than 1200 units away. Today =setup_camera_and_map= spawns one fixed =AutoMin=
+   orthographic projection and nothing can move it. Add zoom, an autocam mode, a
+   strict top-down view, edge and drag pan, a recentre-on-builder key, and
+   persistence of the choice.
+
+   - Files: =src/visuals.rs=, =src/ui/camera.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] Zoom is adjustable, defaults to a documented distance of 2500 (tune), and clamps to a sane range.
+     - [ ] An autocam toggle follows the documented target and can be turned back off.
+     - [ ] A top-down view and edge/drag pan work at every zoom level without exposing area outside the board.
+     - [ ] A key recents the camera on the local builder (=LocalPlayer=, =ui-001=), and the chosen settings persist across a restart (=ui-015=).
+
+** TODO [#B] Add a minimap of the path, towers, creeps and the camera :@ui:
+   :PROPERTIES:
+   :ID:         ui-011
+   :EFFORT:     1w
+   :BLOCKED-BY: ui-001
+   :END:
+   The original ships a custom minimap, and the board is a fixed =GRID_W= x
+   =GRID_H= grid in =map.rs=, so both peers already know the geometry. The
+   minimap draws the path and grid, live creeps, towers coloured by owner, the
+   destination / Life Zone and the camera viewport, and a click moves the camera.
+
+   - Files: =src/ui/minimap.rs=, =src/visuals.rs=, =src/map.rs=
+   - Acceptance:
+     - [ ] The minimap draws the path, the destination / Life Zone and the grid bounds.
+     - [ ] Live creeps and towers appear on it, with towers coloured by owner (=ui-005=).
+     - [ ] The camera viewport rectangle is drawn and a click moves the camera to that world position.
+     - [ ] The minimap is derived from replicated state only and runs no simulation.
+
+** TODO [#B] Add a quest/information dialog panel :@ui:
+   :PROPERTIES:
+   :ID:         ui-012
+   :EFFORT:     1d
+   :BLOCKED-BY: ui-001
+   :END:
+   The original's quest/information dialog (F9) holds the changelog, the game
+   modes and general information. Provide an F9-equivalent panel with the active
+   modes, the difficulty, the command list, the tower roster and a versioned
+   changelog, all rendered from data rather than hardcoded strings.
+
+   - Files: =src/ui/quest.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] A single key toggles a panel that shows the active modes and difficulty from the match settings.
+     - [ ] The panel lists the commands from ui-013's table and the tower roster from the balance data.
+     - [ ] A versioned changelog is displayed and matches =release-001='s changelog.
+     - [ ] The panel opens and closes during a match without pausing or mutating the sim.
+
+** TODO [#B] Add a Command Book generated from one command table :@ui:
+   :PROPERTIES:
+   :ID:         ui-013
+   :EFFORT:     1w
+   :BLOCKED-BY: ui-001
+   :END:
+   The original's command book is a spellbook of buttons for camera and
+   information commands, so nothing has to be typed. Provide buttons for =-air=,
+   =-immune=, =-boss=, =-hero=, =-gm=, =-income=, =-dinfo=, =-greed=, =-jackpot=,
+   =-waves=, =-restart= and =-clear=. Define one table of command, arguments,
+   effect and authority, and generate both the button book and the chat parser
+   from it so the two cannot drift; refusals are decided by the server's
+   validation choke point (=net-004=) and bounded by its rate limit (=net-005=).
+
+   - Files: =src/ui/command_book.rs=, =src/ui/commands.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] One table defines every command, its arguments, its effect and who may issue it.
+     - [ ] The button book and the chat parser are both generated from that table and cannot be edited independently.
+     - [ ] A command with a missing or out-of-range argument reports a usage error instead of doing nothing.
+     - [ ] A command the sender may not issue is refused by the server with a reason, not by a client-side check alone (=net-004=).
+     - [ ] The command rate is bounded server-side and the client surfaces the refusal (=net-005=).
+
+** TODO [#A] Render the lobby and setup screen from replicated state :@ui:lobby:
+   :PROPERTIES:
+   :ID:         ui-014
+   :EFFORT:     1w
+   :BLOCKED-BY: ui-001, lobby-015
+   :END:
+   The setup phase has no way to be driven without a UI: the host picks the
+   difficulty, the chaos flag, the game modes, the disabled towers and the map,
+   and every player's lock-in must be visible before the match starts. This
+   screen is a pure render of the replicated lobby state (=lobby-015=): the host
+   raises intents and the screen shows the server's accepted configuration.
+
+   - Files: =src/ui/lobby.rs=, =src/client.rs=, =src/game.rs=
+   - Acceptance:
+     - [ ] The screen shows difficulty, chaos, modes, disabled towers, map and every player's ready state from the replicated lobby state (=lobby-015=).
+     - [ ] The host can change a setting and the screen shows the server-accepted value, not the pending choice.
+     - [ ] Disabled tower families appear disabled in the build panel before the match starts (=ui-003=).
+     - [ ] Non-host controls are disabled with a reason.
+
+** TODO [#A] Add a game-over screen with a countdown and a restart button :@ui:
+   :PROPERTIES:
+   :ID:         ui-015
+   :EFFORT:     1d
+   :BLOCKED-BY: ui-002, audit-018, lobby-010
+   :END:
+   The original shows a 60-second timer when the game is lost and offers
+   =-restart=. Today the HUD prints a permanent =GAME OVER= line, =Sim::over= is
+   terminal with no reset path (=D20=), and =Net::announced_over= is never reset
+   (=D21=). Show a proper screen with the outcome, the final wave, a countdown,
+   and a restart action that drives the server reset path (=audit-018=, =lobby-010=).
+
+   - Files: =src/ui/game_over.rs=, =src/client.rs=
+   - Acceptance:
+     - [ ] The screen appears on game over with the outcome, the final wave and a 60-second countdown (tune).
+     - [ ] The countdown reaching zero returns the lobby to setup without any client-side authority decision.
+     - [ ] A restart action drives the server reset path and returns to setup (=audit-018=, =lobby-010=).
+     - [ ] The screen never shows a stale value after the match ends (=D4=).
+
+** TODO [#A] Add a connect screen with an address field and status :@ui:net:
+   :PROPERTIES:
+   :ID:         ui-016
+   :EFFORT:     1d
+   :BLOCKED-BY: ui-001, found-001
+   :END:
+   =spawn_client= hardcodes =127.0.0.1= (=D23=) and there is no way to join a
+   remote host or see connection status. Add a server-address input used to build
+   =NetConfig=, a status line (connecting, connected, disconnected), and distinct
+   error reporting for a bad address, a refused connection and a protocol-version
+   mismatch. The address and defaults come from the config layer (=found-001=),
+   and a mid-match join reports the catch-up that was applied (=audit-021=).
+
+   - Files: =src/ui/connect.rs=, =src/client.rs=, =src/main.rs=
+   - Acceptance:
+     - [ ] A server address can be entered before connecting and is used by =NetConfig=; =127.0.0.1= is only the default (=D23=, =found-001=).
+     - [ ] Connection status is shown and updates as the handshake proceeds.
+     - [ ] A bad address, a refused connection, a protocol mismatch and a kick each produce a readable, distinct message (=net-001=).
+     - [ ] The client can return to this screen after a disconnect without restarting the process.
+     - [ ] A join made mid-match reports the catch-up rule that was applied (=audit-021=).
+
+** TODO [#C] Define a UI style guide, palette and scaling :@ui:
+   :PROPERTIES:
+   :ID:         ui-017
+   :EFFORT:     1w
+   :BLOCKED-BY: ui-001
+   :END:
+   The HUD is a bare =Text= node at =top: 8px, left: 8px= with =font_size: 18=,
+   and nothing shares a palette or a grid. Define the fonts, the palette, the
+   panel layout and the behaviour at different window sizes, behind a single UI
+   scale, so every panel added above is consistent and legible.
+
+   - Files: =src/ui/theme.rs=, =src/ui/mod.rs=
+   - Acceptance:
+     - [ ] A documented font set, palette and panel grid exist as shared tokens used by every panel.
+     - [ ] A single UI-scale setting changes all panel and tooltip font sizes without clipping, at 1280x800 and in a small window.
+     - [ ] Panels reflow rather than overlap when the window is resized or the scale is raised.
+     - [ ] The palette is shared with the content pass (=content-011=) and the tooltip colours (=ui-004=).
+
+** TODO [#B] Replace the per-tile entities with a tiled map render pass :@ui:map:
+   :PROPERTIES:
+   :ID:         ui-018
+   :EFFORT:     1w
+   :BLOCKED-BY: ui-001
+   :END:
+   =MapTile= is =#[allow(dead_code)]= and =setup_camera_and_map= spawns one
+   entity per tile (32 x 24 = 768 sprites) with two hardcoded colours, and it
+   colours grass inside and outside the ring identically (=D26=, =D29=). Replace
+   the entities with a tiled render pass, remove the =allow(dead_code)=, and take
+   the tile appearance from the map data (=map-007=).
+
+   - Files: =src/visuals.rs=, =src/map.rs=
+   - Acceptance:
+     - [ ] The 768 per-tile entities are replaced by a tiled render pass (or a single mesh) that draws the same board.
+     - [ ] =MapTile='s =#[allow(dead_code)]= is removed because the type is genuinely used.
+     - [ ] Tile appearance is derived from the map data and grass inside the ring is distinguishable from grass outside (=D26=, =map-007=).
+     - [ ] The static tile entity count is O(1), and the change is measured by the benchmarks in [[file:12-testing.org][12-testing.org]] =test-012=.
+
+* Non-goals
+  - No client-side simulation, prediction or authority: the client renders and
+    sends intents only (=decide-authority=). Interpolation is owned by
+    [[file:09-networking.org][09-networking.org]].
+  - No gameplay rules, costs or wave numbers: those live in
+    [[file:04-waves.org][04-waves.org]], [[file:05-towers.org][05-towers.org]] and
+    [[file:06-economy.org][06-economy.org]].
+  - No protocol or message definitions: those are [[file:09-networking.org][09-networking.org]]
+    =net-001= and =net-017=.
+  - No art production: this file consumes the assets from
+    [[file:11-content.org][11-content.org]] and only decides where they appear.
+  - No new TODO keywords; only the six in the header are used.
+
+* Open questions
+  - *Default zoom.* The original documents 2500 units. Recommended default:
+    2500 (tune), clamped to a range derived from the loaded map bounds
+    (=map-007=), recorded in the config layer ([[file:00-foundation.org][00-foundation.org]] =found-001=).
+  - *Multiboard scope.* Show every player's row or only the local board?
+    Recommended default: all players, with the =LocalPlayer= row highlighted.
+  - *Message log depth.* Recommended default: 8 visible lines with a 200-line
+    scrollback (tune), set by =-gmd=.
+  - *Health-bar visibility.* Recommended default: always on for boss and hero,
+    otherwise on selection/hover and below a health threshold (tune).
+  - *Quest panel key.* Recommended default: F9 to match the original, remappable
+    per ui-017.
