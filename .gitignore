@@ -5,3 +5,5 @@ nixos.qcow2
 .devenv
 .pre-commit-config.yaml
 .nixos-test-history
+# One file per match, named after its start time (found-003).
+logs

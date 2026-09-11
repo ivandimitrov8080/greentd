@@ -93,7 +93,7 @@
    - One crate with a library root and a thin binary: the three run modes share
      one =App= builder in =src/main.rs=, and =src/lib.rs= owns the modules so
      =tests/= can link them.
-   - =src/sim.rs=: server-only authoritative state machine. =HashMap= of
+   - =src/sim/=: server-only authoritative state machine, split into `mod.rs`, `waves.rs`, `combat.rs`, `economy.rs` and `rng.rs` (found-005). =HashMap= of
      =CreepId -> Creep=, =IVec2 -> Tower=, =PlayerKey -> Player=. Plain
      =step(dt) -> Vec<SimEvent>=, no networking types, unit-tested headless by
      [[file:12-testing.org][12-testing.org]] =test-001= (see =tests/sim_smoke.rs=).
@@ -113,15 +113,15 @@
      =assets/balance/match.ron=)= ends the match permanently.
    - =src/map.rs=: 32x24 grid, =TILE = 32.0=, one closed ring path through four
      corner waypoints; buildability is "not within =0.95 * TILE= of the path".
-   - =src/protocol.rs=: =ClientCmd= (C2S) and =ServerNotice= (S2C) messages,
+   - =src/net/protocol.rs=: =ClientCmd= (C2S) and =ServerNotice= (S2C) messages (in =src/net/messages.rs=),
      one bidirectional reliable channel, six replicated components.
-   - =src/server.rs=: player identity derived from the UDP peer address, one
+   - =src/net/server.rs=: player identity derived from the UDP peer address, one
      private =PlayerView= entity per player, one global =MatchView= entity,
      sim state mirrored into replicated entities every =Update= with
      change-diffing.
-   - =src/client.rs=: no prediction, no interpolation. Text HUD, keys 1/2/3,
+   - =src/net/client.rs= and =src/ui/hud.rs=: no prediction, no interpolation. Text HUD, keys 1/2/3,
      LMB build, U upgrade, RMB sell, Space calls the next wave.
-   - =src/visuals.rs=: orthographic camera with =AutoMin= scaling, 768 tile
+   - =src/ui/visuals.rs=: orthographic camera with =AutoMin= scaling, 768 tile
      sprites, creep sprite darkened by HP fraction, tower sprite coloured by
      kind and scaled by level. Sprites are attached by =On<Add, ..>= observers.
 
@@ -151,36 +151,36 @@
 
    | Task        | State       | What landed |
    |-------------+-------------+-------------|
-   | =found-004= | DONE        | =src/balance.rs= and =assets/balance/*.ron=; every tuned number is data, validated and hashed. D18 is only =part= until =audit-011= removes the remaining per-tier literals. |
+   | =found-001= | DONE        | =engine_plugins= gives a dedicated server =MinimalPlugins= instead of a window; =VisualsPlugin= is client-only (D15). Also fixed host mode, which could not start at all, and added the readiness line CI waits for. |
+   | =found-002= | IN-PROGRESS | =src/config.rs=; every address, the tick rate, the map, the balance directory, the log filter and the two command budgets are resolved from the CLI, the environment and a config file, in that order. =tests/config.rs= holds the precedence matrix. Owed: the remote-host join and the exit code, both of which need a process. |
+   | =found-003= | DONE        | =src/logging.rs=: four stable targets, the level policy, and a per-match log file named after the start time. This is the crate's only wall clock. |
+   | =found-004= | DONE        | =src/data/balance.rs= and =assets/balance/*.ron=; every tuned number is data, validated and hashed. D18 is only =part= until =audit-011= removes the remaining per-tier literals. |
+   | =found-005= | DONE        | The flat crate is now =data/=, =sim/=, =net/= and =ui/=, with the reason for each placement written down in =src/main.rs=. |
+   | =found-006= | DONE        | One =StartupError= for the config and the balance loader; the last =unwrap()= in =src/= (=Path::sample=) is NaN-safe. |
+   | =found-009= | DONE        | =sim::Rng=, seeded from =match_rules.seed=; the wave's spawn jitter is its first consumer. Same seed, same match -- proven, not asserted. |
+   | =found-010= | DONE        | =data::components::LocalPlayer=, marked by the server on a host and by the client on a remote peer; =MatchView.players= replaces counting the views the HUD happens to hold. Closes D30 and =audit-028=. |
    | =audit-001= | DONE        | =Reject= gains =NotOwner=, =RateLimited= and =NotInMatch=. |
    | =audit-002= | DONE        | Ownership enforced in =try_upgrade=/=try_sell=; refunds go to the owner (D1, D2). |
    | =audit-004= | DONE        | =Phase= is published and the mirror keeps running after defeat (D4). |
    | =audit-008= | DONE        | No handler mints a player; =handle_cmds= drops unregistered peers (D8). |
    | =audit-010= | DONE        | =tests/sim_smoke.rs= + =tests/balance.rs=; zero tests is no longer true (D17). |
-   | =test-001=  | IN-PROGRESS | Same harness; the fixed-seed box waits on =found-009=. |
-   | =found-002= | IN-PROGRESS | =src/config.rs=; every address, the tick rate, the map, the balance directory, the log filter and the two command budgets are resolved from the CLI, the environment and a config file, in that order. =tests/config.rs= holds the precedence matrix. Owed: the remote-host join and the exit code, both of which need a process. |
+   | =test-001=  | IN-PROGRESS | Same harness; the fixed-seed box now has =found-009= to stand on. |
    | =audit-005= | IN-PROGRESS | =tick_sim= broadcasts =WaveStarted= to every link on =GameOver='s path, so the client's wave notice is live code (D5). Owed: seeing "wave N" in a running HUD. |
    | =audit-006= | IN-PROGRESS | =call_wave(key)=, a per-player =wave_call_cooldown= from the balance table, run down in =step= (D6). Owed: =cargo test=. |
    | =audit-007= | IN-PROGRESS | =src/ratelimit.rs= and =Net::buckets=; a peer spends =Config='s burst and rate, and the rest of the frame's commands are dropped (D7). Owed: =cargo test=. |
 
-   Also landed because those tasks could not be built without it: =src/lib.rs=
-   (so =tests/= can link the crate) and =ron= as a direct dependency.
+   Everything above builds, passes =cargo test= (64 tests) and was walked by hand
+   in a running =host=, =server= and =client=. The three =part= D-rows keep that
+   state only because nobody has yet watched a wave notice, a refusal and a
+   rate-limit refusal arrive in a live HUD -- the code paths and their tests are
+   in place.
 
-   Written but *not yet compiled or run*: =found-002= (D18's =Config=),
-   =audit-005= (D5), =audit-006= (D6) and =audit-007= (D7), in the order the
-   plan asked for them. Each carries a "verification owed" note naming the
-   command that closes it; do not flip a heading to =DONE= until =cargo test= is
-   green and the manual boxes in that note have been checked. The four
-   D-rows in the index above are =part= for exactly that reason.
-
-   Next in M0, in this order: =found-001= (D15, the headless server, which
-   =net-007= and CI =found-007= both wait on), =found-009= (the seeded RNG that
-   =test-001='s open box and =test-002= need), =found-010= (the =LocalPlayer=
-   marker that unblocks =audit-003= and =audit-028=), then =found-006=,
-   =found-005= and =found-003=. =audit-003=, =audit-009= and =audit-011= stay
-   blocked on =found-010= and =net-001=, and =net-001= -- the versioned
-   handshake -- remains the gate for the whole wire-format batch and is the
-   largest unblocked task in the file.
+   Next in M0: =found-007= (CI -- unblocked now, and its =clippy -- -D warnings=
+   gate needs the 16 standing warnings dealt with) and =found-008= (pin the
+   dependency set and write down the upgrade path). Then M0 is done except for
+   the wire-format batch, which =net-001= gates: =audit-003=, =audit-009= and
+   =audit-011= all stay blocked on it, and =net-001= remains the largest
+   unblocked task in the file.
 
 * The single most important correctness question — two lineages
   :PROPERTIES:
@@ -261,7 +261,7 @@
   |-----+-----+-------+---------|
   | D1  | A   | DONE  | =try_upgrade= and =try_sell= never check that the caller owns the tower. Any client can drain or destroy any other player's board. |
   | D2  | A   | DONE  | =try_sell= refunds the *caller*, not the tower's owner. |
-  | D3  | A   | open  | Host mode replicates every =PlayerView= to everyone (=NetworkTarget::All=), so =update_hud='s =me.single()= fails and the host sees no gold or kills. |
+  | D3  | A   | part  | Host mode replicates every =PlayerView= to everyone (=NetworkTarget::All=), so the host holds a duplicate of the whole match. The "sees no gold or kills" symptom is gone (=found-010= marks the host's own view); the duplication itself is =net-006='s. |
   | D4  | A   | DONE  | =sync_match= early-returns when =sim.over=, freezing the HUD at the moment of defeat; =MatchView::phase= is never written. |
   | D5  | A   | part  | =ServerNotice::WaveStarted= is never sent, so the client's wave notification is dead code and players cannot tell a wave began. |
   | D6  | A   | part  | =CallWave= has no cooldown, cost or authority check; one client can force waves continuously and end the match. |
@@ -273,10 +273,10 @@
   | D12 | C   | open  | =CreepVis= and =CreepHp= are distinct components, doubling replication updates per creep per tick. |
   | D13 | B   | open  | No projectile entities; towers damage invisibly on a cooldown. |
   | D14 | B   | open  | No client-side interpolation; creeps visibly step at 30 Hz. |
-  | D15 | B   | open  | =VisualsPlugin= is added in =server= mode, so a dedicated server opens a window and allocates 768 sprites. |
+  | D15 | B   | DONE  | =VisualsPlugin= is added in =server= mode, so a dedicated server opens a window and allocates 768 sprites. Fixed by =found-001=: a server gets =MinimalPlugins= and no window. |
   | D16 | C   | open  | Target acquisition is O(towers × creeps) per tick, ~115k distance tests at the current caps. |
   | D17 | A   | DONE  | Zero tests. The sim is written to be testable and never has been. |
-  | D18 | A   | part  | Every balance number is a literal in =game.rs= or worse, inline in =sim.rs=. The tables are data as of =found-004=; the per-tier scaling in =Sim::step= is still inline, which is =audit-011='s remainder. |
+  | D18 | A   | part  | Every balance number is a literal in =game.rs= or worse, inline in =sim.rs=. The tables are data as of =found-004=; the per-tier scaling in =Sim::step= is still inline, which is =audit-011='s remainder. (That literal now lives in =src/sim/combat.rs=.) |
   | D19 | A   | open  | The lose condition is the other lineage's lose condition and its constant (150) matches neither. See the lineage section above. |
   | D20 | B   | open  | =Sim::over= is terminal; there is no restart, rematch or -restart equivalent. |
   | D21 | B   | open  | =Net::announced_over= is never reset, so a restarted match would not announce again. |
@@ -288,7 +288,7 @@
   | D27 | B   | open  | No leaver handling: gold is not split, and towers are simply orphaned. |
   | D28 | C   | open  | =Path::distance_to= walks every segment; =is_buildable= is called per click on the server. Cheap now, wrong shape later. |
   | D29 | B   | open  | =VisualsPlugin='s =MapTile= is =#[allow(dead_code)]= and tiles are spawned as individual entities rather than a tiled render pass. |
-  | D30 | C   | open  | No =LocalPlayer= marker; the client infers "my" state from "the one =PlayerView= I happen to hold". |
+  | D30 | C   | DONE  | No =LocalPlayer= marker; the client infers "my" state from "the one =PlayerView= I happen to hold". Fixed by =found-010=, tracked here as =audit-028=. |
 
 * Cross-cutting decisions
   :PROPERTIES:

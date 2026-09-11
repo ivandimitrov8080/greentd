@@ -8,12 +8,15 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
-use lightyear::prelude::client::Connected;
+use lightyear::prelude::client::{Connected, RawClient};
 use lightyear::prelude::server::*;
 use lightyear::prelude::*;
 
 use crate::config::Config;
-use crate::game::*;
+use crate::data::components::*;
+use crate::data::reject::Reject;
+use crate::logging;
+use crate::net::messages::*;
 use crate::ratelimit::TokenBucket;
 use crate::sim::*;
 
@@ -47,8 +50,12 @@ fn peer_key(remote: &RemoteId) -> PlayerKey {
 
 /// Bind the socket the config names. `found-002`: this used to parse the
 /// `SERVER_ADDR` literal, which made a remote or an ephemeral port impossible.
+///
+/// The address comes from [`Config::server_bind_addr`] rather than
+/// [`Config::bind_addr`] so that a host serves on the address its own client
+/// dials, instead of opening two sockets on one port and panicking.
 fn spawn_server(config: Res<Config>, mut commands: Commands) {
-    let addr = config.bind_addr;
+    let addr = config.server_bind_addr();
     let server = commands
         .spawn((
             Name::new("Server"),
@@ -62,6 +69,50 @@ fn spawn_server(config: Res<Config>, mut commands: Commands) {
 
 fn server_up(server: Query<(), (With<Server>, With<Started>)>) -> bool {
     !server.is_empty()
+}
+
+/// Mark the *host's own* view, so its HUD reads an identity rather than a
+/// coincidence (`found-010`, D30).
+///
+/// A host runs both roles in one world, so its own `PlayerView` is one of the
+/// server's and only the server knows which: [`Net::views`] is keyed by
+/// `PlayerKey`, and the client half cannot reconstruct that key from anything
+/// it holds. So the marking happens here, where the mapping is.
+///
+/// The peer to mark is the one this process dialled from, which is the only
+/// `RawClient` in the world; its [`LocalId`] is the `PeerId::Raw` of its own
+/// socket, which is the same value the server derived its [`PlayerKey`] from. A
+/// dedicated server has no such entity and does nothing.
+fn mark_host_view(
+    config: Res<Config>,
+    net: Res<Net>,
+    local: Query<&LocalId, (With<RawClient>, With<Connected>)>,
+    marked: Query<(), With<LocalPlayer>>,
+    mut commands: Commands,
+) {
+    if !config.mode.is_host() || !marked.is_empty() {
+        return;
+    }
+    let Ok(local_id) = local.single() else {
+        return;
+    };
+    let key = PlayerKey(local_id.0.to_bits());
+    if let Some(view) = net.views.get(&key) {
+        commands.entity(*view).insert(LocalPlayer);
+    }
+}
+
+/// The server reached the listening state, so the socket is bound and peers
+/// can connect. This line is what a CI smoke test waits for (`found-007`): it
+/// is the first thing a successful run prints, and the last thing worth
+/// printing if the bind failed.
+fn on_server_started(_trigger: On<Add, Started>, config: Res<Config>) {
+    info!(
+        target: logging::target::NET,
+        "listening on {} ({})",
+        config.server_bind_addr(),
+        config.mode.as_str()
+    );
 }
 
 /// A client finished its handshake, so we now know its stable peer identity.
@@ -82,7 +133,7 @@ fn on_client_connected(
         return;
     }
 
-    info!("player {:?} joined", key);
+    info!(target: logging::target::NET, "player {:?} joined", key);
     let start_gold = sim.balance.match_rules.start_gold;
 
     // Opt this connection into replication and message passing.
@@ -102,6 +153,17 @@ fn on_client_connected(
     } else {
         NetworkTarget::Single(remote.0)
     };
+    debug!(
+        target: logging::target::REPLICATION,
+        "{}: private view for {:?} (remote {})",
+        if config.mode.is_host() {
+            "broadcasting"
+        } else {
+            "addressing"
+        },
+        key,
+        remote.0
+    );
     let view = commands
         .spawn((
             Name::new("PlayerView"),
@@ -139,7 +201,7 @@ fn on_client_disconnected(
     if net.links.remove(&key).is_none() {
         return;
     }
-    info!("player {:?} left (towers remain)", key);
+    info!(target: logging::target::NET, "player {:?} left (towers remain)", key);
     sim.remove_player(key);
     net.buckets.remove(&key);
     if let Some(view) = net.views.remove(&key) {
@@ -165,6 +227,10 @@ fn setup_match(
         ))
         .id();
     net.match_entity = Some(e);
+    debug!(
+        target: logging::target::REPLICATION,
+        "match state entity {e:?} created"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +264,7 @@ fn handle_cmds(
         if !net.links.contains_key(&key) {
             if !cmds.is_empty() {
                 debug!(
+                    target: logging::target::COMMANDS,
                     "dropping {} command(s) from unregistered peer {:?}",
                     cmds.len(),
                     key
@@ -235,7 +302,10 @@ fn handle_cmds(
             let notice = match outcome {
                 Ok(()) => ServerNotice::Ok,
                 Err(reason) => {
-                    debug!("command rejected for {:?}: {:?}", key, reason);
+                    debug!(
+                        target: logging::target::COMMANDS,
+                        "command rejected for {:?}: {:?}", key, reason
+                    );
                     ServerNotice::Err(reason)
                 }
             };
@@ -246,6 +316,7 @@ fn handle_cmds(
             // One refusal per frame, however many commands were dropped, so a
             // peer that floods cannot make the server flood back.
             debug!(
+                target: logging::target::COMMANDS,
                 "rate limited {:?}: {} command(s) over budget",
                 key, over_budget
             );
@@ -277,7 +348,12 @@ fn tick_sim(
     for ev in events {
         match ev {
             SimEvent::WaveStarted(w) => {
-                info!("wave {} started ({} creeps)", w, sim.creeps_per_wave());
+                info!(
+                    target: logging::target::SIM,
+                    "wave {} started ({} creeps)",
+                    w,
+                    sim.creeps_per_wave()
+                );
                 let notice = ServerNotice::WaveStarted(w);
                 for entity in net.links.values() {
                     if let Ok(mut send) = links.get_mut(*entity) {
@@ -285,10 +361,15 @@ fn tick_sim(
                     }
                 }
             }
-            SimEvent::CreepSpawned(id) => trace!("creep {:?} spawned", id),
-            SimEvent::CreepKilled(id) => trace!("creep {:?} killed", id),
+            SimEvent::CreepSpawned(id) => {
+                trace!(target: logging::target::SIM, "creep {:?} spawned", id)
+            }
+            SimEvent::CreepKilled(id) => {
+                trace!(target: logging::target::SIM, "creep {:?} killed", id)
+            }
             SimEvent::GameOver => {
                 warn!(
+                    target: logging::target::SIM,
                     "GAME OVER: {} creeps alive (cap {})",
                     sim.creeps_alive(),
                     sim.overrun_cap()
@@ -310,6 +391,11 @@ fn sync_creeps(
         if live.contains(id) {
             true
         } else {
+            trace!(
+                target: logging::target::REPLICATION,
+                "creep {:?} no longer mirrored",
+                id
+            );
             commands.entity(*entity).despawn();
             false
         }
@@ -340,6 +426,7 @@ fn sync_creeps(
                         Replicate::to_clients(NetworkTarget::All),
                     ))
                     .id();
+                trace!(target: logging::target::REPLICATION, "creep {:?} mirrored", id);
                 net.creeps.insert(*id, entity);
             }
         }
@@ -357,6 +444,11 @@ fn sync_towers(
         if live.contains(cell) {
             true
         } else {
+            trace!(
+                target: logging::target::REPLICATION,
+                "tower at {:?} no longer mirrored",
+                cell
+            );
             commands.entity(*entity).despawn();
             false
         }
@@ -388,6 +480,11 @@ fn sync_towers(
                         Replicate::to_clients(NetworkTarget::All),
                     ))
                     .id();
+                trace!(
+                    target: logging::target::REPLICATION,
+                    "tower at {:?} mirrored",
+                    cell
+                );
                 net.towers.insert(*cell, entity);
             }
         }
@@ -458,6 +555,7 @@ impl Plugin for GreenTdServerPlugin {
         app.init_resource::<Sim>()
             .init_resource::<Net>()
             .add_systems(Startup, spawn_server)
+            .add_observer(on_server_started)
             .add_observer(on_client_connected)
             .add_observer(on_client_disconnected)
             // Match setup and the sim itself only make sense once we're listening.
@@ -465,6 +563,7 @@ impl Plugin for GreenTdServerPlugin {
                 Update,
                 (
                     setup_match,
+                    mark_host_view,
                     handle_cmds,
                     // Mirror order matters only for readability: creeps then
                     // towers then the aggregate views.

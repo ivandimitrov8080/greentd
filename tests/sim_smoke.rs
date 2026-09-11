@@ -14,10 +14,12 @@
 use std::sync::Arc;
 
 use bevy::prelude::IVec2;
-use greentd::balance::BalanceData;
-use greentd::game::{Phase, Reject, ServerNotice};
+use greentd::data::balance::BalanceData;
+use greentd::data::components::Phase;
+use greentd::data::reject::Reject;
 use greentd::map::{GRID_H, GRID_W, in_bounds};
-use greentd::sim::{PlayerKey, Sim, SimEvent};
+use greentd::net::messages::ServerNotice;
+use greentd::sim::{PlayerKey, Rng, Sim, SimEvent};
 
 /// One simulation tick. The server runs at 30 Hz; the sim itself only requires
 /// that `dt` is fixed.
@@ -450,7 +452,10 @@ fn a_player_cannot_call_two_waves_inside_the_cooldown() {
     // The first call is accepted, and zeroes the timer so the next `step`
     // starts the wave.
     harness.advance(1);
-    harness.sim.call_wave(who).expect("the first call is allowed");
+    harness
+        .sim
+        .call_wave(who)
+        .expect("the first call is allowed");
     assert_eq!(harness.sim.wave_timer, 0.0);
 
     let events = harness.step();
@@ -476,7 +481,8 @@ fn a_player_cannot_call_two_waves_inside_the_cooldown() {
     // Once the cooldown has run out the same player may call again.
     let ticks = (cooldown / TICK).ceil() as u32 + 2;
     harness.advance(ticks);
-    harness.sim
+    harness
+        .sim
         .call_wave(who)
         .expect("the cooldown has expired");
     assert_eq!(
@@ -514,6 +520,234 @@ fn a_finished_match_refuses_a_wave_call() {
 
     harness.advance_until(600, |sim| sim.over);
     assert_eq!(harness.sim.call_wave(player(1)), Err(Reject::MatchOver));
+}
+
+// ---------------------------------------------------------------------------
+// Determinism and the seeded RNG (found-009)
+// ---------------------------------------------------------------------------
+
+/// The shipped tables, with the match seed replaced.
+fn seeded_balance(seed: u64) -> Arc<BalanceData> {
+    let mut tuned = (*shipped_balance()).clone();
+    tuned.match_rules.seed = seed;
+    Arc::new(tuned)
+}
+
+/// Every creep's distance along the path, in spawn order.
+fn creep_distances(sim: &Sim) -> Vec<f32> {
+    let mut dists: Vec<f32> = sim.creeps.values().map(|creep| creep.dist).collect();
+    dists.sort_by(|a, b| a.partial_cmp(b).expect("no NaN distances"));
+    dists
+}
+
+#[test]
+fn the_same_seed_replays_and_a_different_seed_does_not() {
+    let seed = 0x5EED_1234_5678_9ABC;
+
+    let run = |seed: u64| {
+        let mut harness = Harness::with_balance(seeded_balance(seed));
+        harness.sim.add_player(player(1));
+        harness.advance_until(600, |sim| sim.wave == 1);
+        harness.advance(90);
+        creep_distances(&harness.sim)
+    };
+
+    let first = run(seed);
+    let again = run(seed);
+    let other = run(seed ^ 1);
+
+    assert!(!first.is_empty(), "the wave must have spawned something");
+    assert_eq!(
+        first, again,
+        "the same seed is the same match, tick for tick"
+    );
+    assert_ne!(
+        first, other,
+        "a different seed has to be observable, or the seed is decoration"
+    );
+}
+
+#[test]
+fn a_creep_spawns_inside_its_own_slot() {
+    let mut harness = Harness::with_balance(seeded_balance(7));
+    harness.advance_until(600, |sim| sim.wave == 1);
+
+    let scaling = &harness.sim.balance.waves.scaling;
+    let n = harness.sim.creeps_alive();
+    let spacing = harness.sim.path.total / n as f32;
+    let limit = spacing * scaling.spawn_jitter;
+    assert!(
+        limit > 0.0,
+        "the tables must jitter at all for this test to mean anything"
+    );
+
+    let dists = creep_distances(&harness.sim);
+    assert_eq!(dists.len(), n as usize);
+    for (slot, dist) in dists.iter().enumerate() {
+        let ideal = spacing * slot as f32;
+        assert!(
+            (dist - ideal).abs() <= limit,
+            "creep {slot} is at {dist}, more than {limit} from its slot at {ideal}"
+        );
+    }
+    assert!(
+        dists
+            .iter()
+            .enumerate()
+            .any(|(slot, dist)| (dist - spacing * slot as f32).abs() > 0.0),
+        "the jitter has to have moved something"
+    );
+}
+
+#[test]
+fn each_wave_draws_further_along_the_generator() {
+    // If the jitter were a pure function of the wave number the second wave
+    // would repeat the first, and a "seeded" generator would be a fancy
+    // constant.
+    let mut harness = Harness::with_balance(seeded_balance(11));
+    harness.advance_until(600, |sim| sim.wave == 1);
+
+    let spacing_for = |sim: &Sim| sim.path.total / sim.creeps_alive() as f32;
+    let offsets = |sim: &Sim| -> Vec<f32> {
+        let spacing = spacing_for(sim);
+        let mut offsets: Vec<f32> = creep_distances(sim)
+            .iter()
+            .enumerate()
+            .map(|(slot, dist)| dist - spacing * slot as f32)
+            .collect();
+        offsets.sort_by(|a, b| a.partial_cmp(b).expect("no NaN offsets"));
+        offsets
+    };
+
+    let first = offsets(&harness.sim);
+    let wave_timer = harness.sim.balance.match_rules.wave_interval;
+    harness.advance((wave_timer / TICK).ceil() as u32 + 2);
+
+    assert_eq!(harness.sim.wave, 2, "the second wave has started");
+    assert_ne!(
+        first,
+        offsets(&harness.sim),
+        "wave 2 must draw fresh numbers, not repeat wave 1"
+    );
+}
+
+#[test]
+fn the_generator_is_reproducible_and_not_degenerate() {
+    let mut first = Rng::from_seed(42);
+    let mut again = Rng::from_seed(42);
+    let mut other = Rng::from_seed(43);
+
+    let mut draws = Vec::new();
+    for _ in 0..64 {
+        let a = first.next_u64();
+        assert_eq!(a, again.next_u64(), "same seed, same stream");
+        assert!(
+            a != other.next_u64(),
+            "a different seed, a different stream"
+        );
+        draws.push(a);
+    }
+    draws.sort_unstable();
+    draws.dedup();
+    assert_eq!(draws.len(), 64, "64 draws produced 64 distinct values");
+
+    let mut rng = Rng::from_seed(0);
+    for _ in 0..1000 {
+        let value = rng.next_f32();
+        assert!((0.0..1.0).contains(&value), "{value} is not in [0, 1)");
+    }
+    for _ in 0..1000 {
+        let value = rng.range_f32(-2.5, 2.5);
+        assert!(
+            (-2.5..2.5).contains(&value),
+            "{value} is not in [-2.5, 2.5)"
+        );
+    }
+    assert_eq!(
+        rng.range_f32(1.0, 1.0),
+        1.0,
+        "an empty range yields its bound"
+    );
+    assert_eq!(
+        rng.range_f32(1.0, 0.0),
+        1.0,
+        "an inverted range yields `low` rather than panicking"
+    );
+}
+
+#[test]
+fn the_match_seed_comes_from_the_tables() {
+    let harness = Harness::with_balance(seeded_balance(0xDEAD_BEEF));
+    assert_eq!(harness.sim.seed(), 0xDEAD_BEEF);
+
+    // ...and it is not a protocol number: two peers on the same rules agree on
+    // the hash whatever match they are playing.
+    let one = seeded_balance(1);
+    let two = seeded_balance(2);
+    assert_eq!(
+        one.hash(),
+        two.hash(),
+        "the seed is not part of the ruleset"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The map (found-006)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_non_finite_distance_lands_on_the_path_rather_than_panicking() {
+    use greentd::map::Path;
+
+    let path = Path::default();
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let at = path.sample(bad);
+        assert!(
+            at.is_finite(),
+            "sampling {bad} produced {at}, which would poison a Transform"
+        );
+    }
+
+    // The ordinary path is unchanged: the start of the loop, the same point
+    // again a full lap later, and somewhere sensible in between.
+    assert_eq!(path.sample(0.0), path.points[0]);
+    assert_eq!(path.sample(path.total), path.points[0]);
+    let middle = path.sample(path.total * 0.5);
+    assert!(middle.is_finite() && path.distance_to(middle) < 1.0);
+}
+
+// ---------------------------------------------------------------------------
+// Local identity (found-010, D30)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_match_view_carries_the_lobby_size() {
+    let mut harness = Harness::with_players(&[1, 2, 3]);
+    assert_eq!(
+        harness.sim.match_view().players,
+        3,
+        "the HUD reads the lobby size from the match, not from the views it holds"
+    );
+
+    harness.sim.remove_player(player(2));
+    assert_eq!(
+        harness.sim.match_view().players,
+        2,
+        "a leaver is not playing"
+    );
+    assert_eq!(
+        harness.sim.players.len(),
+        3,
+        "but their record and towers stay (D27)"
+    );
+
+    // The count is the same one the wave size is built from, so the two cannot
+    // disagree.
+    assert_eq!(harness.sim.players_connected(), 2);
+    assert_eq!(
+        harness.sim.creeps_per_wave(),
+        harness.sim.balance.creeps_per_wave(harness.sim.wave, 2)
+    );
 }
 
 // ---------------------------------------------------------------------------

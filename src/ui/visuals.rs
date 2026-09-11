@@ -8,8 +8,21 @@
 use bevy::camera::ScalingMode;
 use bevy::prelude::*;
 
-use crate::game::*;
+use crate::data::components::*;
 use crate::map::*;
+
+/// Tower kind -> sprite colour.
+///
+/// Presentation only, so it is code rather than a balance table: `11-content`
+/// owns the real art, and until then a colour is the cheapest way to tell three
+/// towers apart and to see a tier change at a glance.
+pub fn tower_color(kind: u8) -> Color {
+    match kind {
+        1 => Color::srgb(0.85, 0.45, 0.15),
+        2 => Color::srgb(0.35, 0.65, 0.95),
+        _ => Color::srgb(0.90, 0.85, 0.30),
+    }
+}
 
 #[derive(Component)]
 #[allow(dead_code)]

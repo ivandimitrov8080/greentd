@@ -131,6 +131,13 @@ an excuse for an untested mutation (D17).
      - [ ] A host plus one remote client shows each peer its own gold and kills and never the other's.
      - [ ] Verified on a manual =cargo run= (host) with one =cargo run -- client=.
 
+   =found-010= has landed and satisfies the second box; the rest is this task.
+   Note for whoever picks it up: a host's client half reproduces its own copy of
+   every replicated entity, so the world holds two =MatchView=s and a duplicate
+   creep per creep. That duplication is the same defect as =NetworkTarget::All=
+   and goes away with it -- the local client should read the server's state that
+   is already in its world rather than be sent a copy of it.
+
 ** DONE [#A] Publish MatchView.phase and stop freezing the HUD at defeat              :@sim:
    :PROPERTIES:
    :ID:         audit-004
@@ -685,7 +692,7 @@ an excuse for an untested mutation (D17).
      - [ ] A benchmark confirms the improvement is not bought with a changed answer.
      - [ ] =Sim::is_buildable= still rejects a cell within =0.95 * TILE= of the path.
 
-** TODO [#C] Mark the local player, tracked in found-010                              :@ui:
+** DONE [#C] Mark the local player, tracked in found-010                              :@ui:
    :PROPERTIES:
    :ID:         audit-028
    :EFFORT:     2h
@@ -699,9 +706,11 @@ an excuse for an untested mutation (D17).
 
    - Files: =src/client.rs=, =src/game.rs=
    - Acceptance:
-     - [ ] =update_hud= reads gold and kills from a =LocalPlayer= query, never from =single()= over all =PlayerView=s (found-010).
-     - [ ] The player count is read from =MatchView=.
-     - [ ] The triage table lists D30 against =found-010=, not a second marker defined here.
+     - [x] =update_hud= reads gold and kills from a =LocalPlayer= query, never from =single()= over all =PlayerView=s (found-010).
+     - [x] The player count is read from =MatchView=.
+     - [x] The triage table lists D30 against =found-010=, not a second marker defined here.
+
+   Closed by =found-010=, which is where the work was done; D30 is =DONE=.
 
 * Sequencing
 

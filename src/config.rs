@@ -20,9 +20,10 @@
 //! name the offender, and `main` turns either into a non-zero exit.
 //!
 //! The mode is resolved before anything else, because it decides two of the
-//! defaults: a dedicated server binds the port it serves on, while a client --
-//! and the host, which is both -- binds a second port so a server and a client
-//! can coexist on one machine.
+//! defaults: a dedicated server binds the port it serves on, while a client
+//! binds a second port so a server and a client can coexist on one machine.
+//! A *host* is both roles at once, so its two halves need two sockets; see
+//! [`Config::server_bind_addr`] for which one each half takes.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -32,7 +33,7 @@ use std::time::Duration;
 
 use bevy::prelude::Resource;
 
-use crate::balance::default_balance_dir;
+use crate::data::balance::{Balance, BalanceError, default_balance_dir};
 
 // ---------------------------------------------------------------------------
 // Keys, environment names and defaults
@@ -55,6 +56,7 @@ pub const KEY_TICK_HZ: &str = "tick-hz";
 pub const KEY_MAP: &str = "map";
 pub const KEY_BALANCE_DIR: &str = "balance-dir";
 pub const KEY_LOG: &str = "log";
+pub const KEY_LOG_DIR: &str = "log-dir";
 pub const KEY_COMMANDS_PER_SECOND: &str = "commands-per-second";
 pub const KEY_COMMAND_BURST: &str = "command-burst";
 
@@ -79,6 +81,10 @@ pub const DEFAULT_CLIENT_BIND: &str = "127.0.0.1:5100";
 
 /// Map identifier. Only one map exists until `03-map.org`.
 pub const DEFAULT_MAP: &str = "green-ring";
+
+/// Directory this match's log file is written to. An empty value turns the file
+/// off; see [`Config::log_dir`].
+pub const DEFAULT_LOG_DIR: &str = "logs";
 
 /// Command budget: sustained commands per second, per peer (`audit-007`).
 pub const DEFAULT_COMMANDS_PER_SECOND: f32 = 20.0;
@@ -105,6 +111,8 @@ pub const USAGE: &str = concat!(
     "  --map <id>                 the map to play                 [default: green-ring]\n",
     "  --balance-dir <path>       directory holding the *.ron tables\n",
     "  --log <filter>             tracing filter, e.g. info,greentd::sim=debug\n",
+    "  --log-dir <path>           where this match's log file goes  [default: logs]\n",
+    "                             (an empty value writes no file)\n",
     "  --commands-per-second <n>  per-peer command budget         [default: 20]\n",
     "  --command-burst <n>        per-peer per-frame burst        [default: 16]\n",
     "  --config <path>            the config file to read         [default: greentd.conf]\n",
@@ -241,7 +249,11 @@ impl fmt::Display for ConfigError {
                 write!(f, "config: unexpected argument {value:?}")
             }
             Self::Io { path, message } => write!(f, "{}: {message}", path.display()),
-            Self::Line { path, line, message } => {
+            Self::Line {
+                path,
+                line,
+                message,
+            } => {
                 write!(f, "{}:{line}: {message}", path.display())
             }
             Self::Missing { key } => {
@@ -252,6 +264,55 @@ impl fmt::Display for ConfigError {
 }
 
 impl std::error::Error for ConfigError {}
+
+/// Everything that can stop a run before it starts (`found-006`).
+///
+/// This is the one error type `main` has to name, and it deliberately folds two
+/// failures that used to abort from two different places with two different
+/// messages.
+///
+/// It is *not* [`Reject`](crate::game::Reject), and the distinction is the
+/// point: a `Reject` is an expected refusal inside a running match, it carries a
+/// reason the player can act on, and it is sent to that player. A `StartupError`
+/// is a programmer or configuration mistake, it is fatal, it is printed to
+/// whoever started the process, and it never travels over the network.
+#[derive(Debug)]
+pub enum StartupError {
+    /// The configuration could not be read or resolved.
+    Config(ConfigError),
+    /// The balance tables could not be read, parsed or trusted.
+    Balance(BalanceError),
+}
+
+impl fmt::Display for StartupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Config(err) => write!(f, "{err}"),
+            Self::Balance(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for StartupError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Config(err) => Some(err),
+            Self::Balance(err) => Some(err),
+        }
+    }
+}
+
+impl From<ConfigError> for StartupError {
+    fn from(err: ConfigError) -> Self {
+        Self::Config(err)
+    }
+}
+
+impl From<BalanceError> for StartupError {
+    fn from(err: BalanceError) -> Self {
+        Self::Balance(err)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // The resolved config
@@ -275,12 +336,19 @@ pub struct Config {
     /// Map identifier. Only one map exists until `03-map.org`.
     pub map: String,
 
-    /// Directory holding the `*.ron` balance tables (`found-004`).
+    /// Directory holding the `*.ron` balance tables (`found-004`), loaded by
+    /// [`startup_from`] into [`Run::balance`].
     pub balance_dir: PathBuf,
 
     /// A tracing filter in `EnvFilter` syntax. Empty keeps Bevy's own default,
     /// which is the filter that silences wgpu and naga noise.
     pub log_filter: String,
+
+    /// Directory this match's log file goes in, or `None` for no file.
+    ///
+    /// The file is named after the start time, so a directory is enough to
+    /// identify one match; [`crate::logging::match_log_path`] builds the name.
+    pub log_dir: Option<PathBuf>,
 
     /// Command budget: sustained commands per second, per peer (`audit-007`).
     pub commands_per_second: f32,
@@ -295,26 +363,56 @@ impl Config {
     pub fn tick(&self) -> Duration {
         Duration::from_secs_f64(1.0 / self.tick_hz)
     }
+
+    /// The socket the server half of this process binds.
+    ///
+    /// A dedicated server binds [`Config::bind_addr`], which defaults to the
+    /// standard server port. A *host*, which is both roles in one process,
+    /// instead serves on [`Config::server_addr`] -- the very address its own
+    /// client dials -- because a host that tried to bind its client's socket
+    /// would fail with `Address already in use` before it ever rendered a
+    /// frame. Serving on the dialled address is also what makes a host reachable
+    /// from the LAN by passing `--server <lan-ip>:5000`.
+    pub fn server_bind_addr(&self) -> SocketAddr {
+        match self.mode {
+            Mode::Host => self.server_addr,
+            Mode::Server | Mode::Client => self.bind_addr,
+        }
+    }
+}
+
+/// Everything a run needs, resolved and loaded before any plugin exists.
+#[derive(Debug)]
+pub struct Run {
+    /// The configuration of this process.
+    pub config: Config,
+    /// The balance tables, loaded and validated.
+    pub balance: Balance,
 }
 
 /// What a run resolved to, before any plugin exists.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum Startup {
-    /// Run with this configuration.
-    Run(Config),
+    /// Run with this configuration and these tables.
+    Run(Run),
     /// `--help`: the caller prints [`USAGE`] and exits zero.
     Help,
 }
 
 /// Resolve a run from the real command line and the real environment.
-pub fn startup() -> Result<Startup, ConfigError> {
+pub fn startup() -> Result<Startup, StartupError> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     startup_from(&args, &env_settings())
 }
 
 /// The body of [`startup`], with the process's inputs passed in, so a test can
 /// drive it without touching either.
-pub fn startup_from(args: &[String], env: &Settings) -> Result<Startup, ConfigError> {
+///
+/// The balance tables are loaded here rather than by the caller because a run
+/// that has a `Config` but no tables is not a run: it would fail a few lines
+/// later, in the middle of building an `App`, with a second error type and a
+/// second exit path. One function, one error, one message.
+pub fn startup_from(args: &[String], env: &Settings) -> Result<Startup, StartupError> {
     let cli = parse_args(args)?;
     // Answered before the config file is read, so `--help` works even when the
     // file it would otherwise have read is broken or missing.
@@ -338,7 +436,8 @@ pub fn startup_from(args: &[String], env: &Settings) -> Result<Startup, ConfigEr
 
     let layers: [Settings; 3] = [cli.settings, env.clone(), file];
     let config = resolve(&layers)?;
-    Ok(Startup::Run(config))
+    let balance = Balance::load(&config.balance_dir)?;
+    Ok(Startup::Run(Run { config, balance }))
 }
 
 // ---------------------------------------------------------------------------
@@ -365,6 +464,7 @@ pub fn defaults(mode: Mode) -> Settings {
     );
     // Empty means "leave Bevy's default filter alone".
     settings.insert(KEY_LOG.to_string(), String::new());
+    settings.insert(KEY_LOG_DIR.to_string(), DEFAULT_LOG_DIR.to_string());
     settings.insert(
         KEY_COMMANDS_PER_SECOND.to_string(),
         DEFAULT_COMMANDS_PER_SECOND.to_string(),
@@ -537,6 +637,7 @@ pub fn resolve(layers: &[Settings]) -> Result<Config, ConfigError> {
     let map = take(&mut merged, KEY_MAP)?;
     let balance_dir = take(&mut merged, KEY_BALANCE_DIR)?;
     let log_filter = take(&mut merged, KEY_LOG)?;
+    let log_dir = take(&mut merged, KEY_LOG_DIR)?;
     let commands_per_second = take_f32(&mut merged, KEY_COMMANDS_PER_SECOND)?;
     let command_burst = take_u32(&mut merged, KEY_COMMAND_BURST)?;
 
@@ -576,6 +677,7 @@ pub fn resolve(layers: &[Settings]) -> Result<Config, ConfigError> {
         map,
         balance_dir: PathBuf::from(balance_dir),
         log_filter,
+        log_dir: (!log_dir.trim().is_empty()).then(|| PathBuf::from(log_dir)),
         commands_per_second,
         command_burst,
     })

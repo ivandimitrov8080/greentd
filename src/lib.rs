@@ -5,30 +5,16 @@
 //! `tests/` with no window, no GPU and no socket (see `tasks/12-testing.org`
 //! `test-001`).
 //!
-//! Module map, and where a change belongs:
-//!
-//! | Module      | Owns                                                    |
-//! |-------------+---------------------------------------------------------|
-//! | `balance`   | every tuned number, loaded from `assets/balance/*.ron`   |
-//! | `config`    | one run's mode, addresses, tick rate and budgets          |
-//! | `game`      | replicated components, client/server messages, `Reject`  |
-//! | `map`       | static geometry: the ring, cells, buildability           |
-//! | `ratelimit` | how many commands a peer may spend per frame             |
-//! | `sim`       | the authoritative state machine; no networking types     |
-//! | `protocol`  | the lightyear contract: messages, channels, components   |
-//! | `server`    | authority: intents in, replicated mirrors out            |
-//! | `client`    | intents out, notices in, HUD                             |
-//! | `visuals`   | presentation of replicated state; no authority           |
-//!
-//! `found-005` splits these further into `sim/`, `data/`, `net/` and `ui/`.
+//! The layout, and which layer a change belongs in, is written down in the
+//! module doc of `src/main.rs`. In one line: `data/` is what both peers are,
+//! `sim/` is what only the server knows, `net/` is how the two agree, and `ui/`
+//! is what a player sees.
 
-pub mod balance;
-pub mod client;
 pub mod config;
-pub mod game;
+pub mod data;
+pub mod logging;
 pub mod map;
-pub mod protocol;
+pub mod net;
 pub mod ratelimit;
-pub mod server;
 pub mod sim;
-pub mod visuals;
+pub mod ui;

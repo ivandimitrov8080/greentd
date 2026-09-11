@@ -7,7 +7,8 @@
 use bevy::prelude::*;
 use lightyear::prelude::*;
 
-use crate::game::*;
+use crate::data::components::*;
+use crate::net::messages::*;
 
 pub fn build_protocol(app: &mut App) {
     // --- messages -----------------------------------------------------------

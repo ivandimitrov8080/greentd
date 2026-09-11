@@ -8,6 +8,11 @@
         bounty_per_wave: 0.5,
         count_base: 4.0,
         count_per_wave: 0.5,
+        // How far a creep may stand from the exact center of its slot in the
+        // wave, as a fraction of the slot's width. Strictly below 0.5, so the
+        // jitter can never reorder a wave; it only keeps the pulse from
+        // reading as a rigid comb. (tune)
+        spawn_jitter: 0.3,
     ),
     waves: [],
 )

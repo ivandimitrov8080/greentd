@@ -75,14 +75,28 @@ impl Path {
     }
 
     /// World position at `dist` along the path, wrapping around the loop.
+    ///
+    /// A distance that is not a finite number has no position on the path, and
+    /// the start of the path is returned rather than a `NaN`. A `NaN` here
+    /// would travel into a `Transform` and be far harder to find than a creep
+    /// standing at the corner; the distance used to be compared with
+    /// `partial_cmp().unwrap()`, which took the whole server down instead
+    /// (`found-006`).
     pub fn sample(&self, dist: f32) -> Vec2 {
+        if !dist.is_finite() {
+            return self.points.first().copied().unwrap_or(Vec2::ZERO);
+        }
         let d = dist.rem_euclid(self.total);
-        // Find the segment containing `d`.
+        // Find the segment containing `d`. `f32::total_cmp` rather than
+        // `partial_cmp` so the comparison cannot fail.
         let idx = match self
             .cumulative
-            .binary_search_by(|probe| probe.partial_cmp(&d).unwrap())
+            .binary_search_by(|probe| probe.total_cmp(&d))
         {
             Ok(i) => i,
+            // `d` is finite, so it is never below the first cumulative
+            // distance; the arm exists so that `i - 1` cannot underflow.
+            Err(0) => 0,
             Err(i) => i - 1,
         };
         let idx = idx.min(self.points.len() - 2);

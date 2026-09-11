@@ -1,62 +1,28 @@
-//! Client: a dumb renderer of authoritative state.
+//! The HUD, the notices, and the input that turns a click into an intent.
 //!
-//! It has no simulation, no prediction and no authority. It sends intents,
-//! receives replicated components, and draws them. Because a TD has no
-//! twitch input, that latency model is entirely acceptable -- and it removes
-//! every determinism problem that a per-peer sim would introduce.
+//! This is the whole of the client's *presentation*: a text overlay, a short
+//! lived notice line, and the translation of keys and clicks into the four
+//! [`ClientCmd`]s. It owns no authoritative state -- every number it prints came
+//! from the server, and every click it sends is a request the server may refuse.
 
 use bevy::prelude::*;
 use lightyear::prelude::client::*;
 use lightyear::prelude::*;
 
-use crate::balance::Balance;
-use crate::config::Config;
-use crate::game::*;
-use crate::map::*;
-use crate::visuals::MainCamera;
+use crate::data::balance::Balance;
+use crate::data::components::{LocalPlayer, MatchView, Phase, PlayerView};
+use crate::map::{in_bounds, world_to_cell};
+use crate::net::messages::{ClientCmd, ReliableChannel, ServerNotice};
+use crate::ui::visuals::MainCamera;
 
-fn spawn_client(mut commands: Commands, cfg: Res<Config>) {
-    let client = commands
-        .spawn((
-            Name::new("Client"),
-            RawClient,
-            // The IO layer. Without this the link never binds a socket and
-            // nothing is ever sent -- `Connect` would silently do nothing.
-            UdpIo::default(),
-            LocalAddr(cfg.bind_addr),
-            PeerAddr(cfg.server_addr),
-            Link::default(),
-            ReplicationReceiver,
-            // Inserted eagerly so we never miss the first notice while the
-            // receiver component is being created lazily by the message layer.
-            MessageReceiver::<ServerNotice>::default(),
-        ))
-        .id();
-    commands.trigger(Connect { entity: client });
-}
-
-// ---------------------------------------------------------------------------
-// Local UI state
-// ---------------------------------------------------------------------------
-
-#[derive(Resource)]
+/// Which tower the player would place next, and what the server last said.
+#[derive(Resource, Default)]
 pub struct ClientUi {
     /// Which tower the player would place next.
     pub kind: u8,
     pub notice: String,
     pub notice_timer: f32,
     pub over: Option<(u32, u32)>,
-}
-
-impl Default for ClientUi {
-    fn default() -> Self {
-        Self {
-            kind: 0,
-            notice: String::new(),
-            notice_timer: 0.0,
-            over: None,
-        }
-    }
 }
 
 #[derive(Component)]
@@ -193,10 +159,18 @@ fn decay_notice(time: Res<Time>, mut ui: ResMut<ClientUi>) {
 // ---------------------------------------------------------------------------
 
 fn update_hud(
-    sim: Query<&MatchView>,
-    // No `Remote` filter: a remote client only ever receives its own view,
-    // while a host already holds the authoritative one.
-    me: Query<&PlayerView>,
+    // The match state *this* process owns, if it also runs the server, and the
+    // copy a client was sent otherwise. Exactly one of the two matches on any
+    // peer, and a host is the one case where both do -- its client half is sent
+    // the whole `MatchView` because it is global state (`NetworkTarget::All`),
+    // so those two are the same match and the authoritative one, which never
+    // lags, wins. Counting views instead of reading a marked one is D30.
+    authority: Query<&MatchView, Without<Remote>>,
+    received: Query<&MatchView, With<Remote>>,
+    // The one view this process owns, marked by whoever could prove it
+    // (`found-010`). Never `single()` over every view: in host mode that is
+    // every view in the match, not one (D30, D3).
+    me: Query<&PlayerView, With<LocalPlayer>>,
     balance: Res<Balance>,
     mut hud: Query<&mut Text, With<Hud>>,
     ui: Res<ClientUi>,
@@ -207,18 +181,16 @@ fn update_hud(
 
     let mut out = String::new();
 
-    let players = me.iter().count();
-    if let Ok(mv) = sim.single() {
-        out.push_str(&format!(
+    match authority.iter().next().or_else(|| received.iter().next()) {
+        Some(mv) => out.push_str(&format!(
             "wave {:<3}  creeps {}/{}   players {}   [{}]\n",
             mv.wave,
             mv.live_creeps,
             mv.overrun_cap,
-            players,
+            mv.players,
             Phase::from_u8(mv.phase).text()
-        ));
-    } else {
-        out.push_str("connecting...\n");
+        )),
+        None => out.push_str("connecting...\n"),
     }
 
     if let Ok(pv) = me.single() {
@@ -249,16 +221,13 @@ fn update_hud(
     **text = out;
 }
 
-// ---------------------------------------------------------------------------
-// Plugin
-// ---------------------------------------------------------------------------
+/// The HUD, added by [`GreenTdClientPlugin`](crate::net::client::GreenTdClientPlugin).
+pub struct HudPlugin;
 
-pub struct GreenTdClientPlugin;
-
-impl Plugin for GreenTdClientPlugin {
+impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ClientUi>()
-            .add_systems(Startup, (spawn_client, setup_hud).chain())
+            .add_systems(Startup, setup_hud)
             .add_systems(
                 Update,
                 (player_input, read_notices, decay_notice, update_hud).chain(),

@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use greentd::config::{self, ConfigError, Mode, Settings, Startup};
+use greentd::config::{self, ConfigError, Mode, Settings, Startup, StartupError};
 
 fn args(list: &[&str]) -> Vec<String> {
     list.iter().map(|arg| arg.to_string()).collect()
@@ -59,17 +59,24 @@ fn the_command_line_beats_the_environment_beats_the_file_beats_the_default() {
     );
     assert_eq!(config.map, "twin-lane", "then the file");
 
-    let env_and_file =
-        config::resolve(&[layer(&[]), layer(&[("tick-hz", "50")]), layer(&[("tick-hz", "40")])])
-            .expect("resolves");
+    let env_and_file = config::resolve(&[
+        layer(&[]),
+        layer(&[("tick-hz", "50")]),
+        layer(&[("tick-hz", "40")]),
+    ])
+    .expect("resolves");
     assert_eq!(env_and_file.tick_hz, 50.0, "then the environment");
 
-    let file_only = config::resolve(&[layer(&[]), layer(&[]), layer(&[("tick-hz", "40")])])
-        .expect("resolves");
+    let file_only =
+        config::resolve(&[layer(&[]), layer(&[]), layer(&[("tick-hz", "40")])]).expect("resolves");
     assert_eq!(file_only.tick_hz, 40.0, "then the file");
 
     let nothing = config::resolve(&[]).expect("the defaults alone resolve");
-    assert_eq!(nothing.tick_hz, config::DEFAULT_TICK_HZ, "then the defaults");
+    assert_eq!(
+        nothing.tick_hz,
+        config::DEFAULT_TICK_HZ,
+        "then the defaults"
+    );
     assert_eq!(nothing.mode, Mode::Host);
 }
 
@@ -79,14 +86,41 @@ fn the_mode_decides_which_socket_is_bound_by_default() {
     assert_eq!(server.bind_addr.to_string(), config::DEFAULT_SERVER_BIND);
     assert_eq!(server.server_addr.to_string(), config::DEFAULT_SERVER_ADDR);
     assert!(server.mode.runs_server() && !server.mode.runs_client());
+    // One role, one socket.
+    assert_eq!(server.server_bind_addr(), server.bind_addr);
 
     let client = config::resolve(&[layer(&[("mode", "client")])]).expect("client resolves");
     assert_eq!(client.bind_addr.to_string(), config::DEFAULT_CLIENT_BIND);
     assert!(client.mode.runs_client() && !client.mode.runs_server());
+    assert_eq!(client.server_bind_addr(), client.bind_addr);
 
     let host = config::resolve(&[]).expect("the default mode resolves");
     assert_eq!(host.mode, Mode::Host);
     assert!(host.mode.is_host() && host.mode.runs_server() && host.mode.runs_client());
+    // Both roles in one process, so the two halves must not share a socket:
+    // the client takes `bind_addr`, the server serves on the address that
+    // client dials. Two sockets on one port is `Address already in use`.
+    assert_eq!(host.bind_addr.to_string(), config::DEFAULT_CLIENT_BIND);
+    assert_eq!(
+        host.server_bind_addr().to_string(),
+        config::DEFAULT_SERVER_ADDR
+    );
+    assert_ne!(host.bind_addr, host.server_bind_addr());
+}
+
+#[test]
+fn a_host_serves_where_its_own_client_dials() {
+    let cli = config::parse_args(&args(&["host", "--server", "10.0.0.5:5000"]))
+        .expect("the arguments parse");
+    let config = config::resolve(&[cli.settings]).expect("resolves");
+    assert_eq!(config.mode, Mode::Host);
+    assert_eq!(config.server_addr.to_string(), "10.0.0.5:5000");
+    assert_eq!(
+        config.server_bind_addr().to_string(),
+        "10.0.0.5:5000",
+        "so `--server <lan-ip>:5000` is also how a host is reached from the LAN"
+    );
+    assert_eq!(config.bind_addr.to_string(), config::DEFAULT_CLIENT_BIND);
 }
 
 // ---------------------------------------------------------------------------
@@ -95,8 +129,8 @@ fn the_mode_decides_which_socket_is_bound_by_default() {
 
 #[test]
 fn a_bad_value_names_the_key_and_the_value() {
-    let err = config::resolve(&[layer(&[("tick-hz", "fast")])])
-        .expect_err("`fast` is not a number");
+    let err =
+        config::resolve(&[layer(&[("tick-hz", "fast")])]).expect_err("`fast` is not a number");
     assert_eq!(
         err,
         ConfigError::BadValue {
@@ -215,13 +249,19 @@ fn a_third_positional_is_refused() {
 fn the_environment_names_keys_after_the_prefix() {
     let env = config::settings_from_env(vec![
         ("GREENTD_TICK_HZ".to_string(), "60".to_string()),
-        ("GREENTD_BALANCE_DIR".to_string(), "/tmp/balance".to_string()),
+        (
+            "GREENTD_BALANCE_DIR".to_string(),
+            "/tmp/balance".to_string(),
+        ),
         ("PATH".to_string(), "/bin".to_string()),
         ("HOME".to_string(), "/root".to_string()),
     ]);
 
     assert_eq!(env.get("tick-hz").map(String::as_str), Some("60"));
-    assert_eq!(env.get("balance-dir").map(String::as_str), Some("/tmp/balance"));
+    assert_eq!(
+        env.get("balance-dir").map(String::as_str),
+        Some("/tmp/balance")
+    );
     assert_eq!(env.len(), 2, "only the prefixed variables are ours");
 
     let config = config::resolve(&[env]).expect("the environment layer resolves");
@@ -297,12 +337,16 @@ fn the_environment_can_name_the_config_file() {
     env.insert(config::KEY_CONFIG.to_string(), path.display().to_string());
 
     let startup = config::startup_from(&args(&[]), &env).expect("the run resolves");
-    let config = match startup {
-        Startup::Run(config) => config,
+    let run = match startup {
+        Startup::Run(run) => run,
         Startup::Help => panic!("no help was asked for"),
     };
-    assert_eq!(config.tick_hz, 15.0);
-    assert_eq!(config.mode, Mode::Host, "no mode anywhere means host");
+    assert_eq!(run.config.tick_hz, 15.0);
+    assert_eq!(run.config.mode, Mode::Host, "no mode anywhere means host");
+    assert!(
+        !run.balance.towers.is_empty(),
+        "the tables are loaded by `startup_from`, not by the caller"
+    );
 
     cleanup(&dir);
 }
@@ -314,5 +358,78 @@ fn help_short_circuits_before_any_config_file_is_read() {
         &Settings::new(),
     )
     .expect("--help is not an error");
+    assert!(matches!(startup, Startup::Help));
+}
+
+// ---------------------------------------------------------------------------
+// The log file (found-003)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_log_directory_is_configurable_and_can_be_turned_off() {
+    let default = config::resolve(&[]).expect("the defaults alone resolve");
+    assert_eq!(
+        default.log_dir,
+        Some(PathBuf::from(config::DEFAULT_LOG_DIR)),
+        "a match writes a file unless it is told not to"
+    );
+
+    let elsewhere = config::resolve(&[layer(&[("log-dir", "/tmp/gt")])]).expect("resolves");
+    assert_eq!(elsewhere.log_dir, Some(PathBuf::from("/tmp/gt")));
+
+    let off = config::resolve(&[layer(&[("log-dir", "")])]).expect("resolves");
+    assert_eq!(off.log_dir, None, "an empty value writes no file");
+
+    // The filter and the directory are different keys: one turns levels on and
+    // off, the other decides whether there is a file at all.
+    let filtered =
+        config::resolve(&[layer(&[("log", "warn"), ("log-dir", "")])]).expect("resolves");
+    assert_eq!(filtered.log_filter, "warn");
+    assert_eq!(filtered.log_dir, None);
+}
+
+// ---------------------------------------------------------------------------
+// One startup error (found-006)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_bad_server_value_is_reported_rather_than_panicking() {
+    let err = config::startup_from(&args(&["client", "--server", "10.0.0.5"]), &Settings::new())
+        .expect_err("`10.0.0.5` is not an address");
+
+    assert!(
+        matches!(err, StartupError::Config(_)),
+        "a bad config value is a config error: {err:?}"
+    );
+    let message = err.to_string();
+    assert!(message.contains("server"), "{message}");
+    assert!(message.contains("10.0.0.5"), "{message}");
+}
+
+#[test]
+fn a_balance_directory_that_has_no_tables_is_a_startup_error() {
+    let err = config::startup_from(
+        &args(&["server", "--balance-dir", "/nonexistent/balance"]),
+        &Settings::new(),
+    )
+    .expect_err("there are no tables there");
+
+    assert!(
+        matches!(err, StartupError::Balance(_)),
+        "and it is the *same* type as a config failure: {err:?}"
+    );
+    let message = err.to_string();
+    assert!(message.contains("match.ron"), "{message}");
+}
+
+#[test]
+fn help_never_loads_the_balance() {
+    // `--help` has to work on a box with no assets at all, which is what a
+    // fresh checkout of a broken branch looks like.
+    let startup = config::startup_from(
+        &args(&["--help", "--balance-dir", "/nonexistent/balance"]),
+        &Settings::new(),
+    )
+    .expect("--help does not touch the tables");
     assert!(matches!(startup, Startup::Help));
 }

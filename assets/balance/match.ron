@@ -4,4 +4,9 @@
     wave_interval: 20.0,
     first_wave_delay: 3.0,
     call_wave_cooldown: 5.0,
+    // The match's RNG seed (found-009). Every match on these tables is the
+    // same match until `lobby-003` lets a host pick one; the command line
+    // cannot set it because it is a property of the match, not of the process.
+    // (tune)
+    seed: 0,
 )

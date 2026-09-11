@@ -13,7 +13,7 @@ and none of it is optional, and =found-004= is the loader named by the
 
 * Headless operation and configuration
 
-** TODO [#A] Run the server headless with no window and no VisualsPlugin              :@found:
+** DONE [#A] Run the server headless with no window and no VisualsPlugin              :@found:
    :PROPERTIES:
    :ID:         found-001
    :EFFORT:     1d
@@ -27,10 +27,39 @@ and none of it is optional, and =found-004= is the loader named by the
 
    - Files: =src/main.rs=, =src/visuals.rs=, =src/server.rs=
    - Acceptance:
-     - [ ] The =server= arm adds no =VisualsPlugin=, requests no primary window, and creates no camera or =MapTile= entity.
-     - [ ] =cargo run -- server= reaches the listening state with =DISPLAY= unset and no GPU, without panicking.
-     - [ ] =host= and =client= modes still render exactly as they do today.
-     - [ ] =src/main.rs= no longer builds a =WindowPlugin= primary window titled ="Green TD - server"= in server mode.
+     - [x] The =server= arm adds no =VisualsPlugin=, requests no primary window, and creates no camera or =MapTile= entity.
+     - [x] =cargo run -- server= reaches the listening state with =DISPLAY= unset and no GPU, without panicking.
+     - [x] =host= and =client= modes still render exactly as they do today.
+     - [x] =src/main.rs= no longer builds a =WindowPlugin= primary window titled ="Green TD - server"= in server mode.
+
+   Done. =engine_plugins= picks the plugin group from the mode: a mode with a
+   client half gets =DefaultPlugins= and the window it names, a dedicated server
+   gets =MinimalPlugins= + =StatesPlugin= (lightyear's state machines need it) and
+   a =ScheduleRunnerPlugin::run_loop(tick)= that wakes once per sim tick instead
+   of spinning, so a server's frame and the sim's tick are one clock.
+   =VisualsPlugin= is added only when =Mode::runs_client()=. Verified by running
+   =cargo run -- server= with =DISPLAY=, =WAYLAND_DISPLAY= and =XDG_RUNTIME_DIR=
+   all unset: it binds, prints =greentd::net: listening on ...= and runs waves.
+
+   Two things the verification turned up, both fixed and both worth knowing:
+
+   1. *Host mode did not run at all.* =Config= carried one bind address and both
+      halves of a host used it, so the default =cargo run= died with =Address
+      already in use (os error 98)= before it rendered a frame. The server half
+      now binds =Config::server_bind_addr=, which is =server_addr= for a host --
+      the address its own client dials -- and =bind_addr= for a dedicated server.
+      That also makes =--server <lan-ip>:5000= the way to host for the LAN. Two
+      tests, =the_mode_decides_which_socket_is_bound_by_default= and
+      =a_host_serves_where_its_own_client_dials=, seal it.
+   2. A readiness line, =greentd::net: listening on <addr> (<mode>)=, is logged
+      when the server reaches =Started=. =found-007='s smoke job is what waits
+      for it.
+
+   Deliberately not here: a *graceful* shutdown and the deterministic tick
+   guarantee. Both belong to =net-007=, which is BLOCKED-BY this task and remains
+   TODO. A host is still two real sockets rather than lightyear's in-process
+   host-client pair, which lightyear flags with a one-off =invalid Lightyear
+   networking topology= error; =net-006= is the task that removes it.
 
 ** IN-PROGRESS [#A] Centralise mode, addresses, ports, tick rate, map and log level in one config    :@found:
    :PROPERTIES:
@@ -72,14 +101,14 @@ and none of it is optional, and =found-004= is the loader named by the
 
    Deliberately not here: the per-match log file and the level policy
    (=found-003=), and the single =StartupError= that folds this module's errors
-   together with the balance loader's (=found-006=, which now has one module to
-   fold rather than two). =GREENTD_BALANCE_DIR= keeps its old meaning for free,
-   because the environment mapping is ="GREENTD_"+ the key upper-cased, so the
-   balance loader did not have to change.
+   together with the balance loader's (=found-006=, since done, and it folded one
+   module rather than two because of this split). =GREENTD_BALANCE_DIR= keeps its
+   old meaning for free, because the environment mapping is ="GREENTD_"+ the key
+   upper-cased, so the balance loader did not have to change.
 
 * Observability
 
-** TODO [#B] Structure logs on stable targets and write a per-match log file          :@found:
+** DONE [#B] Structure logs on stable targets and write a per-match log file          :@found:
    :PROPERTIES:
    :ID:         found-003
    :EFFORT:     1d
@@ -93,11 +122,59 @@ and none of it is optional, and =found-004= is the loader named by the
 
    - Files: =src/main.rs=, =src/server.rs=, =src/client.rs=, =src/sim.rs=, =Cargo.toml=
    - Acceptance:
-     - [ ] Logs use stable targets (=greentd::net=, =greentd::sim=, =greentd::replication=, =greentd::commands=), and =RUST_LOG= can enable or silence any one without a rebuild.
-     - [ ] A one-page level policy is written down: what belongs at =error=, =warn=, =info=, =debug= and =trace=.
-     - [ ] A match writes a per-match log file whose name carries the start time and whose path is configurable (found-002).
-     - [ ] A rejected client command logs at =debug= with the peer key and the =Reject= reason, never at =info=.
-     - [ ] The commented-out =log= dependency block in =Cargo.toml= is removed with a one-line rationale.
+     - [x] Logs use stable targets (=greentd::net=, =greentd::sim=, =greentd::replication=, =greentd::commands=), and =RUST_LOG= can enable or silence any one without a rebuild.
+     - [x] A one-page level policy is written down: what belongs at =error=, =warn=, =info=, =debug= and =trace=.
+     - [x] A match writes a per-match log file whose name carries the start time and whose path is configurable (found-002).
+     - [x] A rejected client command logs at =debug= with the peer key and the =Reject= reason, never at =info=.
+     - [x] The commented-out =log= dependency block in =Cargo.toml= is removed with a one-line rationale.
+
+   Done. =src/logging.rs= is the module: it names the four targets, states the
+   level policy as a table with the rule behind it ("a player never sees a log
+   line, so nothing a player needs belongs above =info=, and nothing an operator
+   needs rarely belongs below =debug="), and supplies the layer that writes the
+   file. Every =info!/warn!/debug!/trace!= in the crate now names one of the
+   constants; a line with no target is a line nobody can silence.
+
+   The file goes to =<log-dir>/greentd-<YYYYMMDD>-<HHMMSS>.log=, in UTC, from the
+   new =log-dir= key (default =logs=, empty turns it off). =LogPlugin::custom_layer=
+   is a bare =fn=, so the layer reads =Config= out of the world rather than
+   capturing it -- =main= has already inserted it, which is why the ordering there
+   matters. The subscriber does not exist at the moment the layer is built, so the
+   one line announcing the file goes to stderr by hand. Verified:
+
+   #+BEGIN_EXAMPLE
+   $ RUST_LOG=warn,greentd::sim=info ./greentd server
+   greentd: logging this match to logs/greentd-20260911-194955.log
+   2026-09-11T19:49:58Z  INFO greentd::sim: wave 1 started (4 creeps)
+   #+END_EXAMPLE
+
+   One subsystem on, everything else off, no rebuild -- and the =greentd::net=
+   "listening on ..." line that =plain info= prints is correctly absent.
+
+   Two things worth recording:
+
+   1. The timestamp is hand-rolled (Howard Hinnant's =civil_from_days=, fifteen
+      lines) rather than pulling in =time= or =chrono=, for the same reason the
+      balance hash and the sim's RNG are: a date library is a large dependency for
+      one file name. =the_epoch_is_the_epoch= and
+      =a_known_instant_reads_back_as_itself= pin it, including a leap day, which is
+      where a hand-rolled calendar breaks.
+   2. This is the only wall clock in the crate. A log file has to be named after
+      the moment the process started, and that is a wall-clock question; the
+      *simulation* may not read one at all (=found-009=), which is why the seed
+      lives in the balance tables.
+
+   =greentd::replication= is the one target that had no lines to re-target, so it
+   gained three: which view a peer is sent and how (`broadcasting` or
+   `addressing` -- the line that would have made D3 obvious months ago), the match
+   state entity, and a =trace= per creep and per tower mirror. If it is ever silent,
+   replication is not happening.
+
+   Owed elsewhere: =cargo clippy -- -D warnings= is =found-007='s gate, and there
+   are 16 warnings standing in its way (13 of them =neg_cmp_op_on_partial_ord= on
+   the deliberate =!(x > 0.0)= NaN guards in =data/balance.rs=). That needs a
+   decision -- rewrite the guards or =#[expect]= the lint with a reason -- and it
+   is not this task's to make.
 
 * Balance as data
 
@@ -157,7 +234,7 @@ and none of it is optional, and =found-004= is the loader named by the
 
 * Code structure, errors and determinism
 
-** TODO [#B] Split the flat crate into =sim/=, =data/=, =net= and =ui= modules       :@found:sim:
+** DONE [#B] Split the flat crate into =sim/=, =data/=, =net= and =ui= modules       :@found:sim:
    :PROPERTIES:
    :ID:         found-005
    :EFFORT:     1w
@@ -171,12 +248,56 @@ and none of it is optional, and =found-004= is the loader named by the
 
    - Files: =src/main.rs=, =src/sim/= (new), =src/data/= (new), =src/net/= (new), =src/ui/= (new)
    - Acceptance:
-     - [ ] =src/sim.rs= becomes a =sim/= folder with combat, waves and economy in their own files, and =Sim= imports no =lightyear= or =bevy= networking type.
-     - [ ] Balance types and their loader move under =data/=, the protocol and messages move under =net/=, and visuals plus HUD move under =ui/=.
-     - [ ] =cargo build= and =cargo test= are green after the move, with no behaviour change.
-     - [ ] The layout is written down in the module doc at the top of =src/main.rs=, so a new contributor knows where a change belongs.
+     - [x] =src/sim.rs= becomes a =sim/= folder with combat, waves and economy in their own files, and =Sim= imports no =lightyear= or =bevy= networking type.
+     - [x] Balance types and their loader move under =data/=, the protocol and messages move under =net/=, and visuals plus HUD move under =ui/=.
+     - [x] =cargo build= and =cargo test= are green after the move, with no behaviour change.
+     - [x] The layout is written down in the module doc at the top of =src/main.rs=, so a new contributor knows where a change belongs.
 
-** TODO [#A] Replace parse-time panics with one startup error type                    :@found:
+   Done. =game.rs=, =protocol.rs=, =server.rs=, =client.rs=, =visuals.rs= and the
+   flat =sim.rs= are gone; the tree is
+
+   #+BEGIN_EXAMPLE
+   src/
+     main.rs      the binary, and the layout table below
+     lib.rs       the crate root
+     config.rs    one run's mode, addresses, tick rate and budgets
+     map.rs        static geometry (03-map.org turns it into a folder)
+     ratelimit.rs  how much a peer may spend per frame
+     data/    balance.rs  components.rs  reject.rs
+     sim/     mod.rs  waves.rs  combat.rs  economy.rs  rng.rs
+     net/     protocol.rs  messages.rs  server.rs  client.rs
+     ui/      visuals.rs  hud.rs
+   #+END_EXAMPLE
+
+   The *reason* each piece went where it did is the interesting part, and it is
+   written up in =main.rs= as three rules: =sim/= imports nothing from =net/= or
+   =ui/= (it has to be replayable from a seed with no socket in scope), =ui/=
+   never writes authoritative state, and any number a player can feel is a field
+   in =assets/balance/*.ron=. Two placements are worth calling out because they
+   are the ones that could have gone either way:
+
+   1. =Reject= went to =data/reject.rs=, *not* to =net/messages.rs= with the two
+      message enums. It is the sim's own answer to "why not" -- =try_build= and
+      friends return it -- and the sim may not name anything from =net/=. It is
+      carried on the wire; it does not belong to the wire.
+   2. The replicated components went to =data/components.rs= for the same
+      reason: =Sim::match_view= builds a =MatchView= and =Sim::phase= returns a
+      =Phase=, so those two have to be nameable without importing lightyear. What
+      stays in =net/protocol.rs= is the *act* of registering them.
+
+   =src/sim.rs='s one big =step= is now five calls, one per file, and the order is
+   documented as the contract it always was: wave bookkeeping, then movement,
+   then fire, then the bills, then the lose condition. Nothing changed
+   behaviourally -- all 60 tests passed unchanged across the move, and =host=,
+   =server= and =client= were each run afterwards.
+
+   Note on the rest of the plan: later files still name the pre-split paths
+   (=src/game.rs=, =src/protocol.rs=, =src/client.rs= and the flat =src/sim.rs=),
+   because they were written before this landed. Treat those as *which* file is
+   meant, not as a path; =src/sim/combat.rs=, =src/sim/economy.rs=, =src/sim/rng.rs=
+   and =src/ui/*.rs= were already anticipated and do exist.
+
+** DONE [#A] Replace parse-time panics with one startup error type                    :@found:
    :PROPERTIES:
    :ID:         found-006
    :EFFORT:     2h
@@ -191,13 +312,37 @@ and none of it is optional, and =found-004= is the loader named by the
 
    - Files: =src/main.rs=, =src/server.rs=, =src/config.rs=, =src/map.rs=
    - Acceptance:
-     - [ ] A single =StartupError= enum covers config parsing and balance loading, and =main= prints it and exits non-zero with no backtrace.
-     - [ ] No =unwrap()= or =expect()= remains on data parsed from argv, an environment variable, or a =*.ron= asset.
-     - [ ] =Path::sample= handles a NaN distance without unwrapping and without panicking.
-     - [ ] The policy distinguishes =StartupError= (programmer or config failure, fatal, not sent to peers) from =Reject= (expected in-game refusal, reported to the peer and carrying a reason).
-     - [ ] Test: a bad =--server= value prints the reason and exits non-zero rather than panicking.
+     - [x] A single =StartupError= enum covers config parsing and balance loading, and =main= prints it and exits non-zero with no backtrace.
+     - [x] No =unwrap()= or =expect()= remains on data parsed from argv, an environment variable, or a =*.ron= asset.
+     - [x] =Path::sample= handles a NaN distance without unwrapping and without panicking.
+     - [x] The policy distinguishes =StartupError= (programmer or config failure, fatal, not sent to peers) from =Reject= (expected in-game refusal, reported to the peer and carrying a reason).
+     - [x] Test: a bad =--server= value prints the reason and exits non-zero rather than panicking.
 
-** TODO [#A] Seed a deterministic RNG owned by the sim                            :@sim:
+   Done. =config::StartupError= is =Config(ConfigError) | Balance(BalanceError)=,
+   with =From= for each, and =config::startup_from= now resolves the config *and*
+   loads the tables, so =main= has one =match= and one =eprintln!=. =Balance's
+   =load_or_exit= -- the second exit path -- is gone. Measured, not assumed:
+
+   #+BEGIN_EXAMPLE
+   $ ./greentd client --server 10.0.0.5 ; echo $?
+   greentd: config: --server "10.0.0.5": expected an address like 127.0.0.1:5000
+   2
+   #+END_EXAMPLE
+
+   The two =parse().expect()= sites the task names are already gone: =found-002=
+   moved address parsing into =config=, which returns =ConfigError= rather than
+   panicking, so the only =unwrap()= left in =src/= was the one in
+   =Path::sample=. It now uses =f32::total_cmp= and returns the start of the path
+   for a non-finite distance, on the grounds that a =NaN= in a =Transform= is
+   harder to find than a creep standing at a corner. =Err(0) => 0= also removes a
+   latent underflow in the same match.
+
+   Deliberately not done here: the =expect= in =Path::sample='s *binaries* -- there
+   are none left to fix -- and any change to how network input is validated.
+   A malformed =ClientCmd= is neither a =StartupError= nor a =Reject=; it is
+   =net-003=.
+
+** DONE [#A] Seed a deterministic RNG owned by the sim                            :@sim:
    :PROPERTIES:
    :ID:         found-009
    :EFFORT:     1d
@@ -211,12 +356,40 @@ and none of it is optional, and =found-004= is the loader named by the
 
    - Files: =src/sim.rs=, =src/game.rs=, =assets/balance/*.ron=
    - Acceptance:
-     - [ ] =Sim= owns a seeded RNG whose seed is a match setting, not a wall-clock call.
-     - [ ] No =rand::thread_rng()=, =rand::random()= or =Instant::now()=-derived seed is reachable from =Sim::step=.
-     - [ ] Two =Sim= instances built with the same seed and fed the same intents produce identical state after N ticks.
-     - [ ] A test seals this in: same seed gives identical output; a different seed changes at least one observable.
+     - [x] =Sim= owns a seeded RNG whose seed is a match setting, not a wall-clock call.
+     - [x] No =rand::thread_rng()=, =rand::random()= or =Instant::now()=-derived seed is reachable from =Sim::step=.
+     - [x] Two =Sim= instances built with the same seed and fed the same intents produce identical state after N ticks.
+     - [x] A test seals this in: same seed gives identical output; a different seed changes at least one observable.
 
-** TODO [#C] Mark the local player instead of inferring identity                      :@net:
+   Done. =sim::Rng= is SplitMix64 -- eight lines, no dependency, and identical on
+   every platform, which is the whole point -- and =Sim= owns one, built in
+   =Sim::new= from =match_rules.seed=. =match.ron= carries =seed: 0= and
+   =waves.ron= carries =spawn_jitter=, the fraction of a slot a creep may be
+   displaced from the center of it.
+
+   The generator's consumer today is that jitter: a wave is still spread evenly
+   around the loop, but no longer as a rigid comb. The jitter is validated to be
+   below half a slot, so it can never reorder a wave and never touches gameplay --
+   and it is the reason a different seed is observable at all, which is what
+   =the_same_seed_replays_and_a_different_seed_does_not=,
+   =a_creep_spawns_inside_its_own_slot= and
+   =each_wave_draws_further_along_the_generator= pin down. The last of those
+   matters most: it proves the generator is a stream, not a constant dressed up
+   as a seed.
+
+   =waves-002= (chaos) and =econ-00x= (gambling) are the intended real consumers.
+   When =waves-001= moves wave spawning to a single spawn point the jitter may go
+   with it; the seed stays regardless, because sim-012 and every replay need it.
+
+   Two deliberate deviations from the file list above: =src/game.rs= is untouched
+   -- the seed is *not* replicated, because a client does not simulate and has no
+   use for it -- and =src/balance.rs= is touched, because the seed and the jitter
+   are table fields and the loader has to carry them. =BalanceData::hash= zeroes
+   the seed before hashing, so the protocol version stays a property of the
+   *rules*: two peers in two different matches on the same tables are not in
+   disagreement.
+
+** DONE [#C] Mark the local player instead of inferring identity                      :@net:
    :PROPERTIES:
    :ID:         found-010
    :EFFORT:     2h
@@ -229,10 +402,44 @@ and none of it is optional, and =found-004= is the loader named by the
 
    - Files: =src/game.rs=, =src/client.rs=, =src/server.rs=, =src/protocol.rs=
    - Acceptance:
-     - [ ] Exactly one =PlayerView= per peer is marked =LocalPlayer=, on both server-owned (host) and client-owned (remote) peers.
-     - [ ] =update_hud= reads gold and kills from the =LocalPlayer= query and never from =single()= over all views.
-     - [ ] The count of players in the match comes from =MatchView=, not from =me.iter().count()=.
-     - [ ] =audit-003= and =audit-028= cite this marker rather than defining a second one.
+     - [x] Exactly one =PlayerView= per peer is marked =LocalPlayer=, on both server-owned (host) and client-owned (remote) peers.
+     - [x] =update_hud= reads gold and kills from the =LocalPlayer= query and never from =single()= over all views.
+     - [x] The count of players in the match comes from =MatchView=, not from =me.iter().count()=.
+     - [x] =audit-003= and =audit-028= cite this marker rather than defining a second one.
+
+   Done. =game::LocalPlayer= is a plain component -- not replicated, because "mine"
+   is about who is looking -- and two systems mark it, one per peer:
+
+   - A *remote* client is sent exactly its own view (=NetworkTarget::Single=), so
+     =mark_local_view= marks the one =PlayerView= it holds. It refuses to guess in
+     host mode, where it holds every view.
+   - A *host* holds the server's own =PlayerView= entities, and only the server
+     knows which is which: =Net::views= is keyed by =PlayerKey=, which for a raw
+     connection is the peer's socket address. =mark_host_view= reads that key off
+     the one =RawClient= in the world -- whose =LocalId= is the very =PeerId::Raw=
+     the server derived the key from -- and marks the matching view. No address
+     arithmetic, no guessing, and it survives =--bind=.
+
+   =MatchView= gained a =players= field for box three; the HUD reads the lobby
+   size from the match instead of counting views, which in host mode is every
+   view in the match. Both figures are the same =Sim::players_connected()= the
+   wave size is built from, so they cannot disagree.
+
+   Verified by running all three modes: =cargo run= (host) and
+   =cargo run -- client= against =cargo run -- server= both report =players 1=,
+   =gold 300=, =kills 0=, and the host's figure is the authoritative one.
+
+   One thing found on the way and *not* fixed here: a host's client half
+   reproduces its own copy of every replicated entity, so the world holds two of
+   each -- two =MatchView=s, two sprites per creep. =update_hud= now reads the
+   authoritative one (the one without lightyear's =Remote= marker) and falls back
+   to the received copy when there is only that, so the HUD is right either way,
+   but the duplication itself is =net-006='s: it is the same defect as D3's
+   =NetworkTarget::All=, and it wants the local client to read the server's state
+   rather than to be sent a copy of it.
+
+   =src/protocol.rs= needed no change: =LocalPlayer= is not replicated, and
+   =MatchView= was already registered.
 
 * Build, tooling and CI
 

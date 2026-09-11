@@ -112,6 +112,11 @@ pub struct MatchRules {
     pub first_wave_delay: f32,
     /// Minimum time between two `CallWave` commands from one player.
     pub call_wave_cooldown: f32,
+    /// The match's RNG seed (`found-009`). A seeded match is a reproducible
+    /// match: the same seed and the same intents produce the same game, which
+    /// is what a test or a replay needs. It is a *match* setting rather than a
+    /// process setting, so it lives here and not in `Config`.
+    pub seed: u64,
 }
 
 /// One tower family, addressed on the wire by its **index** in `towers.ron`.
@@ -181,6 +186,11 @@ pub struct WaveScaling {
     pub count_base: f32,
     /// Creep count added per wave, per connected player.
     pub count_per_wave: f32,
+    /// How far from the exact center of its slot a creep may spawn, as a
+    /// fraction of the slot's width (`found-009`). Must be below `0.5`, so a
+    /// wave can never reorder itself.
+    #[serde(default)]
+    pub spawn_jitter: f32,
 }
 
 /// One creep line inside one wave.
@@ -259,20 +269,6 @@ impl Balance {
     /// Load from [`default_balance_dir`].
     pub fn shipped() -> Result<Self, BalanceError> {
         Self::load(&default_balance_dir())
-    }
-
-    /// Load or exit non-zero, naming the offending field.
-    ///
-    /// `found-006` replaces this with a single `StartupError` type; until then
-    /// this is the one place the balance loader is allowed to abort.
-    pub fn load_or_exit(dir: &Path) -> Self {
-        match Self::load(dir) {
-            Ok(balance) => balance,
-            Err(err) => {
-                eprintln!("greentd: {err}");
-                std::process::exit(2);
-            }
-        }
     }
 }
 
@@ -369,6 +365,10 @@ impl BalanceData {
     /// Stable means: independent of the order entries appear in the files, and
     /// of `-0.0` versus `0.0`. Two peers that agree on this hash agree on every
     /// number the client is allowed to display.
+    ///
+    /// The match seed is deliberately *not* part of it. Peers have to agree on
+    /// the rules; which match they are playing is a separate question, and two
+    /// peers in two different matches on the same rules are not in disagreement.
     pub fn hash(&self) -> u64 {
         let mut canonical = self.clone();
         canonical.normalise();
@@ -391,6 +391,8 @@ impl BalanceData {
         m.wave_interval = canon_f32(m.wave_interval);
         m.first_wave_delay = canon_f32(m.first_wave_delay);
         m.call_wave_cooldown = canon_f32(m.call_wave_cooldown);
+        // See `hash`: the seed is a match setting, not a rule.
+        m.seed = 0;
 
         for t in &mut self.towers {
             t.range = canon_f32(t.range);
@@ -419,6 +421,7 @@ impl BalanceData {
         s.bounty_per_wave = canon_f32(s.bounty_per_wave);
         s.count_base = canon_f32(s.count_base);
         s.count_per_wave = canon_f32(s.count_per_wave);
+        s.spawn_jitter = canon_f32(s.spawn_jitter);
     }
 
     // -----------------------------------------------------------------------
@@ -641,6 +644,14 @@ impl BalanceData {
                     "cannot be negative",
                 ));
             }
+        }
+        // Half a slot is the point at which two creeps can swap places, and a
+        // wave that spawns out of order is not the wave the table describes.
+        if !(0.0..0.5).contains(&s.spawn_jitter) {
+            return Err(BalanceError::invalid(
+                "waves.scaling.spawn_jitter",
+                "must be at least 0.0 and below 0.5",
+            ));
         }
         Ok(())
     }

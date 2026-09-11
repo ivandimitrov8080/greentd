@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use greentd::balance::{BalanceData, BalanceError, WaveCreep, WaveDef};
+use greentd::data::balance::{BalanceData, BalanceError, WaveCreep, WaveDef};
 
 fn balance_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/balance")

@@ -21,9 +21,10 @@ serde = { version = "1", features = ["derive"] }
 # Balance tables (assets/balance/*.ron) and the ServerNotice round-trip test.
 # Already in the lock file as a transitive dependency of the engine.
 ron = "0.12"
-
-# It will disable detailed log levels on compile time so that they do not need to be filtered out while your app is running.
-# log = { version = "*", features = ["max_level_debug", "release_max_level_warn"] }
+# No `log` or `tracing-subscriber` dependency: Bevy's `LogPlugin` installs the
+# subscriber and re-exports both (`bevy::log::{tracing, tracing_subscriber}`),
+# so the per-match log file in `src/logging.rs` is a layer on Bevy's logger
+# rather than a second one (`found-003`).
 
 
 # Enable a small amount of optimization in the dev profile.
