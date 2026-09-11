@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 bevy = "0.19.1"
+lightyear = "0.29.0"
 # It will disable detailed log levels on compile time so that they do not need to be filtered out while your app is running.
 # log = { version = "*", features = ["max_level_debug", "release_max_level_warn"] }
 
