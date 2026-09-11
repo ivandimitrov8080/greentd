@@ -5,7 +5,20 @@ edition = "2024"
 
 [dependencies]
 bevy = "0.19.1"
-lightyear = "0.29.0"
+# Server-authoritative multiplayer. `udp` + `raw_connection` give us plain
+# UDP sockets without the netcode.io connect-token handshake, which is what we
+# want for LAN/dev play. prediction/interpolation are deliberately OFF: clients
+# are dumb renderers of authoritative state, which is the correct model for a TD.
+lightyear = { version = "0.29", default-features = false, features = [
+    "std",
+    "client",
+    "server",
+    "replication",
+    "udp",
+    "raw_connection",
+] }
+serde = { version = "1", features = ["derive"] }
+
 # It will disable detailed log levels on compile time so that they do not need to be filtered out while your app is running.
 # log = { version = "*", features = ["max_level_debug", "release_max_level_warn"] }
 
