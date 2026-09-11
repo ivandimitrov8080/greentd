@@ -8,7 +8,6 @@
   };
   outputs =
     inputs@{
-      self,
       nixpkgs,
       systems,
       devenv,
@@ -56,6 +55,13 @@
         system:
         let
           pkgs = import nixpkgs { inherit system; };
+          bevyDeps = with pkgs; [
+            wayland
+            alsa-lib
+            udev
+            libxkbcommon
+            vulkan-loader
+          ];
         in
         {
           default = devenv.lib.mkShell {
@@ -66,12 +72,18 @@
                 languages.rust = {
                   enable = true;
                 };
-                packages = with pkgs; [
-                  pkg-config
-                  cairo
-                  pango.dev
-                  cargo-edit
-                ];
+                env = {
+                  LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath bevyDeps;
+                };
+                packages =
+                  with pkgs;
+                  [
+                    pkg-config
+                    cairo
+                    pango.dev
+                    cargo-edit
+                  ]
+                  ++ bevyDeps;
               }
             ];
           };
