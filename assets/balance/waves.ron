@@ -1,0 +1,13 @@
+(
+    scaling: (
+        hp_base: 45.0,
+        hp_growth: 0.28,
+        speed_base: 55.0,
+        speed_growth: 2.0,
+        bounty_base: 6.0,
+        bounty_per_wave: 0.5,
+        count_base: 4.0,
+        count_per_wave: 0.5,
+    ),
+    waves: [],
+)

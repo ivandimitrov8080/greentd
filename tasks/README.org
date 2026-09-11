@@ -94,14 +94,14 @@
    - =src/sim.rs=: server-only authoritative state machine. =HashMap= of
      =CreepId -> Creep=, =IVec2 -> Tower=, =PlayerKey -> Player=. Plain
      =step(dt) -> Vec<SimEvent>=, no networking types, unit-testable in
-     principle (there are currently zero tests).
+     principle (the harness is `test-001`; see `tests/`).
    - Creep model: distance-along-path, =hp/max_hp=, =base_speed=,
      =slow_mult=+ =slow_timer=, =bounty=, =last_hit_by=.
-   - Wave loop: infinite, =WAVE_INTERVAL = 20s=, first wave at 3s. Count is
+   - Wave loop: infinite, 20 s between waves, first wave at 3 s, both from =assets/balance/match.ron=. Count is
      =(4 + wave/2) * connected_players=; =hp = 45 * (1 + 0.28*(w-1))=;
      =speed = 55 + 2*(w-1)=; =bounty = 6 + w/2=. Creeps are spread evenly
      around the whole loop.
-   - Tower model: =kind= 0/1/2 = Basic/Cannon/Frost from =tower_stats()=;
+   - Tower model: =kind= 0/1/2 = Basic/Cannon/Frost, from =assets/balance/towers.ron=;
      unbounded =level=; per-shot tier multipliers on damage, range and rate.
      Targeting picks the creep furthest along the path inside range. Cannon
      splashes, Frost slows.
@@ -137,7 +137,28 @@
    projectiles; no audio; no lobby or setup phase; no kick; no restart; no
    reconnect; no spectators; no multiboard; no tower tooltips or build panel;
    no minimap; no camera controls; no unit-health bars; no floating damage
-   text; no tests; no CI; no data-driven balance.
+   text; no CI.
+
+** Progress against M0
+   :PROPERTIES:
+   :ID:       progress-m0
+   :END:
+
+   Updated as M0 lands. The audit file is the authority on each task; this is
+   only a reading aid.
+
+   | Task        | State       | What landed |
+   |-------------+-------------+-------------|
+   | =found-004= | DONE        | =src/balance.rs= and =assets/balance/*.ron=; every tuned number is data, validated and hashed. |
+   | =audit-001= | DONE        | =Reject= gains =NotOwner=, =RateLimited= and =NotInMatch=. |
+   | =audit-002= | DONE        | Ownership enforced in =try_upgrade=/=try_sell=; refunds go to the owner (D1, D2). |
+   | =audit-004= | DONE        | =Phase= is published and the mirror keeps running after defeat (D4). |
+   | =audit-008= | DONE        | No handler mints a player; =handle_cmds= drops unregistered peers (D8). |
+   | =audit-010= | DONE        | =tests/sim_smoke.rs= + =tests/balance.rs=; zero tests is no longer true (D17). |
+   | =test-001=  | IN-PROGRESS | Same harness; the fixed-seed box waits on =found-009=. |
+
+   Also landed because those tasks could not be built without it: =src/lib.rs=
+   (so =tests/= can link the crate) and =ron= as a direct dependency.
 
 * The single most important correctness question — two lineages
   :PROPERTIES:

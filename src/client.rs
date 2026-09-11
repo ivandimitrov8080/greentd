@@ -11,6 +11,7 @@ use bevy::prelude::*;
 use lightyear::prelude::client::*;
 use lightyear::prelude::*;
 
+use crate::balance::Balance;
 use crate::game::*;
 use crate::map::*;
 use crate::visuals::MainCamera;
@@ -204,6 +205,7 @@ fn update_hud(
     // No `Remote` filter: a remote client only ever receives its own view,
     // while a host already holds the authoritative one.
     me: Query<&PlayerView>,
+    balance: Res<Balance>,
     mut hud: Query<&mut Text, With<Hud>>,
     ui: Res<ClientUi>,
 ) {
@@ -216,8 +218,12 @@ fn update_hud(
     let players = me.iter().count();
     if let Ok(mv) = sim.single() {
         out.push_str(&format!(
-            "wave {:<3}  creeps {}/{}   (overrun = loss)   players {}\n",
-            mv.wave, mv.live_creeps, mv.overrun_cap, players
+            "wave {:<3}  creeps {}/{}   players {}   [{}]\n",
+            mv.wave,
+            mv.live_creeps,
+            mv.overrun_cap,
+            players,
+            Phase::from_u8(mv.phase).text()
         ));
     } else {
         out.push_str("connecting...\n");
@@ -227,14 +233,15 @@ fn update_hud(
         out.push_str(&format!("gold {}   kills {}\n", pv.gold, pv.kills));
     }
 
-    let current = tower_stats(ui.kind);
-    out.push_str(&format!(
-        "\n[{}] {}  cost {}   range {:.0}\n",
-        ui.kind + 1,
-        current.name,
-        current.cost,
-        current.range
-    ));
+    if let Some(current) = balance.tower(ui.kind) {
+        out.push_str(&format!(
+            "\n[{}] {}  cost {}   range {:.0}\n",
+            ui.kind + 1,
+            current.name,
+            current.cost,
+            current.range
+        ));
+    }
     out.push_str("1/2/3 pick  LMB build  U upgrade  RMB sell\n");
     out.push_str("Space: call next wave early\n");
 
@@ -242,7 +249,9 @@ fn update_hud(
         out.push_str(&format!("\n{}", ui.notice));
     }
     if let Some((wave, live)) = ui.over {
-        out.push_str(&format!("\n\nGAME OVER - overrun at wave {wave} ({live} creeps)"));
+        out.push_str(&format!(
+            "\n\nGAME OVER - overrun at wave {wave} ({live} creeps)"
+        ));
     }
 
     **text = out;

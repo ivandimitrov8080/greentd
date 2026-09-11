@@ -77,7 +77,7 @@ and none of it is optional, and =found-004= is the loader named by the
 
 * Balance as data
 
-** TODO [#A] Load tower, creep, wave, difficulty and mode data from RON              :@found:
+** DONE [#A] Load tower, creep, wave, difficulty and mode data from RON              :@found:
    :PROPERTIES:
    :ID:         found-004
    :EFFORT:     1w
@@ -92,12 +92,44 @@ and none of it is optional, and =found-004= is the loader named by the
 
    - Files: =assets/balance/= (new), =src/balance.rs= (new), =src/game.rs=, =src/sim.rs=, =src/protocol.rs=, =Cargo.toml=
    - Acceptance:
-     - [ ] A =ron= dependency (and the matching Bevy asset feature) is added, and =assets/balance/*.ron= deserialise through serde into typed tables for towers, creeps, waves, difficulties and game modes.
-     - [ ] Cross-references are validated at load: every tower tier chain is monotonic and acyclic, every wave index is in range, and every model key named by a wave or a tower resolves.
-     - [ ] A validation failure aborts startup with the offending field path (for example =waves[7].creeps[0].model=) and a non-zero exit.
-     - [ ] The loader computes a stable hash over the normalised data, unchanged by field ordering, and exposes it for the protocol version ([[file:09-networking.org][09-networking.org]] =net-001=).
-     - [ ] Loading the same assets twice yields byte-identical hashes; a missing or malformed file fails loudly rather than falling back to defaults.
-     - [ ] A test mutates a value in an in-memory table and observes the change in =Sim::step= output, proving nothing is cached from a const.
+     - [x] A =ron= dependency (and the matching Bevy asset feature) is added, and =assets/balance/*.ron= deserialise through serde into typed tables for towers, creeps, waves, difficulties and game modes.
+     - [x] Cross-references are validated at load: every tower tier chain is monotonic and acyclic, every wave index is in range, and every model key named by a wave or a tower resolves.
+     - [x] A validation failure aborts startup with the offending field path (for example =waves[7].creeps[0].model=) and a non-zero exit.
+     - [x] The loader computes a stable hash over the normalised data, unchanged by field ordering, and exposes it for the protocol version ([[file:09-networking.org][09-networking.org]] =net-001=).
+     - [x] Loading the same assets twice yields byte-identical hashes; a missing or malformed file fails loudly rather than falling back to defaults.
+     - [x] A test mutates a value in an in-memory table and observes the change in =Sim::step= output, proving nothing is cached from a const.
+
+   Done. =src/balance.rs= holds the tables and the loader; the six files under
+   =assets/balance/= are =match.ron=, =towers.ron=, =creeps.ron=, =waves.ron=,
+   =difficulties.ron= and =modes.ron=. Every number they carry is the number the
+   code used to hard-code, so behaviour is unchanged. =BalanceData::hash()= is
+   FNV-1a over a sorted, float-canonicalised debug rendering; =net-001= is what
+   carries it into the handshake. Tests live in =tests/balance.rs= (parsing,
+   validation field paths, hash stability) and =tests/sim_smoke.rs= (a retuned
+   in-memory table changes =Sim::step= output).
+
+   Four notes, all deliberate:
+
+   1. The tables are read with =std::fs= + =ron::from_str= rather than through
+      Bevy's =AssetServer=. The loader has to run in =cargo test= with no window,
+      no GPU and no async asset IO, and it has to run *before* any plugin
+      exists, because the sim cannot be constructed without it. No Bevy asset
+      feature was needed: Bevy has no RON loader, only a =ron= dependency.
+      =GREENTD_BALANCE_DIR= overrides the directory; =found-002= folds it into
+      =Config= later.
+   2. =assets/balance/waves.ron= ships =waves: []=. The loader and its validator
+      understand an explicit wave table, but the vertical slice generates every
+      wave from =scaling=, and inventing 36 waves of content belongs to
+      [[file:04-waves.org][04-waves.org]] =waves-004=.
+   3. =towers.ron= entries omit =next=. The tier-chain validator is implemented
+      and tested against cycles, dangling links and non-monotonic costs; it is
+      simply vacuous until =05-towers.org= populates the chains.
+   4. =src/lib.rs= was added so =tests/= can link the crate. It is also the first
+      step of =found-005='s =sim/=/=data/=/=net/=/=ui/= split.
+
+   Still inline, and left for =audit-011=: the per-tier scaling in =Sim::step=
+   (=1.0 + 0.45 * (level-1)= for damage, =1.0 + 0.04 * (level-1)= for range) and
+   the 1.5 s slow duration, because =05-towers.org= replaces that whole tier model.
 
 * Code structure, errors and determinism
 

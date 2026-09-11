@@ -22,11 +22,7 @@ pub struct MainCamera;
 // Spawn-time attachment
 // ---------------------------------------------------------------------------
 
-fn attach_creep_sprite(
-    add: On<Add, CreepVis>,
-    vis: Query<&CreepVis>,
-    mut commands: Commands,
-) {
+fn attach_creep_sprite(add: On<Add, CreepVis>, vis: Query<&CreepVis>, mut commands: Commands) {
     // Seed the transform so a creep never renders at the origin for a frame
     // while waiting for the first `track_creeps` pass.
     let pos = vis
@@ -40,11 +36,7 @@ fn attach_creep_sprite(
     ));
 }
 
-fn attach_tower_sprite(
-    add: On<Add, TowerAt>,
-    at: Query<&TowerAt>,
-    mut commands: Commands,
-) {
+fn attach_tower_sprite(add: On<Add, TowerAt>, at: Query<&TowerAt>, mut commands: Commands) {
     let pos = at
         .get(add.entity)
         .map(|a| cell_to_world(IVec2::new(a.x, a.y)))
@@ -74,11 +66,7 @@ fn track_creeps(
         // Bleed the sprite toward dark as the creep loses health: cheap,
         // readable feedback without a health-bar hierarchy.
         let f = (hp.hp / hp.max.max(1.0)).clamp(0.0, 1.0);
-        sprite.color = Color::srgb(
-            0.15 + 0.70 * f,
-            0.12 + 0.20 * f,
-            0.12 + 0.20 * f,
-        );
+        sprite.color = Color::srgb(0.15 + 0.70 * f, 0.12 + 0.20 * f, 0.12 + 0.20 * f);
     }
 }
 

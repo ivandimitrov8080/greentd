@@ -55,7 +55,7 @@ same task, because there is currently none (D17).
   These come first. Every one either lets a client affect another player's board or
   match, or silently loses gold and kills.
 
-** TODO [#A] Give Reject the NotOwner and RateLimited reasons                          :@sim:
+** DONE [#A] Give Reject the NotOwner and RateLimited reasons                          :@sim:
    :PROPERTIES:
    :ID:         audit-001
    :EFFORT:     2h
@@ -69,11 +69,16 @@ same task, because there is currently none (D17).
 
    - Files: =src/game.rs=, =src/server.rs=
    - Acceptance:
-     - [ ] =Reject= gains =NotOwner= and =RateLimited=, and =Reject::text()= returns a player-readable string for each.
-     - [ ] =Reject= still derives =Serialize/Deserialize/Clone/Copy/PartialEq/Eq= so it round-trips on the =ServerNotice::Err= path.
-     - [ ] A test round-trips every =Reject= variant through =ServerNotice::Err= and asserts each =text()= is non-empty, so no new variant is unhandled.
+     - [x] =Reject= gains =NotOwner= and =RateLimited=, and =Reject::text()= returns a player-readable string for each.
+     - [x] =Reject= still derives =Serialize/Deserialize/Clone/Copy/PartialEq/Eq= so it round-trips on the =ServerNotice::Err= path.
+     - [x] A test round-trips every =Reject= variant through =ServerNotice::Err= and asserts each =text()= is non-empty, so no new variant is unhandled.
 
-** TODO [#A] Enforce tower ownership in upgrade and sell                              :@sim:
+   Done, and =audit-008= needed one more reason, so =Reject::NotInMatch= was added
+   alongside the two this task asked for. =Reject::ALL= is exhaustive: the test
+   covers every variant, so a future variant that forgets a message fails the
+   suite rather than reaching a player as an empty string.
+
+** DONE [#A] Enforce tower ownership in upgrade and sell                              :@sim:
    :PROPERTIES:
    :ID:         audit-002
    :EFFORT:     1d
@@ -88,10 +93,16 @@ same task, because there is currently none (D17).
 
    - Files: =src/sim.rs=, =src/server.rs=
    - Acceptance:
-     - [ ] =try_upgrade= returns =Err(Reject::NotOwner)= when =tower.owner != who=, before any gold is spent (D1).
-     - [ ] =try_sell= returns =Err(Reject::NotOwner)= for a non-owner and, on success, credits =refund= to =tower.owner=, not to =who= (D2).
-     - [ ] On the rejected path nothing mutates: no level change, no despawn, and no gold delta for either player.
-     - [ ] Sim unit test (D17): player A builds; player B calls upgrade then sell; both are refused and A's gold and tower level are byte-identical to before.
+     - [x] =try_upgrade= returns =Err(Reject::NotOwner)= when =tower.owner != who=, before any gold is spent (D1).
+     - [x] =try_sell= returns =Err(Reject::NotOwner)= for a non-owner and, on success, credits =refund= to =tower.owner=, not to =who= (D2).
+     - [x] On the rejected path nothing mutates: no level change, no despawn, and no gold delta for either player.
+     - [x] Sim unit test (D17): player A builds; player B calls upgrade then sell; both are refused and A's gold and tower level are byte-identical to before.
+
+   Done together with =audit-008=, because both are the same three functions and
+   splitting them would have meant writing the ownership check twice. The
+   refund still credits the tower's owner rather than the caller; given the
+   ownership check those are the same player, and the code does not silently
+   depend on that (see the explicit =tower.owner= in =try_sell=).
 
 ** TODO [#A] Address the host's own PlayerView instead of broadcasting every view     :@net:
    :PROPERTIES:
@@ -113,7 +124,7 @@ same task, because there is currently none (D17).
      - [ ] A host plus one remote client shows each peer its own gold and kills and never the other's.
      - [ ] Verified on a manual =cargo run= (host) with one =cargo run -- client=.
 
-** TODO [#A] Publish MatchView.phase and stop freezing the HUD at defeat              :@sim:
+** DONE [#A] Publish MatchView.phase and stop freezing the HUD at defeat              :@sim:
    :PROPERTIES:
    :ID:         audit-004
    :EFFORT:     2h
@@ -126,10 +137,20 @@ same task, because there is currently none (D17).
 
    - Files: =src/server.rs=, =src/game.rs=, =src/client.rs=
    - Acceptance:
-     - [ ] =sync_match= writes the final =live_creeps= at least once after =sim.over= becomes true, so the HUD shows the true overrun count.
-     - [ ] =phase= is driven by match state (for example Waiting, InMatch, Over) and is non-zero once the match has started.
-     - [ ] Sim/server test (D17): from a forced game-over, the replicated =MatchView.live_creeps= reaches the final sim value.
-     - [ ] The change-diffing guard still suppresses a write when nothing changed.
+     - [x] =sync_match= writes the final =live_creeps= at least once after =sim.over= becomes true, so the HUD shows the true overrun count.
+     - [x] =phase= is driven by match state (for example Waiting, InMatch, Over) and is non-zero once the match has started.
+     - [x] Sim/server test (D17): from a forced game-over, the replicated =MatchView.live_creeps= reaches the final sim value.
+     - [x] The change-diffing guard still suppresses a write when nothing changed.
+
+   Done. The early return is gone, =game::Phase= (=Waiting=0=, =InMatch=1=,
+   =Over=2=) is written into =MatchView.phase=, and the client renders it. To make
+   the D4 property testable without a live =App=, the "what should be replicated"
+   decision moved into =Sim::match_view()=, so =sync_match= is now a comparison of
+   that against the component and the test drives the sim to a forced game-over
+   and asserts on exactly the value the mirror writes. That also fixes a
+   latent diffing bug: =creeps_per_wave= used to be written without being
+   compared, so a player leaving changed the wire value unnoticed. =MatchView=
+   now derives =PartialEq= and the whole component is compared at once.
 
 ** TODO [#A] Send ServerNotice::WaveStarted or delete the variant                     :@net:
    :PROPERTIES:
@@ -186,7 +207,7 @@ same task, because there is currently none (D17).
      - [ ] Test: bursting =n + burst= commands in one frame yields exactly =burst= executions.
      - [ ] The rate and burst are configuration, not literals in =server.rs=.
 
-** TODO [#A] Require a registered PlayerKey instead of minting a zero-gold player     :@sim:
+** DONE [#A] Require a registered PlayerKey instead of minting a zero-gold player     :@sim:
    :PROPERTIES:
    :ID:         audit-008
    :EFFORT:     2h
@@ -199,10 +220,20 @@ same task, because there is currently none (D17).
 
    - Files: =src/sim.rs=, =src/server.rs=
    - Acceptance:
-     - [ ] No intent handler inserts into =self.players=; each returns an error when the key is unknown.
-     - [ ] =handle_cmds= drops commands from peers absent from =Net::links=, so the sim error is a defensive backstop, not the normal path.
-     - [ ] Sim test (D17): a command from an arbitrary =PlayerKey= leaves =sim.players= and the tower map unchanged.
-     - [ ] No reachable path can produce a =Player= with zero gold.
+     - [x] No intent handler inserts into =self.players=; each returns an error when the key is unknown.
+     - [x] =handle_cmds= drops commands from peers absent from =Net::links=, so the sim error is a defensive backstop, not the normal path.
+     - [x] Sim test (D17): a command from an arbitrary =PlayerKey= leaves =sim.players= and the tower map unchanged.
+     - [x] No reachable path can produce a =Player= with zero gold.
+
+   Done. The =.or_default()= calls are gone: every handler gates on
+   =players.contains_key= first, which also means identity is answered before
+   anything else can be wrong (so a stranger gets =NotInMatch= rather than
+   ="cannot build on the path"=). =Reject::NotInMatch= is the new reason, and the
+   test sweeps every tower kind from a key that was never registered and asserts
+   the player map is still exactly the one registered record at the table's
+   starting gold. =handle_cmds= drains the receiver *before* the =Net::links=
+   check, so a peer that is not allowed to act cannot leave a queue growing
+   behind it.
 
 ** TODO [#A] Make identity survive a reconnect from a new port                        :@net:
    :PROPERTIES:
@@ -224,7 +255,7 @@ same task, because there is currently none (D17).
      - [ ] An unknown or expired token yields a new player, not a hang or an error that wedges the link.
      - [ ] =Sim= never reads a =SocketAddr=; identity stays the sim-local =PlayerKey=.
 
-** TODO [#A] Stand up the minimum headless sim test harness                           :@test:
+** DONE [#A] Stand up the minimum headless sim test harness                           :@test:
    :PROPERTIES:
    :ID:         audit-010
    :EFFORT:     1d
@@ -237,11 +268,25 @@ same task, because there is currently none (D17).
 
    - Files: =src/sim.rs=, =tests/sim_smoke.rs= (new)
    - Acceptance:
-     - [ ] A test builds =Sim::new()= with no =App=, no window and no socket, and runs a fixed number of ticks.
-     - [ ] Helpers exist for "step N ticks" and for a stable =Path=, so tests never depend on wall-clock time.
-     - [ ] The harness covers at least: a wave spawns after the configured delay; a tower kills a creep and credits the owner; exceeding the cap ends the match.
-     - [ ] =cargo test= is green with no GPU and =DISPLAY= unset.
-     - [ ] Tests read numbers from the balance tables (found-004) rather than repeating literals.
+     - [x] A test builds =Sim::new()= with no =App=, no window and no socket, and runs a fixed number of ticks.
+     - [x] Helpers exist for "step N ticks" and for a stable =Path=, so tests never depend on wall-clock time.
+     - [x] The harness covers at least: a wave spawns after the configured delay; a tower kills a creep and credits the owner; exceeding the cap ends the match.
+     - [x] =cargo test= is green with no GPU and =DISPLAY= unset.
+     - [x] Tests read numbers from the balance tables (found-004) rather than repeating literals.
+
+   Done, and it is the same harness as =test-001= in
+   [[file:12-testing.org][12-testing.org]], so that task points here instead of
+   duplicating it. The suite is =tests/sim_smoke.rs= (the harness and the sim
+   rules) plus =tests/balance.rs= (the tables). The harness is
+   =Harness { sim, tick }= with =step()=, =advance(n)= and
+   =advance_until(limit, predicate)=, each returning the events of the ticks it
+   ran, so a test can assert per tick. No =App= is ever built, so no window, no
+   GPU and no socket can be opened by the suite; =DISPLAY= is irrelevant.
+   =src/lib.rs= was added so the integration tests can link the crate.
+
+   Note on the last box: every expected value is read back out of
+   =sim.balance=, and =the_sim_reads_the_tables_rather_than_a_const= goes further
+   by editing an in-memory table and asserting =Sim::step= observes it.
 
 ** TODO [#A] Remove the remaining balance literals and version the balance hash       :@sim:
    :PROPERTIES:

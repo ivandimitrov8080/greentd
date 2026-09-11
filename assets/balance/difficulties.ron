@@ -1,0 +1,9 @@
+[
+    (
+        key: "normal",
+        name: "Normal",
+        hp_mult: 1.0,
+        speed_mult: 1.0,
+        bounty_mult: 1.0,
+    ),
+]

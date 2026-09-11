@@ -13,7 +13,7 @@ written to be a testable =step(dt) -> Vec<SimEvent>= state machine over HashMaps
 
 * Tasks
 
-** TODO [#A] Build the headless simulation test harness :@test:
+** IN-PROGRESS [#A] Build the headless simulation test harness :@test:
    :PROPERTIES:
    :ID:         test-001
    :EFFORT:     1d
@@ -26,10 +26,19 @@ written to be a testable =step(dt) -> Vec<SimEvent>= state machine over HashMaps
 
    - Files: =tests/sim.rs= (or a =#[cfg(test)] mod tests= in =src/sim.rs=), =Cargo.toml= dev-dependencies
    - Acceptance:
-     - [ ] A test builds =Sim::new()=, runs N =step= calls and asserts on state.
-     - [ ] The suite runs under =cargo test= with no window and no OS sockets opened.
-     - [ ] A helper sets up players, towers and waves so later tests need no boilerplate.
+     - [x] A test builds =Sim::new()=, runs N =step= calls and asserts on state.
+     - [x] The suite runs under =cargo test= with no window and no OS sockets opened.
+     - [x] A helper sets up players, towers and waves so later tests need no boilerplate.
      - [ ] =SimEvent=s can be collected and asserted per tick, and a fixed seed is threaded in.
+
+   Three of four boxes are done; see =audit-010= in
+   [[file:01-current-code-audit.org][01-current-code-audit.org]], which is the
+   same harness and carries the detail. Events are collected per tick, and
+   =Harness::with_players=/:with_balance= remove the boilerplate.
+
+   The open box is the *seed*: =Sim= has no RNG concept yet, so a fixed seed
+   cannot be threaded in until =found-009= adds the seeded RNG the sim owns.
+   Do not tick this box before then -- =test-002= (determinism) depends on it.
 
 ** TODO [#A] Determinism test: same seed and command log, same state hash :@test:
    :PROPERTIES:

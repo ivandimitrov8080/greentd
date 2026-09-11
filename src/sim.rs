@@ -6,9 +6,11 @@
 //! validated intents and (b) mirror its state into replicated entities.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use bevy::prelude::*;
 
+use crate::balance::{Balance, BalanceData};
 use crate::game::*;
 use crate::map::*;
 
@@ -65,6 +67,9 @@ pub struct Player {
 
 #[derive(Resource, Debug)]
 pub struct Sim {
+    /// The loaded balance tables. Held by handle, never re-read from disk, so a
+    /// running match cannot change its numbers underneath itself.
+    pub balance: Arc<BalanceData>,
     pub path: Path,
     pub creeps: HashMap<CreepId, Creep>,
     pub towers: HashMap<IVec2, Tower>,
@@ -72,10 +77,9 @@ pub struct Sim {
     pub wave: u32,
     pub wave_timer: f32,
     next_id: u32,
-    /// Set once the overrun cap is exceeded. Terminal.
+    /// Set once the lose condition is met. Terminal until `audit-018` adds a
+    /// reset path.
     pub over: bool,
-    /// Overrun cap, exposed so the HUD can render "live / cap".
-    pub cap: u32,
 }
 
 /// What happened during one step, for the server to turn into network traffic.
@@ -87,28 +91,63 @@ pub enum SimEvent {
     GameOver,
 }
 
-impl Default for Sim {
-    fn default() -> Self {
-        Self::new()
+impl FromWorld for Sim {
+    /// Built from the [`Balance`] resource, which `main` inserts before any
+    /// plugin is added. There is deliberately no `Default` impl: the sim cannot
+    /// exist without its numbers.
+    fn from_world(world: &mut World) -> Self {
+        let balance = world.resource::<Balance>().0.clone();
+        Self::new(balance)
     }
 }
 
 impl Sim {
-    pub fn new() -> Self {
+    pub fn new(balance: Arc<BalanceData>) -> Self {
         let mut sim = Self {
+            balance,
             path: Path::default(),
             creeps: HashMap::new(),
             towers: HashMap::new(),
             players: HashMap::new(),
             wave: 0,
-            wave_timer: WAVE_INTERVAL,
+            wave_timer: 0.0,
             next_id: 1,
             over: false,
-            cap: OVERRUN_CAP,
         };
         // Wave 1 arrives promptly rather than after a full interval.
-        sim.wave_timer = 3.0;
+        sim.wave_timer = sim.balance.match_rules.first_wave_delay;
         sim
+    }
+
+    /// Lineage A lose condition: more live creeps than this ends the match.
+    pub fn overrun_cap(&self) -> u32 {
+        self.balance.match_rules.overrun_cap
+    }
+
+    /// Where the match is in its life, for the replicated `MatchView` (D4).
+    pub fn phase(&self) -> Phase {
+        if self.over {
+            Phase::Over
+        } else if self.wave > 0 {
+            Phase::InMatch
+        } else {
+            Phase::Waiting
+        }
+    }
+
+    /// Exactly what the server should be replicating right now.
+    ///
+    /// Keeping this here, rather than in the mirror system, is what makes D4
+    /// testable headless: the mirror is a comparison of this against the
+    /// replicated component, so the interesting logic lives in the sim.
+    pub fn match_view(&self) -> MatchView {
+        MatchView {
+            wave: self.wave,
+            live_creeps: self.creeps_alive(),
+            overrun_cap: self.overrun_cap(),
+            creeps_per_wave: self.creeps_per_wave(),
+            phase: self.phase().as_u8(),
+        }
     }
 
     pub fn creeps_per_wave(&self) -> u32 {
@@ -116,7 +155,7 @@ impl Sim {
         // a bigger lobby means more creeps. Solo would be trivially easy
         // otherwise.
         let players = self.players.values().filter(|p| p.connected).count().max(1) as u32;
-        (4 + self.wave / 2) * players
+        self.balance.creeps_per_wave(self.wave, players)
     }
 
     pub fn creeps_alive(&self) -> u32 {
@@ -126,8 +165,9 @@ impl Sim {
     /// Register (or re-register) a player. Idempotent, so a reconnect keeps
     /// the same towers and gold.
     pub fn add_player(&mut self, key: PlayerKey) {
+        let gold = self.balance.match_rules.start_gold;
         let p = self.players.entry(key).or_insert_with(|| Player {
-            gold: START_GOLD,
+            gold,
             kills: 0,
             connected: false,
         });
@@ -148,15 +188,27 @@ impl Sim {
     // -----------------------------------------------------------------------
     // Intent handlers. Every one of these returns whether it was accepted, so
     // the server can send the player a reason it failed.
+    //
+    // Two rules hold for all of them (D1, D2, D8):
+    //
+    //   1. The caller must already have a player record. Nothing here ever
+    //      inserts one: a `Player` is created by `add_player`, with the table's
+    //      starting gold, and by nothing else.
+    //   2. A tower may only be touched by its owner, and refunds go to the
+    //      owner -- which, given rule 1 and the check, is also the caller.
     // -----------------------------------------------------------------------
 
     pub fn try_build(&mut self, who: PlayerKey, cell: IVec2, kind: u8) -> Result<(), Reject> {
         if self.over {
             return Err(Reject::MatchOver);
         }
-        if kind >= TOWER_KIND_COUNT {
-            return Err(Reject::BadKind);
+        if !self.players.contains_key(&who) {
+            return Err(Reject::NotInMatch);
         }
+        let Some(tower) = self.balance.tower(kind) else {
+            return Err(Reject::BadKind);
+        };
+        let cost = tower.cost;
         if !in_bounds(cell) {
             return Err(Reject::OutOfBounds);
         }
@@ -166,12 +218,11 @@ impl Sim {
         if self.towers.contains_key(&cell) {
             return Err(Reject::Occupied);
         }
-        let stats = tower_stats(kind);
-        let player = self.players.entry(who).or_default();
-        if player.gold < stats.cost {
+        let player = self.players.get_mut(&who).ok_or(Reject::NotInMatch)?;
+        if player.gold < cost {
             return Err(Reject::NotEnoughGold);
         }
-        player.gold -= stats.cost;
+        player.gold -= cost;
         self.towers.insert(
             cell,
             Tower {
@@ -185,20 +236,31 @@ impl Sim {
     }
 
     /// Upgrade cost scales with the tier, so going tall is a real commitment.
-    pub fn upgrade_cost(kind: u8, level: u8) -> u32 {
-        let base = tower_stats(kind).cost;
-        base * (level as u32 + 1) / 2
+    /// The curve itself lives in the tower's balance entry.
+    pub fn upgrade_cost(&self, kind: u8, level: u8) -> u32 {
+        match self.balance.tower(kind) {
+            Some(tower) => self.balance.upgrade_cost(tower, level),
+            None => 0,
+        }
     }
 
     pub fn try_upgrade(&mut self, who: PlayerKey, cell: IVec2) -> Result<(), Reject> {
         if self.over {
             return Err(Reject::MatchOver);
         }
+        if !self.players.contains_key(&who) {
+            return Err(Reject::NotInMatch);
+        }
+        // Ownership is checked before anything is spent (D1).
         let cost = {
             let t = self.towers.get(&cell).ok_or(Reject::NoSuchTower)?;
-            Self::upgrade_cost(t.kind, t.level)
+            if t.owner != who {
+                return Err(Reject::NotOwner);
+            }
+            let tower = self.balance.tower(t.kind).ok_or(Reject::BadKind)?;
+            self.balance.upgrade_cost(tower, t.level)
         };
-        let player = self.players.entry(who).or_default();
+        let player = self.players.get_mut(&who).ok_or(Reject::NotInMatch)?;
         if player.gold < cost {
             return Err(Reject::NotEnoughGold);
         }
@@ -210,15 +272,26 @@ impl Sim {
     }
 
     pub fn try_sell(&mut self, who: PlayerKey, cell: IVec2) -> Result<(), Reject> {
-        let refund = {
+        if !self.players.contains_key(&who) {
+            return Err(Reject::NotInMatch);
+        }
+        let (refund, owner) = {
             let t = self.towers.get(&cell).ok_or(Reject::NoSuchTower)?;
+            if t.owner != who {
+                return Err(Reject::NotOwner);
+            }
             // 70% refund, as in several of the original variants.
-            tower_stats(t.kind).cost * t.level as u32 * 7 / 10
+            let tower = self.balance.tower(t.kind).ok_or(Reject::BadKind)?;
+            (self.balance.sell_refund(tower, t.level), t.owner)
         };
         if self.towers.remove(&cell).is_none() {
             return Err(Reject::NoSuchTower);
         }
-        self.players.entry(who).or_default().gold += refund;
+        // The refund goes to the tower's owner, which the check above has just
+        // proven is the caller (D2).
+        if let Some(player) = self.players.get_mut(&owner) {
+            player.gold += refund;
+        }
         Ok(())
     }
 
@@ -237,12 +310,12 @@ impl Sim {
     /// Returns the new wave number and the creeps it spawned.
     fn start_wave(&mut self) -> (u32, Vec<CreepId>) {
         self.wave += 1;
-        self.wave_timer = WAVE_INTERVAL;
+        self.wave_timer = self.balance.match_rules.wave_interval;
 
         let n = self.creeps_per_wave();
-        let hp = 45.0 * (1.0 + 0.28 * (self.wave.saturating_sub(1)) as f32);
-        let speed = 55.0 + 2.0 * (self.wave.saturating_sub(1)) as f32;
-        let bounty = 6 + self.wave / 2;
+        let hp = self.balance.creep_hp(self.wave);
+        let speed = self.balance.creep_speed(self.wave);
+        let bounty = self.balance.creep_bounty(self.wave);
 
         // Spread the wave evenly around the loop so it reads as a single
         // "pulse" of creeps rather than one clump.
@@ -309,7 +382,9 @@ impl Sim {
             if tower.cooldown > 0.0 {
                 continue;
             }
-            let stats = tower_stats(tower.kind);
+            let Some(stats) = self.balance.tower(tower.kind) else {
+                continue;
+            };
             // Tier scales damage and rate modestly.
             let tier = 1.0 + 0.45 * (tower.level.saturating_sub(1)) as f32;
             let damage = stats.damage * tier;
@@ -324,8 +399,7 @@ impl Sim {
                     continue;
                 }
                 let pos = creep.pos(&self.path);
-                if pos.distance(origin) <= range
-                    && best.is_none_or(|(_, far, _)| creep.dist > far)
+                if pos.distance(origin) <= range && best.is_none_or(|(_, far, _)| creep.dist > far)
                 {
                     best = Some((id, creep.dist, pos));
                 }
@@ -390,9 +464,11 @@ impl Sim {
         }
 
         // --- lose condition ---
-        // Green TD's signature: creeps never leave the map. The game ends when
-        // there are simply too many of them alive at once.
-        if self.creeps.len() as u32 > self.cap {
+        // Green TD's signature: creeps never leave the map. Lineage A ends the
+        // match when there are simply too many of them alive at once. See the
+        // lineage section in `tasks/README.org`; `sim-005` makes the rule
+        // selectable, `audit-012` picks the default.
+        if self.creeps.len() as u32 > self.overrun_cap() {
             self.over = true;
             events.push(SimEvent::GameOver);
         }

@@ -1,0 +1,7 @@
+(
+    start_gold: 300,
+    overrun_cap: 150,
+    wave_interval: 20.0,
+    first_wave_delay: 3.0,
+    call_wave_cooldown: 5.0,
+)

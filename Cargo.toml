@@ -18,6 +18,9 @@ lightyear = { version = "0.29", default-features = false, features = [
     "raw_connection",
 ] }
 serde = { version = "1", features = ["derive"] }
+# Balance tables (assets/balance/*.ron) and the ServerNotice round-trip test.
+# Already in the lock file as a transitive dependency of the engine.
+ron = "0.12"
 
 # It will disable detailed log levels on compile time so that they do not need to be filtered out while your app is running.
 # log = { version = "*", features = ["max_level_debug", "release_max_level_warn"] }

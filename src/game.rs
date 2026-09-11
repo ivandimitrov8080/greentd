@@ -3,6 +3,9 @@
 //! Rule of thumb: anything in here must be *replicable* (Component + Serialize)
 //! or a *message*. The authoritative simulation itself lives in `sim.rs` and is
 //! only ever compiled into the server.
+//!
+//! No tuned numbers live here. Every cost, range, curve and timer comes from the
+//! balance tables in `balance.rs` (see `tasks/00-foundation.org` `found-004`).
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -47,14 +50,48 @@ pub struct PlayerView {
 }
 
 /// Global match state. Replicated to everyone.
-#[derive(Component, Serialize, Deserialize, Clone, Copy, Debug)]
+#[derive(Component, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MatchView {
     pub wave: u32,
-    /// Live creeps on the map. **This is the lose condition.**
+    /// Live creeps on the map. Part of the lose condition (see `Phase::Over`).
     pub live_creeps: u32,
     pub overrun_cap: u32,
     pub creeps_per_wave: u32,
+    /// A [`Phase`] as a byte, because that is what goes on the wire.
     pub phase: u8,
+}
+
+/// Where a match is in its life. Driven by the server from the sim, so the HUD
+/// never has to guess from `wave == 0`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    Waiting = 0,
+    InMatch = 1,
+    Over = 2,
+}
+
+impl Phase {
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// Unknown bytes read as `Waiting` rather than panicking: a newer server
+    /// must not crash an older client.
+    pub fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Phase::InMatch,
+            2 => Phase::Over,
+            _ => Phase::Waiting,
+        }
+    }
+
+    pub fn text(self) -> &'static str {
+        match self {
+            Phase::Waiting => "waiting",
+            Phase::InMatch => "in match",
+            Phase::Over => "over",
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -66,9 +103,19 @@ pub struct MatchView {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum ClientCmd {
     /// Try to place a tower. `kind` indexes `tower_stats`.
-    Build { x: i32, y: i32, kind: u8 },
-    Upgrade { x: i32, y: i32 },
-    Sell { x: i32, y: i32 },
+    Build {
+        x: i32,
+        y: i32,
+        kind: u8,
+    },
+    Upgrade {
+        x: i32,
+        y: i32,
+    },
+    Sell {
+        x: i32,
+        y: i32,
+    },
     /// Skip the rest of the wave timer.
     CallWave,
 }
@@ -90,10 +137,30 @@ pub enum Reject {
     OutOfBounds,
     BadKind,
     NoSuchTower,
+    /// The caller does not own the tower it tried to upgrade or sell (D1/D2).
+    NotOwner,
+    /// The caller is issuing commands faster than the server will accept (D6/D7).
+    RateLimited,
+    /// The caller has no player record, so it is not in this match (D8).
+    NotInMatch,
     MatchOver,
 }
 
 impl Reject {
+    /// Every variant, so a test can prove none of them is unhandled.
+    pub const ALL: [Reject; 10] = [
+        Reject::NotEnoughGold,
+        Reject::Occupied,
+        Reject::PathBlocked,
+        Reject::OutOfBounds,
+        Reject::BadKind,
+        Reject::NoSuchTower,
+        Reject::NotOwner,
+        Reject::RateLimited,
+        Reject::NotInMatch,
+        Reject::MatchOver,
+    ];
+
     pub fn text(self) -> &'static str {
         match self {
             Reject::NotEnoughGold => "not enough gold",
@@ -102,6 +169,9 @@ impl Reject {
             Reject::OutOfBounds => "out of bounds",
             Reject::BadKind => "unknown tower type",
             Reject::NoSuchTower => "no tower there",
+            Reject::NotOwner => "that tower is not yours",
+            Reject::RateLimited => "too many commands",
+            Reject::NotInMatch => "you are not in this match",
             Reject::MatchOver => "match is over",
         }
     }
@@ -115,66 +185,11 @@ impl Reject {
 pub struct ReliableChannel;
 
 // ---------------------------------------------------------------------------
-// Game data
+// Presentation
 // ---------------------------------------------------------------------------
 
-pub const START_GOLD: u32 = 300;
-
-/// Green TD's real lose condition: too many creeps alive at once. Creeps loop
-/// forever, so this only ever goes down by killing them.
-pub const OVERRUN_CAP: u32 = 150;
-
-pub const WAVE_INTERVAL: f32 = 20.0;
-
-/// Tower kinds. `0` basic, `1` cannon, `2` frost.
-pub struct TowerStats {
-    pub name: &'static str,
-    pub cost: u32,
-    pub range: f32,
-    pub damage: f32,
-    /// Seconds between shots.
-    pub cooldown: f32,
-    /// Splash radius in world units (0.0 = single target).
-    pub splash: f32,
-    /// Speed multiplier applied to hit creeps (1.0 = no slow).
-    pub slow: f32,
-}
-
-pub fn tower_stats(kind: u8) -> TowerStats {
-    match kind {
-        1 => TowerStats {
-            name: "Cannon",
-            cost: 150,
-            range: 130.0,
-            damage: 26.0,
-            cooldown: 1.1,
-            splash: 48.0,
-            slow: 1.0,
-        },
-        2 => TowerStats {
-            name: "Frost",
-            cost: 120,
-            range: 140.0,
-            damage: 7.0,
-            cooldown: 0.8,
-            splash: 0.0,
-            slow: 0.55,
-        },
-        // Basic
-        _ => TowerStats {
-            name: "Basic",
-            cost: 80,
-            range: 115.0,
-            damage: 14.0,
-            cooldown: 0.55,
-            splash: 0.0,
-            slow: 1.0,
-        },
-    }
-}
-
-pub const TOWER_KIND_COUNT: u8 = 3;
-
+/// Tower kind -> sprite colour. Presentation only, so it stays in code rather
+/// than in the balance tables; `11-content.org` owns the real art.
 pub fn tower_color(kind: u8) -> Color {
     match kind {
         1 => Color::srgb(0.85, 0.45, 0.15),

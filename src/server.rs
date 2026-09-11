@@ -14,7 +14,6 @@ use lightyear::prelude::server::*;
 use lightyear::prelude::*;
 
 use crate::game::*;
-use crate::map::*;
 use crate::sim::*;
 
 pub const SERVER_ADDR: &str = "127.0.0.1:5000";
@@ -92,6 +91,7 @@ fn on_client_connected(
     }
 
     info!("player {:?} joined", key);
+    let start_gold = sim.balance.match_rules.start_gold;
 
     // Opt this connection into replication and message passing.
     commands.entity(trigger.entity).insert((
@@ -112,7 +112,7 @@ fn on_client_connected(
         .spawn((
             Name::new("PlayerView"),
             PlayerView {
-                gold: START_GOLD,
+                gold: start_gold,
                 kills: 0,
             },
             Replicate::to_clients(target),
@@ -147,6 +147,7 @@ fn on_client_disconnected(
 
 /// Spawn the single replicated match-state entity once the server is live.
 fn setup_match(
+    sim: Res<Sim>,
     mut net: ResMut<Net>,
     mut commands: Commands,
     live: Query<(), (With<Server>, With<Started>)>,
@@ -157,13 +158,7 @@ fn setup_match(
     let e = commands
         .spawn((
             Name::new("MatchState"),
-            MatchView {
-                wave: 0,
-                live_creeps: 0,
-                overrun_cap: OVERRUN_CAP,
-                creeps_per_wave: 0,
-                phase: 0,
-            },
+            sim.match_view(),
             Replicate::to_clients(NetworkTarget::All),
         ))
         .id();
@@ -176,6 +171,7 @@ fn setup_match(
 
 fn handle_cmds(
     mut sim: ResMut<Sim>,
+    net: Res<Net>,
     mut links: Query<(
         &RemoteId,
         &mut MessageReceiver<ClientCmd>,
@@ -184,7 +180,19 @@ fn handle_cmds(
 ) {
     for (remote, mut recv, mut send) in links.iter_mut() {
         let key = peer_key(remote);
+        // Always drain, so a peer that is not allowed to act cannot leave a
+        // queue growing behind it.
         let cmds: Vec<ClientCmd> = recv.receive().collect();
+        if !net.links.contains_key(&key) {
+            if !cmds.is_empty() {
+                debug!(
+                    "dropping {} command(s) from unregistered peer {:?}",
+                    cmds.len(),
+                    key
+                );
+            }
+            continue;
+        }
         for cmd in cmds {
             let outcome = match cmd {
                 ClientCmd::Build { x, y, kind } => sim.try_build(key, IVec2::new(x, y), kind),
@@ -217,14 +225,15 @@ fn tick_sim(time: Res<Time>, mut sim: ResMut<Sim>) {
             SimEvent::WaveStarted(w) => {
                 info!("wave {} started ({} creeps)", w, sim.creeps_per_wave());
             }
+            SimEvent::CreepSpawned(id) => trace!("creep {:?} spawned", id),
+            SimEvent::CreepKilled(id) => trace!("creep {:?} killed", id),
             SimEvent::GameOver => {
                 warn!(
                     "GAME OVER: {} creeps alive (cap {})",
                     sim.creeps_alive(),
-                    sim.cap
+                    sim.overrun_cap()
                 );
             }
-            _ => {}
         }
     }
 }
@@ -329,18 +338,16 @@ fn sync_match(sim: Res<Sim>, net: Res<Net>, mut views: Query<&mut MatchView>) {
     let Some(entity) = net.match_entity else {
         return;
     };
-    if sim.over {
-        return;
-    }
     if let Ok(mut mv) = views.get_mut(entity) {
+        // Note there is deliberately no early return for `sim.over`: the last
+        // frame of the game is exactly the one the HUD needs to show the final
+        // overrun count, so the mirror keeps running (D4).
+        //
         // Compare before writing: assigning through `Mut` marks the component
         // changed, which would replicate every frame for no reason.
-        let (wave, live, cap) = (sim.wave, sim.creeps_alive(), sim.cap);
-        if mv.wave != wave || mv.live_creeps != live || mv.overrun_cap != cap {
-            mv.wave = wave;
-            mv.live_creeps = live;
-            mv.overrun_cap = cap;
-            mv.creeps_per_wave = sim.creeps_per_wave();
+        let want = sim.match_view();
+        if *mv != want {
+            *mv = want;
         }
     }
 }
@@ -409,9 +416,6 @@ impl Plugin for GreenTdServerPlugin {
                     .chain()
                     .run_if(server_up),
             )
-            .add_systems(
-                FixedUpdate,
-                tick_sim.run_if(server_up),
-            );
+            .add_systems(FixedUpdate, tick_sim.run_if(server_up));
     }
 }
