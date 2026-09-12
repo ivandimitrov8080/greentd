@@ -58,6 +58,7 @@ an excuse for an untested mutation (D17).
   | D30 | C   | =src/client.rs=, =src/game.rs=   | 2h     | =found-010= (tracked =audit-028=) | DONE  |
   | D31 | A   | =src/main.rs=, =src/client.rs=   | 1d     | =audit-029=                       | DONE  |
   | D32 | A   | =src/net/server.rs=              | 2h     | =audit-030=                       | DONE  |
+  | D33 | A   | =src/ui/=, =src/net/client.rs=   | 1d     | =audit-031=                       | open  |
 
 * Severity A — exploitable or loses player state
 
@@ -288,18 +289,33 @@ an excuse for an untested mutation (D17).
    travel identically. Nothing is buffered in between: an empty =links= means the
    loop body never runs, so a wave with no peers costs one =info!= and no queue.
 
-   Verified twice over: once in a host, where delivery is in process, and once
-   between a real server and a real remote client, which is the case the variant
-   exists for. The second run is =audit-030='s doing -- the first version of this
-   verification was a host run, and it passed while the box was still false for
-   every remote peer.
+   Verified as far as this machine allows, and the limit is worth stating
+   precisely because it is =audit-030='s doing that we know it:
 
-   #+BEGIN_EXAMPLE
-   host   : 08:42:39 DEBUG greentd::commands: notice: WaveStarted(1)
-   server : 10:27:14  INFO greentd::sim: wave 2 started (5 creeps)
-   client : 10:27:34 DEBUG greentd::commands: notice: WaveStarted(2)
-   client : 10:27:54 DEBUG greentd::commands: notice: WaveStarted(3)
-   #+END_EXAMPLE
+   - The notice is *emitted and serialized*. With =lightyear_debug::message=trace=
+     on a server, every wave produces exactly one
+     =message_name="greentd::net::messages::ServerNotice"= on
+     =channel="greentd::net::messages::ReliableChannel"=, and it reaches
+     =packet_send=. Before =audit-030= that line did not exist at all.
+   - The notice is *received and shown* in =host= mode, where delivery is in
+     process:
+
+     #+BEGIN_EXAMPLE
+     08:42:39 DEBUG greentd::commands: notice: WaveStarted(1)
+     #+END_EXAMPLE
+
+   - It was *also* observed arriving at a real remote client over UDP -- once, in
+     the run transcribed under =audit-030=, where every wave produced a
+     =notice: WaveStarted(N)= line. That run is not reproducible on demand on this
+     machine, and the reason is now known and is not this task's: a *windowed*
+     peer's frame loop stalls after one to two seconds here, the socket buffer
+     fills and the kernel drops 95% of the packets (measured: =RcvbufErrors= rose
+     by 606 in a 30-second run while the client's own frame counter stopped after
+     frame 120). See =audit-031= (D33).
+
+   So the box is ticked on the strength of the host observation plus the traced
+   send, not on a repeatable remote delivery, and =audit-031= is what would let it
+   be ticked the other way.
 
    The =debug= line is new, and deliberate: a notice is the client's half of "what
    the server did with my intents", which is what the =greentd::commands= target
@@ -603,7 +619,11 @@ an excuse for an untested mutation (D17).
    other direction's =message_receive_bytes= appeared normally. After the fix, both
    directions and both endpoints are in the trace.
 
-   Evidence, from a server and one remote client, =RUST_LOG=info,greentd=debug=:
+   Evidence, from a server and one remote client, =RUST_LOG=info,greentd=debug=.
+   This transcript was captured once and has not been reproduced since; see
+   =audit-031= for why the windowed client makes it timing-dependent on this
+   machine. The send side of it *is* reproducible and is the part that was
+   broken:
 
    #+BEGIN_EXAMPLE
    server: player PlayerKey(26630927942145) joined
@@ -621,8 +641,21 @@ an excuse for an untested mutation (D17).
    That last sequence is three builds accepted and a fourth refused, which is the
    arithmetic the tower table implies -- =match_rules.start_gold= is 300 and a basic
    tower costs 80 -- arriving at a *remote* player as four separate notices, each
-   with the right verdict. It closes, in one run, the two debts recorded under
-   =audit-005= and =audit-006=.
+   with the right verdict.
+
+   Caveat, recorded here rather than left in a shell history: that transcript is
+   the only clean remote run, and it has not been repeated, because a windowed
+   peer stalls after a second or two on this machine (=audit-031=, D33) and the
+   kernel then drops most of the traffic. What *is* reproducible is the part this
+   task fixed: the server now serializes and sends a =ServerNotice=, traced from
+   the same run after the two-word deletion, and does not before it.
+
+   Note what the transcript incidentally shows: something sent four build commands.
+   The most likely source is the client's own =player_input=, a stray click landing
+   on a window nobody was looking at. Harmless in itself, but it is the argument for
+   proving this with a harness that sends the commands deliberately
+   ([[file:12-testing.org][12-testing.org]] =test-008=) rather than by a mouse in a
+   window, which is how the one good run happened.
 
    Not fixed here, and worth watching: the same "insert a default over an
    engine-managed component" mistake is easy to repeat, and nothing in the type
@@ -846,6 +879,58 @@ an excuse for an untested mutation (D17).
      - [ ] The 768 tile entities are replaced by a single tiled render pass, or =MapTile= becomes a used marker and its =#[allow(dead_code)]= is removed.
      - [ ] The board renders identically to today.
      - [ ] Startup entity count drops by the tile count, measured and recorded.
+
+* Severity A — a third one, an unexplained stall
+
+** TODO [#A] Find out why a windowed peer stops updating                     :@net:test:
+   :PROPERTIES:
+   :ID:         audit-031
+   :EFFORT:     1d
+   :END:
+
+   *D33. Found by measuring, not by reading: a peer that renders stops running its
+   `Update` schedule after one to two seconds on this machine, and the host does it
+   too.* It is the reason three of the verifications above are weaker than they
+   look, and it is filed at =[#A]= because an unexplained stall in the main loop is
+   the kind of thing that turns out to be a deadlock.
+
+   What was measured, on a windowed client dialling a headless server, with
+   =RUST_LOG=info,greentd=debug= and =stdbuf -oL= so the log could not be lost to a
+   block buffer:
+
+   #+BEGIN_EXAMPLE
+   10:56:46 INFO greentd::ui::hud: PROBE frame=60  elapsed=1.1s
+   10:56:47 INFO greentd::ui::hud: PROBE frame=120 elapsed=2.1s
+   # (nothing further for the remaining 23 seconds)
+   #+END_EXAMPLE
+
+   and the same run's kernel counters, from =/proc/net/snmp=:
+
+   #+BEGIN_EXAMPLE
+   before: In=1732594 RcvbufErr=11206
+   after:  In=1741394 RcvbufErr=11812     # +606 packets dropped for want of a reader
+   #+END_EXAMPLE
+
+   That is the whole explanation of the "flaky" remote delivery: while the loop is
+   alive the notice arrives; when it stalls the socket buffer fills and the kernel
+   drops it. A windowed =host= stalled too, once, before it ever logged wave 1.
+
+   Hypotheses, none confirmed: a =PresentMode::Fifo= present that blocks because the
+   window is not on screen in this session; an event-loop wait that never wakes; a
+   system of ours that blocks on something. Ruling the last one in or out is the
+   first step, and it is cheap: run a client with rendering disabled and see
+   whether the stall survives.
+
+   - Files: =src/ui/=, =src/net/client.rs=, =src/main.rs=
+   - Acceptance:
+     - [ ] Whether the stall is in winit/wgpu presentation or in this crate's systems is determined and written here.
+     - [ ] A windowed peer keeps updating for at least 60 seconds in a detached session, byte-for-byte as it does under a visible window, or the environment limitation is documented as unfixable with the evidence that says so.
+     - [ ] If it is ours, it stops stalling; if it is not, =audit-005= and =audit-003='s remote boxes can be ticked by a scripted run rather than a transcript.
+     - [ ] A test or a script exists that would have caught it: the natural one is the two-process harness of [[file:12-testing.org][12-testing.org]] =test-008=, which is also where =audit-030='s regression belongs.
+
+   Not fixed here on purpose. The workaround that made every earlier verification
+   pass was to run the *headless* half (server) and observe from a host or a
+   transcript, which is exactly the kind of accommodation that hides a defect.
 
 * Severity C — polish
 

@@ -185,6 +185,7 @@
    | =audit-017= | DONE        | The audit-side check for D15, now permanent: the smoke job starts the real server with the display environment unset. |
    | =audit-029= | DONE        | *D31, found while building CI.* Host mode ran a =RawClient= over UDP beside a =RawServer=, which lightyear calls =MixedClientServer= and which killed the process about three seconds into wave 1. A host is now a real lightyear host client: in-process messages, no per-peer copy of anything. |
   | =audit-030= | DONE        | *D32, found by running a server and a client side by side.* =on_client_connected= inserted a default =MessageManager= over the engine-managed one, wiping the sender registration; every notice to a remote client was dropped inside the process. |
+  | =audit-031= | TODO        | *D33.* A windowed peer stalls after one to two seconds here, dropping the packets that make =audit-005= and =audit-003= verifiable end to end. =[#A]= because an unexplained main-loop stall is either an environment fact worth recording or a deadlock. |
    | =test-001=  | IN-PROGRESS | Same harness; the fixed-seed box now has =found-009= to stand on. |
    | =audit-011= | TODO        | Blocked on =net-001= for the hash half; the per-tier literals are =towers-002='s to absorb. |
    | =audit-012= | WAITING     | Blocked on =decide-default-lineage=, which is a sign-off, not a task. |
@@ -212,15 +213,24 @@
     mechanically, and still owns a test for "a host plus one remote client".
   - =found-002='s last box and =audit-020='s, which both need a second machine to
     join a non-local host.
+  - =audit-031= (D33), the windowed-peer stall. It is =[#A]= and it is the reason
+    three boxes above are weaker than they read: it decides whether those
+    verifications can become scripted or have to stay transcripts.
   - =decide-default-lineage=, without which =sim-005= cannot start.
 
-  One debt is left, and =audit-030= shrank it: refusals and wave notices *have*
-  now been watched arriving at a live remote client (three =Ok= and one
-  =Err(NotEnoughGold)=, plus a =WaveStarted= per wave), so the only unobserved
-  refusal is the rate-limit one, which needs a peer deliberately flooding. The other
-  is =audit-003='s box three, verified structurally but not yet by making one
-  player's gold diverge from another's, because this machine has no
-  input-injection tool. Both are recorded on their tasks.
+  Two debts are left, and both are downstream of =audit-031= (D33), which is why
+  that task is =[#A]= and why it is the next thing in this file after =net-001=:
+
+  - Remote delivery is verified in one direction only. The server demonstrably
+    *sends* every wave notice and every refusal, and a host demonstrably *shows*
+    them; a remote client showing them was observed once and has not been
+    reproduced, because the windowed client's frame loop stalls after one to two
+    seconds here. Rather than present a transcript as a repeatable result, the
+    boxes are left as they are and the measurement is on =audit-031=.
+  - =audit-003='s box three has been verified structurally (the host's world holds
+    two =PlayerView= entities and exactly one is marked) but not by making one
+    player's gold diverge from another's, because this machine has no
+    input-injection tool.
 
   The larger lesson of =audit-029= and =audit-030= is procedural and worth keeping
   where it will be read: *reading =src/= is what wrote this plan, and reading
@@ -339,6 +349,7 @@
   | D30 | C   | DONE  | No =LocalPlayer= marker; the client inferred "my" state from "the one =PlayerView= I happen to hold". Fixed by =found-010=, tracked as =audit-028=. |
   | D31 | A   | DONE  | Host mode ran a =RawClient= over a real UDP socket beside a =RawServer=, which lightyear rejects as =MixedClientServer= and which killed the process three seconds into wave 1. Fixed by =audit-029=, which makes a host a real lightyear host client: in-process messages, no per-peer copy of anything. |
   | D32 | A   | DONE  | =on_client_connected= inserted a fresh =MessageManager= over the one the engine manages, wiping the sender registration the message layer installs from an =on_add= hook. Every =ServerNotice= -- wave started, every refusal, game over -- was silently dropped on the way to a remote client. Fixed by =audit-030=. |
+  | D33 | A   | open  | A windowed peer stops running its =Update= schedule after one to two seconds in a detached session: the socket buffer fills and the kernel drops 95% of the packets it is sent. Measured, not inferred; cause unknown. =audit-031=. |
 
 * Cross-cutting decisions
   :PROPERTIES:
