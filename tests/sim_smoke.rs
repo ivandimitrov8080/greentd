@@ -1287,3 +1287,205 @@ fn a_leak_is_counted_under_either_rule() {
     assert_eq!(harness.sim.match_view().leaks, harness.sim.leaks);
     assert_eq!(harness.sim.match_view().lives, harness.sim.lives);
 }
+
+// ---------------------------------------------------------------------------
+// The step order (sim-001)
+// ---------------------------------------------------------------------------
+
+/// A buildable cell whose centre is within `within` world units of the goal.
+///
+/// The leak test needs a tower that can reach the goal but *not* the spawn
+/// point, so that "did the tower fire at all" is a question about the leak
+/// rather than about range.
+fn buildable_cell_near_goal(sim: &Sim, within: f32) -> IVec2 {
+    let map = &sim.map;
+    for y in 0..map.tiles_y {
+        for x in 0..map.tiles_x {
+            let cell = IVec2::new(x, y);
+            if sim.is_buildable(cell) && map.cell_to_world(cell).distance(map.goal.centre) <= within
+            {
+                return cell;
+            }
+        }
+    }
+    panic!("the board has no buildable cell within {within} of the goal");
+}
+
+#[test]
+fn a_creep_that_reaches_the_goal_leaks_before_a_tower_can_shoot_it() {
+    // `sim-006` requires `leak_arrivals` to run before the fire phase, so a
+    // creep that arrives at the goal on a tick cannot also be shot on that tick.
+    // This pins the order `Sim::step` documents, and it is written as a
+    // contradiction: the tower's shot is lethal and the creep is placed at the
+    // goal with a single hit point, so if the fire phase ran first the creep
+    // would be *killed* -- a `CreepKilled` event and a bounty. Because the leak
+    // runs first the creep is off the board before any tower acquires a target,
+    // and the tower finds nothing else in range to shoot.
+    let mut tuned = (*shipped_balance()).clone();
+    tuned.match_rules.lose_rule = LoseRule::Overrun;
+    tuned.match_rules.overrun_cap = 1_000_000; // the leak must not end the match
+    tuned.match_rules.starting_lives = 1_000;
+    tuned.match_rules.first_wave_delay = 0.1;
+    tuned.match_rules.wave_interval = 100_000.0; // exactly one wave
+    tuned.waves.scaling.count_base = 1.0;
+    tuned.waves.scaling.count_per_wave = 0.0;
+    tuned.waves.scaling.speed_base = 0.0; // the creeps stand still
+    tuned.waves.scaling.speed_growth = 0.0;
+    tuned.waves.scaling.hp_base = 1_000.0; // only the placed creep is killable
+    tuned.waves.scaling.hp_growth = 0.0;
+    tuned.towers[0].damage = 1_000_000.0; // one shot kills anything
+    tuned.towers[0].range = 600.0; // reaches the goal, not the spawn points
+    tuned.towers[0].cooldown = 0.0; // ready on the very first tick
+    let mut harness = Harness::with_board(Arc::new(tuned), short_board());
+
+    let who = player(1);
+    harness.sim.add_player(who);
+    let start_gold = harness.sim.balance.match_rules.start_gold;
+    let cost = harness
+        .sim
+        .balance
+        .tower(0)
+        .map(|tower| tower.cost)
+        .expect("kind 0 is in the tower table");
+
+    let cell = buildable_cell_near_goal(&harness.sim, 200.0);
+    harness.sim.try_build(who, cell, 0).expect("the build");
+
+    // One wave, then one of its creeps is placed on the goal with one hit point.
+    // The others stay at the spawn point, well out of the tower's range.
+    harness.advance_until(600, |sim| sim.wave == 1);
+    let id = *harness
+        .sim
+        .creeps
+        .keys()
+        .min()
+        .expect("the wave spawned creeps");
+    let lane = harness.sim.creeps[&id].lane;
+    let total = harness.sim.map.lanes[lane as usize].total;
+    {
+        let creep = harness.sim.creeps.get_mut(&id).expect("the creep exists");
+        creep.dist = total;
+        creep.hp = 1.0;
+    }
+
+    let events = harness.step();
+
+    assert_eq!(
+        count_matching(
+            &events,
+            |e| matches!(e, SimEvent::Leaked(leaked) if *leaked == id)
+        ),
+        1,
+        "the creep at the goal leaked this tick"
+    );
+    assert_eq!(
+        count_matching(&events, |e| matches!(e, SimEvent::CreepKilled(_))),
+        0,
+        "nothing was killed: the leak ran before the fire phase"
+    );
+    assert_eq!(kills(&harness.sim, who), 0, "and so nothing was credited");
+    assert_eq!(
+        gold(&harness.sim, who),
+        start_gold - cost,
+        "the tower's owner earned no bounty for a creep it never shot"
+    );
+    assert!(
+        !harness.sim.creeps.contains_key(&id),
+        "the leaked creep is off the board"
+    );
+}
+
+#[test]
+fn a_creep_killed_on_a_tick_is_reaped_on_that_tick() {
+    // The other load-bearing ordering in `Sim::step` (`sim-001`): the damage
+    // phase precedes the reap phase, so a creep the tower brings to zero this
+    // tick is removed and its killer paid on the same tick, not the next one.
+    let mut tuned = (*shipped_balance()).clone();
+    tuned.match_rules.lose_rule = LoseRule::Overrun;
+    tuned.match_rules.overrun_cap = 1_000_000;
+    tuned.match_rules.first_wave_delay = 0.1;
+    tuned.match_rules.wave_interval = 100_000.0; // exactly one wave
+    tuned.waves.scaling.count_base = 1.0;
+    tuned.waves.scaling.count_per_wave = 0.0;
+    tuned.waves.scaling.speed_base = 0.0; // the creeps stand still
+    tuned.waves.scaling.speed_growth = 0.0;
+    tuned.waves.scaling.hp_base = 1_000.0;
+    tuned.waves.scaling.hp_growth = 0.0;
+    tuned.towers[0].damage = 1_000_000.0; // one shot kills anything
+    tuned.towers[0].range = 600.0;
+    tuned.towers[0].cooldown = 0.0;
+    let mut harness = Harness::with_board(Arc::new(tuned), short_board());
+
+    let who = player(1);
+    harness.sim.add_player(who);
+    let bounty = harness.sim.balance.creep_bounty(1);
+    let cell = buildable_cell_near_goal(&harness.sim, 200.0);
+    harness.sim.try_build(who, cell, 0).expect("the build");
+
+    // One creep in the tower's range, the rest out of it.
+    harness.advance_until(600, |sim| sim.wave == 1);
+    let id = *harness
+        .sim
+        .creeps
+        .keys()
+        .min()
+        .expect("the wave spawned creeps");
+    let lane = harness.sim.creeps[&id].lane;
+    let total = harness.sim.map.lanes[lane as usize].total;
+    // Just short of the goal, so the creep is in the tower's range and is the
+    // next to arrive -- but has not arrived, so it is shot rather than leaked.
+    harness
+        .sim
+        .creeps
+        .get_mut(&id)
+        .expect("the creep exists")
+        .dist = total - 1.0;
+
+    let events = harness.step();
+
+    assert_eq!(
+        count_matching(
+            &events,
+            |e| matches!(e, SimEvent::CreepKilled(killed) if *killed == id)
+        ),
+        1,
+        "the kill is announced on the tick it happens"
+    );
+    assert_eq!(kills(&harness.sim, who), 1, "and the kill is credited now");
+    assert_eq!(
+        gold(&harness.sim, who),
+        harness.sim.balance.match_rules.start_gold
+            - harness.sim.balance.tower(0).expect("kind 0").cost
+            + bounty,
+        "the bounty lands in the same tick as the shot (damage before reap)"
+    );
+    assert!(
+        !harness.sim.creeps.contains_key(&id),
+        "the dead creep is gone"
+    );
+}
+
+#[test]
+fn the_sim_sources_name_no_network_type() {
+    // `sim-001`, box three. The module doc of `src/sim/mod.rs` promises that
+    // nothing under `sim/` names `lightyear`, so the sim stays reproducible from
+    // a seed with no socket in scope (`decide-authority`). The promise is a
+    // check here rather than a `grep` in a pipeline, because there is no
+    // pipeline: this runs wherever `cargo test` does.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/sim");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("src/sim must exist") {
+        let path = entry.expect("a readable directory entry").path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("a readable source file");
+        assert!(
+            !source.contains("lightyear"),
+            "{} names lightyear; the sim must not reach into the network layer",
+            path.display()
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "there were no sim sources to check");
+}

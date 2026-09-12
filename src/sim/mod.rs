@@ -1,6 +1,6 @@
 //! The authoritative simulation. Server-only.
 //!
-//! Nothing under `sim/` imports `lightyear`, opens a socket or names a
+//! Nothing under `sim/` imports the network layer, opens a socket or names a
 //! replicated component. It is a plain `step(dt)` state machine that can be
 //! unit-tested headless and, if you ever want lockstep, replayed. The server's
 //! job in `net/server.rs` is to (a) feed it validated intents and (b) mirror its
@@ -324,27 +324,44 @@ impl Sim {
 
     /// One tick.
     ///
-    /// The order of the phases *is* the contract, and every one of them lives in
-    /// a different file:
+    /// `sim-001`: the order of the phases *is* the contract. Each phase is one
+    /// named call, and the call below is the only place the order is written
+    /// down; the method bodies live in `waves.rs` and `combat.rs` beside the
+    /// state they touch.
     ///
-    ///   1. wave bookkeeping, so a wave summoned this tick exists this tick;
-    ///   2. the creeps that exist, moved;
-    ///   3. the creeps that arrived, leaked -- before any tower fires, so a
-    ///      creep that reaches the goal this tick cannot also be shot;
-    ///   4. the towers, firing;
-    ///   5. the bills, paid -- a creep killed this tick is paid for this tick;
-    ///   6. the lose condition, last, so it sees the tick's full result.
+    ///   1. [`Sim::spawn`] -- the wave clock, the per-player wave-call cooldowns
+    ///      and the creeps of a wave that is due, so a wave summoned this tick
+    ///      exists this tick;
+    ///   2. [`Sim::advance_creeps`] -- the creeps that exist, moved, with their
+    ///      slow timers run down;
+    ///   3. [`Sim::leak_arrivals`] -- the creeps that reached the goal leave the
+    ///      board *before* any tower acquires a target, so a creep that arrives
+    ///      this tick cannot also be shot (`sim-006`);
+    ///   4. [`Sim::acquire`] -- every tower off cooldown chooses a target;
+    ///   5. [`Sim::fire`] -- the aiming towers commit to a shot and spend their
+    ///      cooldown;
+    ///   6. [`Sim::damage`] -- the shots fired resolve;
+    ///   7. [`Sim::reap`] -- the creeps brought to zero are removed and their
+    ///      killer is paid, so a creep killed this tick is paid for this tick;
+    ///   8. [`Sim::check_lose`] -- the lose condition, last, so it sees the
+    ///      tick's full result.
+    ///
+    /// Two orderings in that list are load-bearing and each has a test in
+    /// `tests/sim_smoke.rs`: the leak precedes the fire (3 before 4, so a creep
+    /// at the goal is never also shot), and the damage precedes the reap (6
+    /// before 7, so a kill is paid on the tick it happens).
     pub fn step(&mut self, dt: f32) -> Vec<SimEvent> {
         let mut events = Vec::new();
         if self.over {
             return events;
         }
 
-        self.tick_wave(dt, &mut events);
-        self.tick_wave_calls(dt);
+        self.spawn(dt, &mut events);
         self.advance_creeps(dt);
         self.leak_arrivals(&mut events);
-        self.fire(dt);
+        let aims = self.acquire(dt);
+        let shots = self.fire(aims);
+        self.damage(&shots);
         self.reap(&mut events);
         self.check_lose(&mut events);
 

@@ -1,11 +1,15 @@
 //! Creep movement, leaks, and tower fire: everything one tick does to a creep.
 //!
-//! Three phases, in the order [`Sim::step`] runs them: the creeps that exist
-//! move, the creeps that arrived at the goal leak, the towers that are off
-//! cooldown shoot, and the dead are reaped and paid for. Firing is resolved in
-//! two passes -- collect the shots, then apply them -- because a shot is aimed
-//! at a creep and the damage loop has to be free to mutate the same map it aimed
-//! at.
+//! The phases of [`Sim::step`] that live here, in order: the creeps that exist
+//! move, the creeps that arrived at the goal leak (before anything may shoot
+//! them -- `sim-006`), the towers that are off cooldown acquire a target, the
+//! aiming towers fire, the shots resolve, and the dead are reaped and paid for.
+//!
+//! Firing is three passes rather than one, because the order is a contract
+//! (`sim-001`): [`Sim::acquire`] picks a target, [`Sim::fire`] commits to the
+//! shot and spends the cooldown, and [`Sim::damage`] resolves what was fired.
+//! Aiming and applying are separate because a shot is aimed at a creep and the
+//! damage loop has to be free to mutate the same map it aimed at.
 
 use bevy::prelude::*;
 
@@ -57,9 +61,16 @@ impl Sim {
         }
     }
 
-    /// Every tower that is off cooldown takes one shot.
-    pub(super) fn fire(&mut self, dt: f32) {
-        let mut shots: Vec<Shot> = Vec::new();
+    /// Phase 4 of a tick (`sim-001`): every tower that is off cooldown chooses a
+    /// target, and nothing else happens.
+    ///
+    /// The cooldown ticks down here so a tower that is ready is ready, but it is
+    /// not *spent* -- that is [`Sim::fire`] -- and no damage is dealt. `sim-004`
+    /// replaces the scan below with a named, indexed policy; giving target
+    /// selection a phase of its own is what makes it replaceable without
+    /// touching the rest of the tick.
+    pub(super) fn acquire(&mut self, dt: f32) -> Vec<Aim> {
+        let mut aims: Vec<Aim> = Vec::new();
 
         for (&cell, tower) in self.towers.iter_mut() {
             tower.cooldown -= dt;
@@ -77,7 +88,6 @@ impl Sim {
             let damage = stats.damage * tier;
             let range = stats.range * (1.0 + stats.range_per_level * steps);
             let cooldown = stats.cooldown / tier;
-            let (splash, slow) = (stats.splash, stats.slow);
 
             let origin = self.map.cell_to_world(cell);
             // Classic TD targeting: the creep closest to the goal is the one
@@ -86,7 +96,7 @@ impl Sim {
             // The comparison is on *distance remaining*, not on distance
             // travelled: the board's lanes differ in length by a factor of two,
             // so "has walked furthest" and "is nearly home" stop agreeing as
-            // soon as two creeps are on different lanes. `sim-010` gives this a
+            // soon as two creeps are on different lanes. `sim-004` gives this a
             // name and an index; this is the policy it starts from.
             let mut best: Option<(CreepId, f32, Vec2)> = None;
             for (&id, creep) in self.creeps.iter() {
@@ -103,20 +113,58 @@ impl Sim {
             let Some((target, _, center)) = best else {
                 continue;
             };
-            tower.cooldown = cooldown;
-            shots.push(Shot {
+            aims.push(Aim {
+                cell,
                 target,
                 center,
                 damage,
-                splash,
-                slow,
+                splash: stats.splash,
+                slow: stats.slow,
                 slow_duration: stats.slow_duration,
+                cooldown,
                 owner: tower.owner,
             });
         }
 
+        aims
+    }
+
+    /// Phase 5 of a tick (`sim-001`): the towers [`Sim::acquire`] chose commit
+    /// to a shot, and spend their cooldown doing it.
+    ///
+    /// The cooldown is spent here rather than in `acquire` so that *aiming* and
+    /// *firing* are different events, which is what `sim-010` needs: it swaps
+    /// the instant hit below for a projectile with a flight time, created here
+    /// and resolved a tick later by [`Sim::damage`].
+    pub(super) fn fire(&mut self, aims: Vec<Aim>) -> Vec<Shot> {
+        let mut shots = Vec::with_capacity(aims.len());
+        for aim in aims {
+            if let Some(tower) = self.towers.get_mut(&aim.cell) {
+                tower.cooldown = aim.cooldown;
+            }
+            shots.push(Shot {
+                target: aim.target,
+                center: aim.center,
+                damage: aim.damage,
+                splash: aim.splash,
+                slow: aim.slow,
+                slow_duration: aim.slow_duration,
+                owner: aim.owner,
+            });
+        }
+        shots
+    }
+
+    /// Phase 6 of a tick (`sim-001`): resolve the shots [`Sim::fire`] scheduled.
+    ///
+    /// A shot lands in the tick it is fired until `sim-010` gives it a flight
+    /// time. Every point of damage a tower deals arrives here, through
+    /// [`Sim::apply_shot`], so `sim-009` has one place to add armour multipliers,
+    /// crits and splash falloff and there is no second path that writes a
+    /// creep's health.
+    pub(super) fn damage(&mut self, shots: &[Shot]) {
         for shot in shots {
-            self.apply_shot(&shot);
+            self.apply_shot(shot);
         }
     }
 
@@ -167,9 +215,25 @@ impl Sim {
     }
 }
 
-/// One tower's shot, resolved after every tower has been given the chance to
-/// fire.
-struct Shot {
+/// One tower's chosen target, and the numbers its shot will use: the value
+/// [`Sim::acquire`] hands to [`Sim::fire`]. It never leaves the tick.
+pub(super) struct Aim {
+    /// The tower that aimed, so `fire` can charge its cooldown.
+    cell: IVec2,
+    target: CreepId,
+    center: Vec2,
+    damage: f32,
+    splash: f32,
+    slow: f32,
+    /// How long the slow lasts, from the firing tower's table entry (D18).
+    slow_duration: f32,
+    /// The cooldown to charge the tower once it has fired.
+    cooldown: f32,
+    owner: PlayerKey,
+}
+
+/// One tower's scheduled shot: the value [`Sim::fire`] hands to [`Sim::damage`].
+pub(super) struct Shot {
     target: CreepId,
     center: Vec2,
     damage: f32,

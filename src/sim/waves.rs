@@ -60,6 +60,18 @@ impl Sim {
         Ok(())
     }
 
+    /// Phase 1 of a tick (`sim-001`): the wave clock, the per-player wave-call
+    /// cooldowns, and the creeps of any wave that is due.
+    ///
+    /// One named phase rather than two inline calls, because `step`'s job is to
+    /// name the order and this is the part of it that decides what exists. A
+    /// wave summoned this tick exists this tick, which is the property the rest
+    /// of the tick is built on.
+    pub(super) fn spawn(&mut self, dt: f32, events: &mut Vec<SimEvent>) {
+        self.tick_wave(dt, events);
+        self.tick_wave_calls(dt);
+    }
+
     /// Run the wave timer down, and start a wave when it expires.
     pub(super) fn tick_wave(&mut self, dt: f32, events: &mut Vec<SimEvent>) {
         self.wave_timer -= dt;

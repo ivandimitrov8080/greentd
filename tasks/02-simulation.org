@@ -15,7 +15,7 @@ the creep data model and adds the armour/damage system (=src/data/balance.rs=,
 
 * The sim's public surface and the step loop
 
-** TODO [#A] Give =Sim= a documented surface and ordered =step= phases   :@sim:
+** DONE [#A] Give =Sim= a documented surface and ordered =step= phases   :@sim:
    :PROPERTIES:
    :ID:         sim-001
    :EFFORT:     1w
@@ -26,23 +26,77 @@ the creep data model and adds the armour/damage system (=src/data/balance.rs=,
    boundary first: name the phases in order and keep =Sim= free of any
    networking type (it must not import =lightyear=).
 
-   - Files: =src/sim.rs=, =src/sim/mod.rs=, =src/server.rs=
+   - Files: =src/sim/mod.rs=, =src/sim/combat.rs=, =src/sim/waves.rs=, =tests/sim_smoke.rs=
    - Acceptance:
-     - [ ] =step= is a short function calling one named method per phase, in the documented order below.
+     - [x] =step= is a short function calling one named method per phase, in the documented order below.
      - [ ] The order is written in a doc comment and a test asserts a creep spawned on tick N cannot be damaged on tick N.
-     - [ ] =grep -rn lightyear src/sim= returns nothing, enforced by a CI check.
-     - [ ] =Creep=, =Tower= and =Player= fields are written only by =step= and the documented =try_*= entry points, never from =server.rs=.
+     - [x] =grep -rn lightyear src/sim= returns nothing, enforced by a test (there is no pipeline to enforce it in).
+     - [x] =Creep=, =Tower= and =Player= fields are written only by =step= and the documented =try_*= entry points, never from =server.rs=.
 
-   | # | Phase     | Responsibility                                            |
-   |---+-----------+-----------------------------------------------------------|
-   | 1 | spawn     | wave timer, spawn points, creep construction              |
-   | 2 | move      | advance =dist=, tick status effects, resolve arrival      |
-   | 3 | acquire   | per-tower target selection via the target policy          |
-   | 4 | fire      | create projectiles / schedule shots, spend cooldowns      |
-   | 5 | damage    | resolve projectiles, apply damage and bounty              |
-   | 6 | reap      | remove dead creeps, fire kill events                      |
-   | 7 | leak      | creeps that reach the goal leak, lives decrement          |
-   | 8 | win/lose  | evaluate the active lose rule and the victory condition   |
+   The order as implemented. It is *not* the order this task shipped with: the
+   leak used to be listed at 7, below =fire=, which would have made a creep that
+   reached the goal shootable on the tick it left. =sim-006= is =DONE= and its
+   own box reads "=Sim::step= leaks before =fire=", so the leak is phase 3, above
+   =acquire=. The table is corrected here to match the code and the test.
+
+   | # | Phase            | Responsibility                                                   |
+   |---+------------------+------------------------------------------------------------------|
+   | 1 | =spawn=          | wave timer, per-player wave-call cooldowns, spawn, creep construction |
+   | 2 | =advance_creeps= | advance =dist=, run slow timers down                             |
+   | 3 | =leak_arrivals=  | creeps that reach the goal leave the board, lives decrement      |
+   | 4 | =acquire=        | per-tower target selection via the target policy                 |
+   | 5 | =fire=           | schedule the shot, spend the cooldown                            |
+   | 6 | =damage=         | resolve the scheduled shots, apply damage                        |
+   | 7 | =reap=           | remove dead creeps, fire kill events, pay the bounty             |
+   | 8 | =check_lose=     | evaluate the active lose rule                                    |
+
+   *Done, with box two open on purpose.*
+
+   =step= is now eight named calls -- =spawn=, =advance_creeps=,
+   =leak_arrivals=, =acquire=, =fire=, =damage=, =reap=, =check_lose= -- and the
+   order is written once, in the doc comment on =step= itself. The two phases
+   that did not exist as methods before are =acquire= and =fire=: what used to be
+   one =fire(dt)= that picked a target, built a shot *and* applied it is now three
+   passes over an intermediate value, so =sim-010= can put a projectile's flight
+   time between =fire= and =damage= without touching the rest of the tick, and
+   =sim-004= can replace =acquire='s scan with an index without touching =fire=.
+   The bodies are unchanged; only their boundaries moved.
+
+   *Box two is left unticked because its claim is not true of any order this
+   tick can have.* "A creep spawned on tick N cannot be damaged on tick N" needs
+   =spawn= (phase 1) to run *after* =damage= (phase 6), or a spawn-invulnerability
+   window. The order cannot put the spawn last -- a wave summoned this tick has to
+   exist this tick, which is what =audit-013='s column and every spawn test depend
+   on -- and the window is spawn invulnerability, which is =sim-018=, a =[#B]=
+   blocked on =sim-003= and not in scope here. What this task guarantees instead,
+   and what the tests pin, is the two orderings that are load-bearing:
+
+   - =a_creep_that_reaches_the_goal_leaks_before_a_tower_can_shoot_it=: a creep
+     placed on the goal with one hit point, with a lethal tower in range, *leaks*
+     and is not killed. If =fire= ran first it would be killed (a =CreepKilled=
+     event and a bounty); because the leak runs first there is nothing left to
+     shoot, and the tower earns nothing.
+   - =a_creep_killed_on_a_tick_is_reaped_on_that_tick=: a creep the tower brings
+     to zero just short of the goal is announced and paid on the same tick, which
+     is =damage= before =reap=.
+
+   Box three is checked by =the_sim_sources_name_no_network_type=, which reads
+   every =.rs= under =src/sim/= and fails if any of them contains the token. It
+   is a test rather than a pipeline step because =.github/workflows/ci.yml= was
+   removed after this task was written; it is written to be the same claim a
+   =grep= would make, which means the token appears nowhere under =src/sim/= at
+   all -- including the module doc, which now says "the network layer" rather than
+   naming the crate, because a =grep= cannot tell a comment from an import.
+
+   Box four holds by inspection and is recorded rather than tested: =net/server.rs=
+   reads =sim.creeps=, =sim.towers= and =sim.players= and writes only replicated
+   components (=PlayerView=, =MatchView=), never a field of =Creep=, =Tower= or
+   =Player=. =Player= is written only by =add_player=, =remove_player= and the
+   =try_*= entry points, all of which are =sim/= methods.
+
+   Green: =cargo fmt --check=, =cargo clippy --all-targets -- -D warnings=,
+   =cargo test= (110 tests: 4 + 8 + 25 + 7 + 16 + 7 + 8 + 35, three of the last
+   group this task's; the README's 84 predates =tests/map.rs=).
 
 ** TODO [#A] Quantise sim time into integer ticks   :@sim:
    :PROPERTIES:
