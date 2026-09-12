@@ -39,9 +39,33 @@ extends.
    same harness and carries the detail. Events are collected per tick, and
    =Harness::with_players=/:with_balance= remove the boilerplate.
 
-   The open box is the *seed*: =Sim= has no RNG concept yet, so a fixed seed
-   cannot be threaded in until =found-009= adds the seeded RNG the sim owns.
-   Do not tick this box before then -- =test-002= (determinism) depends on it.
+   The fourth box was *held* on a precondition that has since been met, so the
+   sentence that held it is corrected rather than repeated. It used to read "=Sim=
+   has no RNG concept yet, so a fixed seed cannot be threaded in until
+   =found-009= adds the seeded RNG the sim owns. Do not tick this box before
+   then." =found-009= is =DONE=, and both halves of the box now hold in
+   =tests/sim_smoke.rs=: events are asserted per tick through =Harness::step=, and
+   the =seeded_balance(seed)= helper threads a fixed seed in -- which is exactly
+   what =the_same_seed_replays_and_a_different_seed_does=,
+   =a_creep_spawns_inside_its_own_slot= and =the_match_seed_comes_from_the_tables=
+   exercise.
+
+   *The box and the state are left alone anyway, and that is a deliberate
+   choice.* Two readings are defensible and they disagree, so the decision is
+   recorded here rather than taken silently:
+
+   - The literal reading is that the precondition named in this paragraph is
+     satisfied, so the box should be ticked.
+   - The README's *Progress against M0* gives a second, independent reason for
+     the task being open: it is the harness every sibling test extends, so it is
+     a live artefact rather than a finished one, and a task is not closed by
+     having no boxes left.
+
+   The second reading is the one this file acts on, which is why =test-001= stays
+   =IN-PROGRESS= with a true box unticked. Whoever owns the milestone should
+   settle it, and the honest form of settling it is one of: tick the box and
+   leave the task open as a standing harness, or split the standing part out
+   (a =test-000= "keep the harness alive") and close this one.
 
 ** TODO [#A] Determinism test: same seed and command log, same state hash :@test:
    :PROPERTIES:

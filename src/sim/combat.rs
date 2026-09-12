@@ -35,10 +35,13 @@ impl Sim {
             let Some(stats) = self.balance.tower(tower.kind) else {
                 continue;
             };
-            // Tier scales damage and rate modestly.
-            let tier = 1.0 + 0.45 * (tower.level.saturating_sub(1)) as f32;
+            // Tier scales damage and rate modestly. The growth is data, not a
+            // literal (D18): `towers-002` will replace this flat model with an
+            // explicit tier graph, but until then the table owns every number.
+            let steps = tower.level.saturating_sub(1) as f32;
+            let tier = 1.0 + stats.damage_per_level * steps;
             let damage = stats.damage * tier;
-            let range = stats.range * (1.0 + 0.04 * (tower.level.saturating_sub(1)) as f32);
+            let range = stats.range * (1.0 + stats.range_per_level * steps);
             let cooldown = stats.cooldown / tier;
             let (splash, slow) = (stats.splash, stats.slow);
 
@@ -66,6 +69,7 @@ impl Sim {
                 damage,
                 splash,
                 slow,
+                slow_duration: stats.slow_duration,
                 owner: tower.owner,
             });
         }
@@ -100,7 +104,7 @@ impl Sim {
             creep.last_hit_by = shot.owner;
             if shot.slow < 1.0 {
                 creep.slow_mult = creep.slow_mult.min(shot.slow);
-                creep.slow_timer = 1.5;
+                creep.slow_timer = shot.slow_duration;
             }
         }
     }
@@ -130,5 +134,7 @@ struct Shot {
     damage: f32,
     splash: f32,
     slow: f32,
+    /// How long the slow lasts, from the firing tower's table entry (D18).
+    slow_duration: f32,
     owner: PlayerKey,
 }

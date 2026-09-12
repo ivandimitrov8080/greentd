@@ -137,3 +137,47 @@ fn the_curves_reproduce_wave_one() {
         "a bigger lobby spawns proportionally more creeps"
     );
 }
+
+#[test]
+fn the_last_sim_literals_are_data_now() {
+    // D18's remainder (audit-011): the per-tier growth, the slow duration and
+    // the sell refund are table values, so a re-tune is a data edit and both
+    // peers hash them.
+    let mut data = BalanceData::shipped().expect("assets/balance loads");
+    let before = data.hash();
+
+    data.towers[0].damage_per_level = 1.25;
+    assert_ne!(
+        data.hash(),
+        before,
+        "the tier growth is part of the ruleset, so it must move the hash"
+    );
+    data.validate().expect("a larger growth is still valid");
+
+    data.towers[0].damage_per_level = -1.0;
+    let err = data
+        .validate()
+        .expect_err("negative growth is a hard error");
+    assert!(
+        err.to_string().contains("towers[0].damage_per_level"),
+        "{err}"
+    );
+    data.towers[0].damage_per_level = 0.45;
+
+    data.match_rules.sell_refund_percent = 101;
+    let err = data
+        .validate()
+        .expect_err("a refund over 100% is a hard error");
+    assert!(
+        err.to_string().contains("match_rules.sell_refund_percent"),
+        "{err}"
+    );
+
+    // The refund is exact integer arithmetic, not `cost * 0.7` with a float.
+    let mut data = BalanceData::shipped().expect("assets/balance loads");
+    data.match_rules.sell_refund_percent = 70;
+    let basic = data.towers[0].clone();
+    assert_eq!(data.sell_refund(&basic, 1), 56, "70% of 80 is 56, not 55");
+    data.match_rules.sell_refund_percent = 100;
+    assert_eq!(data.sell_refund(&basic, 2), 160, "100% of 80 x 2 is 160");
+}

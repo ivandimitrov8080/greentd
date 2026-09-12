@@ -112,6 +112,11 @@ pub struct MatchRules {
     pub first_wave_delay: f32,
     /// Minimum time between two `CallWave` commands from one player.
     pub call_wave_cooldown: f32,
+    /// Percentage of a tower's total spend returned when it is sold (D18).
+    /// An integer percentage rather than a fraction, so the refund is exact
+    /// integer arithmetic and identical on both peers.
+    #[serde(default = "default_sell_refund_percent")]
+    pub sell_refund_percent: u32,
     /// The match's RNG seed (`found-009`). A seeded match is a reproducible
     /// match: the same seed and the same intents produce the same game, which
     /// is what a test or a replay needs. It is a *match* setting rather than a
@@ -136,6 +141,18 @@ pub struct TowerDef {
     /// Speed multiplier applied to hit creeps; `1.0` means no slow.
     #[serde(default = "no_slow")]
     pub slow: f32,
+    /// Damage *and* rate multiplier added per level above 1 (D18). `towers-002`
+    /// replaces this flat model with an explicit per-tier graph; until then it
+    /// is data like every other number, so a re-tune needs no recompile.
+    #[serde(default = "default_damage_per_level")]
+    pub damage_per_level: f32,
+    /// Range multiplier added per level above 1 (D18).
+    #[serde(default = "default_range_per_level")]
+    pub range_per_level: f32,
+    /// Seconds a creep stays slowed after this tower hits it (D18). Only
+    /// meaningful when `slow < 1.0`.
+    #[serde(default = "default_slow_duration")]
+    pub slow_duration: f32,
     /// Cost of the first upgrade.
     pub upgrade_base_cost: u32,
     /// Fractional cost growth per further level.
@@ -147,6 +164,22 @@ pub struct TowerDef {
 
 fn no_slow() -> f32 {
     1.0
+}
+
+fn default_damage_per_level() -> f32 {
+    0.45
+}
+
+fn default_range_per_level() -> f32 {
+    0.04
+}
+
+fn default_slow_duration() -> f32 {
+    1.5
+}
+
+fn default_sell_refund_percent() -> u32 {
+    70
 }
 
 /// One creep model. The wave table names these; `waves-004` grows the set.
@@ -354,10 +387,13 @@ impl BalanceData {
         (tower.upgrade_base_cost as f32 * (1.0 + tower.upgrade_growth * steps)).floor() as u32
     }
 
-    /// Gold returned when a tower is sold: 70% of what it cost to get here.
+    /// Gold returned when a tower is sold: [`MatchRules::sell_refund_percent`]
+    /// of what it cost to get here (D18). Integer arithmetic, so the refund is
+    /// exact and both peers agree on it.
     pub fn sell_refund(&self, tower: &TowerDef, level: u8) -> u32 {
         let spent = tower.cost as u64 * level as u64;
-        (spent * 7 / 10) as u32
+        let percent = self.match_rules.sell_refund_percent as u64;
+        (spent * percent / 100) as u32
     }
 
     /// A stable hash of the tables, for the protocol version (`net-001`).
@@ -400,6 +436,9 @@ impl BalanceData {
             t.cooldown = canon_f32(t.cooldown);
             t.splash = canon_f32(t.splash);
             t.slow = canon_f32(t.slow);
+            t.damage_per_level = canon_f32(t.damage_per_level);
+            t.range_per_level = canon_f32(t.range_per_level);
+            t.slow_duration = canon_f32(t.slow_duration);
             t.upgrade_growth = canon_f32(t.upgrade_growth);
         }
         for c in &mut self.creeps {
@@ -491,6 +530,24 @@ impl BalanceData {
                 return Err(BalanceError::invalid(
                     format!("towers[{i}].slow"),
                     "slow is a speed multiplier in (0.0, 1.0]",
+                ));
+            }
+            if !at_least(t.damage_per_level, 0.0) {
+                return Err(BalanceError::invalid(
+                    format!("towers[{i}].damage_per_level"),
+                    "per-level damage growth cannot be negative",
+                ));
+            }
+            if !at_least(t.range_per_level, 0.0) {
+                return Err(BalanceError::invalid(
+                    format!("towers[{i}].range_per_level"),
+                    "per-level range growth cannot be negative",
+                ));
+            }
+            if !at_least(t.slow_duration, 0.0) {
+                return Err(BalanceError::invalid(
+                    format!("towers[{i}].slow_duration"),
+                    "slow duration cannot be negative",
                 ));
             }
             if !at_least(t.upgrade_growth, 0.0) {
@@ -680,6 +737,12 @@ impl BalanceData {
             return Err(BalanceError::invalid(
                 "match_rules.call_wave_cooldown",
                 "call wave cooldown cannot be negative",
+            ));
+        }
+        if r.sell_refund_percent > 100 {
+            return Err(BalanceError::invalid(
+                "match_rules.sell_refund_percent",
+                "a sell refund cannot exceed 100%",
             ));
         }
         Ok(())

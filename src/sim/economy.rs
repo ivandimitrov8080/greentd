@@ -103,7 +103,8 @@ impl Sim {
             if t.owner != who {
                 return Err(Reject::NotOwner);
             }
-            // 70% refund, as in several of the original variants.
+            // The refund fraction is `match_rules.sell_refund_percent` (D18),
+            // not a literal here.
             let tower = self.balance.tower(t.kind).ok_or(Reject::BadKind)?;
             (self.balance.sell_refund(tower, t.level), t.owner)
         };

@@ -22,9 +22,13 @@ contract.  It touches =src/sim.rs= (the =src/sim/economy.rs= and
    :EFFORT:     1w
    :END:
    =Player= is ={ gold: u32, kills: u32, connected: bool }=, and that plus a
-   scattering of literals in =game.rs= and =sim.rs= is the entire economy (D18).
-   A player needs gold plus lumber and food, and the HUD needs income, interest
-   and a tower count, none of which the record can hold.
+   handful of =match.ron= and =towers.ron= figures is the entire economy.
+
+   The "scattering of literals in =game.rs= and =sim.rs=" this paragraph used to
+   cite as D18 is gone: =found-004= moved the numbers and =audit-011= moved the
+   last of them. What remains is the opposite problem and a harder one -- the
+   economy is *too small to be data-driven*, because there is one resource and
+   no payout curve for a table to describe. That is this task, not D18's.
 
    - Files: =src/sim/mod.rs=, =src/sim/economy.rs=, =src/game.rs=
    - Acceptance:

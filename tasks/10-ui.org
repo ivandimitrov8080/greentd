@@ -104,7 +104,7 @@ state or the local build ghost, and every action is an intent, never a mutation.
    - Acceptance:
      - [ ] A tooltip shows name, cost, damage, range, attack speed and damage-per-gold.
      - [ ] An upgrade tooltip shows the per-tier delta in each stat from the current tier to the next.
-     - [ ] Every figure comes from the shared balance data, never a literal in the UI (=D18=).
+     - [ ] Every figure comes from the shared balance data, never a literal in the UI. (This is the `decide-data-driven` rule, and the reason it is stated here as a box rather than left implicit: every number this panel shows is also a number the *server* acts on, so a UI literal is a lie waiting to be believed. D18 is DONE as of =audit-011=; the box is about the panel, not about the defect.)
      - [ ] The damage-vs-armour effectiveness of the tower's attack type is shown against the wave's armour types.
      - [ ] The coloured sections use the palette defined in ui-017.
 

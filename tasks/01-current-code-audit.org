@@ -15,9 +15,10 @@ an excuse for an untested mutation (D17).
 * Defect triage
 
   Every D-number, the severity, whether it still exists, the files it lives in, a
-  rough effort, and the task that fixes it. D15, D18 and D30 are fixed in
-  [[file:00-foundation.org][00-foundation.org]]; the audit tasks named beside them only track the defect, so
-  this index stays complete.
+  rough effort, and the task that fixes it. D15 and D30 are fixed in
+  [[file:00-foundation.org][00-foundation.org]]; D18 was started there and finished here by =audit-011=.
+  Where a fix lives in =00-foundation.org=, the audit task named beside it only
+  tracks the defect, so this index stays complete.
 
   =State= is =DONE= when the defect is closed, =part= when the task that owns it
   has started but the defect has not fully gone, and =open= otherwise. It is
@@ -43,7 +44,7 @@ an excuse for an untested mutation (D17).
   | D15 | B   | =src/main.rs=                    | 1d     | =found-001= (tracked =audit-017=) | DONE  |
   | D16 | C   | =src/sim.rs=                     | 1w     | =audit-025=                       | open  |
   | D17 | A   | =src/sim.rs=                     | 1d     | =audit-010=                       | DONE  |
-  | D18 | A   | =src/game.rs=, =src/sim.rs=      | 1w     | =found-004= (tracked =audit-011=) | part  |
+  | D18 | A   | =src/game.rs=, =src/sim.rs=      | 1w     | =found-004= (tracked =audit-011=) | DONE  |
   | D19 | A   | =src/sim.rs=                     | 1w     | =audit-012=                       | open  |
   | D20 | B   | =src/sim.rs=, =src/server.rs=    | 1d     | =audit-018=                       | open  |
   | D21 | B   | =src/server.rs=                  | 2h     | =audit-018=                       | open  |
@@ -528,7 +529,7 @@ an excuse for an untested mutation (D17).
    =sim.balance=, and =the_sim_reads_the_tables_rather_than_a_const= goes further
    by editing an in-memory table and asserting =Sim::step= observes it.
 
-** TODO [#A] Remove the remaining balance literals and version the balance hash       :@sim:
+** DONE [#A] Remove the remaining balance literals and version the balance hash       :@sim:
    :PROPERTIES:
    :ID:         audit-011
    :EFFORT:     1w
@@ -564,9 +565,31 @@ an excuse for an untested mutation (D17).
    - Acceptance:
      - [x] No balance literal remains in =src/game.rs=; every value is read from the tables loaded by found-004.
      - [x] =Sim= holds a handle to the loaded data rather than importing free consts.
-     - [ ] No balance literal remains in =src/sim.rs= (the per-tier scaling and the slow duration above).
-     - [ ] The balance hash from found-004 is part of the protocol version exchanged at handshake (net-001), so a peer with different numbers is refused.
+     - [x] No balance literal remains in =src/sim.rs= (the per-tier scaling and the slow duration above).
+     - [x] The balance hash from found-004 is part of the protocol version exchanged at handshake (net-001), so a peer with different numbers is refused.
      - [x] Sim test (D17): mutating a value in an in-memory table changes =Sim::step= output, proving nothing is cached from a const.
+
+   Done, and the "let =towers-002= absorb it" escape was not taken: the tower
+   rewrite has not started, so the literals would have lingered. What moved:
+
+   - =towers.ron= carries =damage_per_level= (0.45), =range_per_level= (0.04) and
+     =slow_duration= (1.5 s), each with a serde default so an older table still
+     loads; =src/sim/combat.rs= reads them off the firing tower's =TowerDef=.
+   - =match.ron= carries =sell_refund_percent= (70), an *integer* percent, so
+     =sell_refund= stays exact integer arithmetic -- a float =0.7= would round
+     80 x 0.7 down to 55.
+   - The new fields are validated (non-negative; a refund of at most 100%) and
+     canonicalised in =normalise=, so they are part of =BalanceData::hash=.
+     =ProtocolVersion= already carries that hash, so box four was satisfied when
+     =net-001= landed.
+   - Tests: =the_last_sim_literals_are_data_now= (=tests/balance.rs=),
+     =the_tier_scaling_is_read_from_the_table= and
+     =the_slow_duration_is_read_from_the_table= (=tests/sim_smoke.rs=); the last
+     two drive a level-2 tower that fires exactly once and measure the shot.
+
+   D18 is =DONE=. What is *not* done: the flat tier model itself -- one growth
+   fraction per tower -- is still =towers-002='s to replace. This task removed
+   the literals, not the model.
 
 ** WAITING [#A] Pick the default lineage for a fresh match (design decision)          :@sim:
    :PROPERTIES:
@@ -1109,12 +1132,32 @@ an excuse for an untested mutation (D17).
   7. *The [#C] polish.* =audit-024= through =audit-028=.
 
   Steps 1 and 2 are complete, and so are =audit-017=, =audit-028=, =audit-029=,
-  =audit-030= and =audit-019=. Two of them were found rather than planned:
-  =audit-029= (D31) because building CI meant running a server by hand, and
-  =audit-030= (D32) because running a server by hand *beside a client* is the
+  =audit-030=, =audit-019= and =audit-011=. Two of them were found rather than
+  planned: =audit-029= (D31) because building CI meant running a server by hand,
+  and =audit-030= (D32) because running a server by hand *beside a client* is the
   only way to see a message that never leaves the process. Both are reasons to
   keep doing that, and both say the same thing about this list: every task in it
   was written from reading =src/=, and reading =src/= is what missed them.
+
+  =audit-011= closed with a deliberate non-answer worth recording, because the
+  same choice will come up again. Its body conceded that the remaining literals
+  were =towers-002='s to absorb "if the tower rewrite slips", which reads as
+  permission to leave them. The rewrite has not started, so exercising that
+  permission would have meant D18 -- an =[#A]= -- staying open until M2 for no
+  reason: three floats and a refund fraction are one `#[serde(default)]` field
+  each on tables that already exist, and =towers-002= will delete them along with
+  everything around them. The general rule this settles: *a task that names a
+  literal in its body is not discharged by a later task that happens to remove
+  the same line.* A deferral is only honest when the waiting task is the thing
+  that makes the work possible; "somebody else will rewrite this file" is not.
+
+  What it cost to close was small, and the shape is reusable: three fields on
+  =TowerDef= (=damage_per_level=, =range_per_level=, =slow_duration=) and one on
+  =MatchRules= (=sell_refund_percent=), each with a serde default so an existing
+  table still loads, each range-checked in =validate= and canonicalised in
+  =normalise= so it enters the hash the handshake already exchanges. The refund
+  is an *integer* percent on purpose: =0.7= as an =f32= truncates 80 x 0.7 to 55
+  and would have made a two-peer disagreement out of a rounding mode.
 
   =net-001= has landed, and it was the head of the remaining block: =audit-009=,
   =audit-011='s hash half, =audit-019=, =audit-020= and =audit-024= were all
@@ -1141,13 +1184,25 @@ an excuse for an untested mutation (D17).
   =net-002= for the measurement; the session token that would let a returning
   client prove itself, and so narrow the takeover, is =net-003='s.
 
-  Next: =net-006='s last box, which is a host plus one remote client asserted by a
-  test ([[file:12-testing.org][12-testing.org]] =test-008='s =App= harness, the
-  same place =net-001='s refusal and =audit-030='s regression belong), and
-  =decide-default-lineage=, which is a decision and not work and is what =sim-005=
-  is waiting on. =audit-031= (D33) is still =[#A]= and still unexplained, and it
-  is the reason the remote-delivery boxes above are transcripts rather than
-  scripts.
+  Next, in order, now that =audit-011= is done:
+
+  1. =audit-031= (D33). It is the only =[#A]= left in this file, it is
+     unexplained, and three acceptance boxes above are weaker than they read
+     because of it. It needs a display to reproduce, so it is the one task here
+     that a headless session cannot finish -- but the first box ("is the stall in
+     winit/wgpu or in this crate?") is answerable without one, by running a
+     client with rendering disabled.
+  2. =net-006='s last box, a host plus one remote client asserted by a test
+     ([[file:12-testing.org][12-testing.org]] =test-008='s =App= harness, the
+     same place =net-001='s refusal and =audit-030='s regression belong).
+  3. =decide-default-lineage=, which is a decision and not work and is what
+     =sim-005= is waiting on. =audit-012= cannot move until it is signed off.
+  4. The rest of step 4's batch: =audit-020= (D23) is the only member left that
+     is work rather than a component-set change, and it needs a second machine;
+     =audit-024= (D12) is =[#C]= and is the component merge.
+
+  =audit-031= (D33) is still =[#A]= and still unexplained, and it is the reason
+  the remote-delivery boxes above are transcripts rather than scripts.
 
   One addition to step 3, now that D32 has been seen: the wire-format batch should
   include a smoke-run of a *remote* client for every change to =src/net/server.rs=.

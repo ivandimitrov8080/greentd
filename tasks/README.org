@@ -116,7 +116,9 @@
      =speed = 55 + 2*(w-1)=; =bounty = 6 + w/2=. Creeps are spread evenly
      around the whole loop.
    - Tower model: =kind= 0/1/2 = Basic/Cannon/Frost, from =assets/balance/towers.ron=;
-     unbounded =level=; per-shot tier multipliers on damage, range and rate.
+     unbounded =level=; per-shot tier multipliers on damage, range and rate, with
+     the growth fractions themselves read from the table (=damage_per_level=,
+     =range_per_level=, =slow_duration=) as of =audit-011=.
      Targeting picks the creep furthest along the path inside range. Cannon
      splashes, Frost slows.
    - =try_build/ try_upgrade/ try_sell/ call_wave= are the only mutators, each
@@ -127,10 +129,11 @@
      corner waypoints; buildability is "not within =0.95 * TILE= of the path".
    - =src/net/protocol.rs=: =ClientCmd= (C2S) and =ServerNotice= (S2C) messages (in =src/net/messages.rs=),
      one bidirectional reliable channel, six replicated components.
-   - =src/net/server.rs=: player identity derived from the UDP peer address, one
-     private =PlayerView= entity per player, one global =MatchView= entity,
-     sim state mirrored into replicated entities every =Update= with
-     change-diffing.
+   - =src/net/server.rs=: player identity is the client's own =PlayerId=, sent in
+     a versioned =Handshake= and resolved to a stable =PlayerKey= by =net-002=
+     (it was the UDP peer address until then), one private =PlayerView= entity
+     per player, one global =MatchView= entity, sim state mirrored into
+     replicated entities every =Update= with change-diffing.
    - =src/net/client.rs= and =src/ui/hud.rs=: no prediction, no interpolation. Text HUD, keys 1/2/3,
      LMB build, U upgrade, RMB sell, Space calls the next wave.
    - =src/ui/visuals.rs=: orthographic camera with =AutoMin= scaling, 768 tile
@@ -151,7 +154,14 @@
    projectiles; no audio; no lobby or setup phase; no kick; no restart; no
    reconnect; no spectators; no multiboard; no tower tooltips or build panel;
    no minimap; no camera controls; no unit-health bars; no floating damage
-   text; no CI.
+   text.
+
+   (That list ended "no CI" until it was checked against the tree. CI landed in
+   =found-007= and has been green since; the sentence was simply never
+   corrected, which is the failure mode a "NOT implemented" list has by
+   construction -- nothing in =src/= contradicts it, so nothing catches it.
+   =audit-011='s task body had the same shape: it named the literals it was
+   about *while offering not to remove them*.)
 
 ** Progress against M0
    :PROPERTIES:
@@ -166,7 +176,7 @@
    | =found-001= | DONE        | =engine_plugins= gives a dedicated server =MinimalPlugins= instead of a window; =VisualsPlugin= is client-only (D15). Also fixed host mode, which could not start at all, and added the readiness line CI waits for. |
    | =found-002= | IN-PROGRESS | =src/config.rs=; every address, the tick rate, the map, the balance directory, the log filter and the two command budgets are resolved from the CLI, the environment and a config file, in that order. =tests/config.rs= holds the precedence matrix. Owed: the remote-host join and the exit code, both of which need a process. |
    | =found-003= | DONE        | =src/logging.rs=: four stable targets, the level policy, and a per-match log file named after the start time. This is the crate's only wall clock. |
-   | =found-004= | DONE        | =src/data/balance.rs= and =assets/balance/*.ron=; every tuned number is data, validated and hashed. D18 is only =part= until =audit-011= removes the remaining per-tier literals. |
+   | =found-004= | DONE        | =src/data/balance.rs= and =assets/balance/*.ron=; every tuned number is data, validated and hashed. D18 is =DONE= as of =audit-011=, which removed the last per-tier and refund literals from =src/sim/=. |
    | =found-005= | DONE        | The flat crate is now =data/=, =sim/=, =net/= and =ui/=, with the reason for each placement written down in =src/main.rs=. |
    | =found-006= | DONE        | One =StartupError= for the config and the balance loader; the last =unwrap()= in =src/= (=Path::sample=) is NaN-safe. |
    | =found-007= | DONE        | =.github/workflows/ci.yml= (=check=, =smoke=, =release=), =rust-toolchain.toml=, =ci/smoke-server.sh= and =ci/check-balance-refusal.sh=. Unblocked by dealing with the 16 standing clippy warnings, with =-D warnings= as the gate from here on. |
@@ -186,45 +196,72 @@
    | =audit-029= | DONE        | *D31, found while building CI.* Host mode ran a =RawClient= over UDP beside a =RawServer=, which lightyear calls =MixedClientServer= and which killed the process about three seconds into wave 1. A host is now a real lightyear host client: in-process messages, no per-peer copy of anything. |
   | =audit-030= | DONE        | *D32, found by running a server and a client side by side.* =on_client_connected= inserted a default =MessageManager= over the engine-managed one, wiping the sender registration; every notice to a remote client was dropped inside the process. |
   | =audit-031= | TODO        | *D33.* A windowed peer stalls after one to two seconds here, dropping the packets that make =audit-005= and =audit-003= verifiable end to end. =[#A]= because an unexplained main-loop stall is either an environment fact worth recording or a deadlock. |
-   | =test-001=  | IN-PROGRESS | Same harness; the fixed-seed box now has =found-009= to stand on. |
-   | =audit-011= | TODO        | Blocked on =net-001= for the hash half; the per-tier literals are =towers-002='s to absorb. |
+   | =test-001=  | IN-PROGRESS | Same harness. Its last box was blocked on =found-009= for the seeded RNG; =found-009= has landed, so the box is now true and unticked by choice -- see the task, which records both readings and says the choice is a milestone owner's to make. |
+   | =audit-011= | DONE        | The last literals left =src/sim/=. =towers.ron= gained =damage_per_level=, =range_per_level= and =slow_duration=; =match.ron= gained =sell_refund_percent=; both are validated, hashed into the handshake, and tested (=the_last_sim_literals_are_data_now=, =the_tier_scaling_is_read_from_the_table=, =the_slow_duration_is_read_from_the_table=). D18 is =DONE=; the flat tier *model* is still =towers-002='s. |
    | =audit-012= | WAITING     | Blocked on =decide-default-lineage=, which is a sign-off, not a task. |
    | =audit-009= | DONE        | Closed by =net-002=: identity is the client's =PlayerId=, not the socket address. The transcript shows a client rejoining from a new port (5101 to 5102) re-entering the same =PlayerKey(42)= and the same =PlayerView= entity. D9 is =DONE=. |
    | =audit-019= | DONE        | Closed by =net-001=: the refusal is the handshake's other outcome, so the three claims this task makes are the three =net-001= verified. D22 is =DONE=. |
 
-  Everything above builds, passes =cargo test= (64 tests: 3 + 7 + 24 + 8 + 22)
-  and =cargo clippy --all-targets -- -D warnings=, and was walked by hand in a
-  running =host=, =server= and =client=. CI's three jobs' commands were run
-  locally in full, including the headless smoke run and the balance-refusal
-  check.
+  Everything above builds, passes =cargo test= (82 tests: 3 + 8 + 25 + 7 + 7 + 8 +
+  24, i.e. the crate's own unit tests plus =tests/balance.rs=, =tests/config.rs=,
+  =tests/identity.rs=, =tests/protocol.rs=, =tests/ratelimit.rs= and
+  =tests/sim_smoke.rs=) and =cargo clippy --all-targets -- -D warnings=, and was
+  walked by hand in a running =host=, =server= and =client=. CI's three jobs'
+  commands were run locally in full, including the headless smoke run and the
+  balance-refusal check.
+
+  The count is a running total, not a target: it moved 64 -> 71 -> 79 -> 82 as
+  =net-001=, =net-002= and =audit-011= landed, and the arithmetic in this line
+  is only worth keeping in step with =cargo test='s own output.
 
   *M0's exit criterion holds; the milestone is unblocked rather than stamped.*
   The four things the criterion names are true -- no client can touch another
   player's towers, the sim has tests, the balance numbers are one table, and the
-  server runs headless under CI -- but =found-002= and =test-001= are still
-  =IN-PROGRESS= for reasons no amount of work on this machine resolves, and
-  =audit-012= is =WAITING= on a sign-off. What is left before M1, in the order it
-  should be taken:
+  server runs headless under CI -- but three tasks keep the milestone from being
+  *stamped*, and they are open for three different reasons, which is worth
+  separating rather than lumping:
 
-  - =net-001= (protocol v2 with version negotiation) is *done*, and it was the
-    largest unblocked task in the plan. It gates =audit-011=, =audit-020= and
-    =audit-024=, and closed =audit-019= with it because the refusal is the
-    handshake's other outcome. See [[file:09-networking.org][09-networking.org]]
-    for what it cost -- two defects of the "a message that is never written"
-    shape, both found by starting two processes by hand.
-  - =net-002= (a stable identity for a player) is *done* as well, and closed
-    =audit-009= with it: the socket address is no longer a player, so a
-    reconnect from a new port re-enters the same =PlayerKey= and the same
-    =PlayerView=. It also turned up that raw UDP never reports a dead peer,
-    which is why the identity rule is a logged takeover rather than a refusal.
-  - =net-006=, which is the network-design statement of what =audit-029= fixed
-    mechanically, and still owns a test for "a host plus one remote client".
+  - =found-002= is =IN-PROGRESS= for a reason no amount of work on this machine
+    resolves: its last two boxes need a second machine to join a non-local host,
+    and a process to check an exit code.
+  - =test-001= is =IN-PROGRESS= by *choice*, not by blocker. Its last box was
+    held on =found-009='s seeded RNG, which has landed, so the box is now true and
+    unticked; the task records both readings and calls it a milestone owner's
+    decision. This is the one of the three that is not waiting on anything.
+  - =audit-012= is =WAITING= on =decide-default-lineage=, which is a sign-off
+    rather than work, and it gates =sim-005= and so all of M1's lose conditions.
+
+  What is left before M1, in the order it should be taken:
+
+  - =audit-011= (D18) is *done*, and closing it was the last of the wire-format
+    batch that =net-001= unblocked: =towers.ron= gained =damage_per_level=,
+    =range_per_level= and =slow_duration=, =match.ron= gained
+    =sell_refund_percent=, and =src/sim/= no longer holds a balance literal. The
+    task's body had offered to leave the work to =towers-002= "if the tower
+    rewrite slips"; the rewrite has not started, so that deferral was declined
+    rather than inherited. See [[file:01-current-code-audit.org][01-current-code-audit.org]]
+    for why, and for the rule it settles: a task is not discharged by a later
+    task that happens to delete the same line.
+  - =audit-031= (D33), the windowed-peer stall. It is now the *only* =[#A]=
+    unclosed in the audit file, and it is the reason three boxes above are weaker
+    than they read: it decides whether those verifications can become scripted or
+    have to stay transcripts. It needs a display, so it is the one task here a
+    headless session cannot finish -- though its first box ("ours or the
+    presentation layer's?") is answerable without one.
+  - =net-006='s last box, which is the network-design statement of what
+    =audit-029= fixed mechanically, and still owns a test for "a host plus one
+    remote client".
   - =found-002='s last box and =audit-020='s, which both need a second machine to
-    join a non-local host.
-  - =audit-031= (D33), the windowed-peer stall. It is =[#A]= and it is the reason
-    three boxes above are weaker than they read: it decides whether those
-    verifications can become scripted or have to stay transcripts.
+    join a non-local host. =audit-020= is the last member of the wire-format
+    batch that is work rather than a component-set change.
   - =decide-default-lineage=, without which =sim-005= cannot start.
+
+  =net-001= and =net-002= are both *done*, and closed =audit-019= and
+  =audit-009= with them. Between them they cost two defects of the "a message
+  that is never written" shape, both found by starting two processes by hand
+  ([[file:09-networking.org][09-networking.org]]), and one transport fact the
+  plan did not anticipate: raw UDP never reports a dead peer, which is why the
+  identity rule is a logged takeover rather than a refusal.
 
   Two debts are left, and both are downstream of =audit-031= (D33), which is why
   that task is =[#A]= and why it is the next thing in this file after the rest of
@@ -343,7 +380,7 @@
   | D15 | B   | DONE  | =VisualsPlugin= was added in =server= mode, so a dedicated server opened a window and allocated 768 sprites. Fixed by =found-001=: a server gets =MinimalPlugins= and no window. Held fixed by the =found-007= smoke job, which starts the real binary with the display environment unset (=audit-017=). |
   | D16 | C   | open  | Target acquisition is O(towers × creeps) per tick, ~115k distance tests at the current caps. |
   | D17 | A   | DONE  | Zero tests. The sim is written to be testable and never has been. |
-  | D18 | A   | part  | Every balance number is a literal in =game.rs= or worse, inline in =sim.rs=. The tables are data as of =found-004=; the per-tier scaling in =Sim::step= is still inline, which is =audit-011='s remainder. (That literal now lives in =src/sim/combat.rs=.) |
+  | D18 | A   | DONE  | Every balance number was a literal in =game.rs= or worse, inline in =sim.rs=. The tables became data in =found-004=; =audit-011= moved the remainder -- the per-tier damage and range growth, the slow duration and the sell refund -- into =towers.ron= and =match.ron=, so =src/sim/= holds no balance literal. |
   | D19 | A   | open  | The lose condition is the other lineage's lose condition and its constant (150) matches neither. See the lineage section above. |
   | D20 | B   | open  | =Sim::over= is terminal; there is no restart, rematch or -restart equivalent. |
   | D21 | B   | open  | =Net::announced_over= is never reset, so a restarted match would not announce again. |

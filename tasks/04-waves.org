@@ -20,10 +20,13 @@ that consumes this data lives in [[file:02-simulation.org][02-simulation.org]].
    :ID:         waves-001
    :EFFORT:     1w
    :END:
-   Creeps are uniform today: =start_wave= sets =hp = 45 * (1 + 0.28*(w-1))=,
-   =speed = 55 + 2*(w-1)= and =bounty = 6 + w/2= inline, so a creep has no name,
-   armour type, air flag or model (D11, D18). Define a creep catalogue as the
-   unit of balance and the join key between the wave table and the art pass.
+   Creeps are uniform today: =start_wave= takes =hp=, =speed= and =bounty= from
+   the three =waves.ron= scaling curves, so a creep has no name, armour type,
+   air flag or model (D11). The curves themselves are data as of =found-004= and
+   there is no longer a literal here (=audit-011= closed D18), but a *curve* is
+   still not a catalogue: every creep in every wave is the same unit scaled.
+   Define a creep catalogue as the unit of balance and the join key between the
+   wave table and the art pass.
 
    - Files: =assets/balance/creeps.ron=, =src/game.rs=, =src/sim.rs=
    - Acceptance:
@@ -87,7 +90,7 @@ that consumes this data lives in [[file:02-simulation.org][02-simulation.org]].
      - [ ] =waves.ron= is an explicit finite list; adding or retuning a wave is a data edit with no code change.
      - [ ] The 60-wave default and the 36-wave prefix variant are both expressible as a match-length setting using one file, and the reasoning is recorded as a =Decision= note.
      - [ ] Retuning wave 20 changes only wave 20; a test asserts waves 1-19 and 21 are unchanged.
-     - [ ] The formula from =start_wave= is no longer used inside the finite range (fixes D18).
+     - [ ] The formula from =start_wave= is no longer used inside the finite range. (This box used to read "(fixes D18)"; D18 was about the *literals* and closed with =audit-011=, which moved the curve's coefficients into =waves.ron=. What is still missing here is the finite table, which is D11's and not D18's.)
 
 ** TODO [#A] Define the wave kinds and their combinations   :@waves:
    :PROPERTIES:

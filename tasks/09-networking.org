@@ -155,6 +155,14 @@ server. It touches =src/protocol.rs=, =src/server.rs=, =src/client.rs=,
    With =net-001= done, the wire-format batch it gates -- =audit-009=,
    =audit-011=, =audit-019=, =audit-020= and =audit-024= -- is unblocked.
 
+   *Later:* that batch is now three-quarters closed. =audit-009= closed with
+   =net-002= below, =audit-019= closed with =net-001= itself, and =audit-011=
+   closed by moving the last balance literals into =towers.ron= and
+   =match.ron= (so its balance hash is not a hypothetical handshake field: it is
+   the one this task's own refusal transcript prints). What is left of the batch
+   is =audit-020=, which needs a second machine, and =audit-024=, which is a
+   component-set change the client would not notice except in bytes/s.
+
 ** DONE [#A] Give players a stable identity that survives a new port        :@net:
    :PROPERTIES:
    :ID:         net-002

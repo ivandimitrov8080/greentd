@@ -64,7 +64,7 @@ and =assets/balance/*.ron=. Numbers research could not confirm are =(tune)=.
    - Files: =src/game.rs=, =src/sim.rs=, =src/server.rs=, =src/lobby.rs=,
      =assets/balance/difficulty.ron=
    - Acceptance:
-     - [ ] =Difficulty= enumerates Easy, Normal, Hard, Very Hard and Chaos, each carrying creep-health, bounty and base-income scalars loaded from =assets/balance/difficulty.ron=, not from literals in =src/sim.rs= (D18).
+     - [ ] =Difficulty= enumerates Easy, Normal, Hard, Very Hard and Chaos, each carrying creep-health, bounty and base-income scalars loaded from =assets/balance/difficulty.ron=, never from literals in =src/sim.rs= (the rule =decide-data-driven= settled and =audit-011= finished applying; D18 is DONE, so what this box adds is *difficulty* scalars, not a provenance change).
      - [ ] Every difficulty except Chaos has a Chaos Mode variant, and a Chaos Mode wave draws its health from the two-value range in data and adds +2 income.
      - [ ] A sequence that selects a Chaos difficulty and then a non-Chaos difficulty leaves no Chaos scalar active (regression test for the original's setup bug).
      - [ ] The chosen difficulty is locked when the phase becomes Running and is identical on every peer; no client can hold a different multiplier.

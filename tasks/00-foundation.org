@@ -193,11 +193,13 @@ and none of it is optional, and =found-004= is the loader named by the
    :END:
 
    This is the task the =decide-data-driven= decision in [[file:README.org][README.org]] refers
-   to, and it fixes D18: today =START_GOLD=, =OVERRUN_CAP= and =WAVE_INTERVAL= live
-   in =src/game.rs=, =tower_stats= is a =match= holding three inline literals, and
-   the wave formulas =45.0 * (1.0 + 0.28 * (w-1))=, =55.0 + 2.0 * (w-1)= and
-   =6 + wave / 2= are inline in =Sim::start_wave=. Move all of it to
-   =assets/balance/*.ron=, loaded by both peers and hashed into the protocol version.
+   to, and it is where D18 was fixed: =START_GOLD=, =OVERRUN_CAP= and
+   =WAVE_INTERVAL= lived in =src/game.rs=, =tower_stats= was a =match= holding
+   three inline literals, and the wave formulas
+   =45.0 * (1.0 + 0.28 * (w-1))=, =55.0 + 2.0 * (w-1)= and =6 + wave / 2= were
+   inline in =Sim::start_wave=. Move all of it to =assets/balance/*.ron=, loaded
+   by both peers and hashed into the protocol version. (=audit-011= finished the
+   last of it later; *Done* says which part this task left behind and why.)
 
    - Files: =assets/balance/= (new), =src/balance.rs= (new), =src/game.rs=, =src/sim.rs=, =src/protocol.rs=, =Cargo.toml=
    - Acceptance:
@@ -236,9 +238,13 @@ and none of it is optional, and =found-004= is the loader named by the
    4. =src/lib.rs= was added so =tests/= can link the crate. It is also the first
       step of =found-005='s =sim/=/=data/=/=net/=/=ui/= split.
 
-   Still inline, and left for =audit-011=: the per-tier scaling in =Sim::step=
-   (=1.0 + 0.45 * (level-1)= for damage, =1.0 + 0.04 * (level-1)= for range) and
-   the 1.5 s slow duration, because =05-towers.org= replaces that whole tier model.
+   Still inline at the time, and left for =audit-011=: the per-tier scaling in
+   =Sim::step= (=1.0 + 0.45 * (level-1)= for damage, =1.0 + 0.04 * (level-1)= for
+   range) and the 1.5 s slow duration, because =05-towers.org= replaces that whole
+   tier model. =audit-011= has since moved them into =towers.ron=
+   (=damage_per_level=, =range_per_level=, =slow_duration=) and the sell refund
+   into =match.ron= (=sell_refund_percent=), so no balance literal is left in
+   =src/sim/=. =towers-002= still replaces the flat model itself.
 
 * Code structure, errors and determinism
 

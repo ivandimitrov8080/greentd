@@ -4,6 +4,9 @@
     wave_interval: 20.0,
     first_wave_delay: 3.0,
     call_wave_cooldown: 5.0,
+    // Fraction of a tower's spend returned when it is sold, as a whole percent
+    // (D18). Integer so the refund is exact.
+    sell_refund_percent: 70,
     // The match's RNG seed (found-009). Every match on these tables is the
     // same match until `lobby-003` lets a host pick one; the command line
     // cannot set it because it is a property of the match, not of the process.

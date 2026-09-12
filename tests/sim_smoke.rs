@@ -783,3 +783,87 @@ fn the_match_phase_follows_the_sim() {
     assert_eq!(mirrored.live_creeps, 4);
     assert_eq!(mirrored.overrun_cap, over.sim.overrun_cap());
 }
+
+// ---------------------------------------------------------------------------
+// The last sim literals are data (audit-011, D18)
+// ---------------------------------------------------------------------------
+
+/// A board with one enormous-range, one-shot tower of `kind`, upgraded once to
+/// level 2, and one very tough creep. Returns the harness the instant the creep
+/// has been hit once, so a test can measure exactly one shot.
+fn one_shot_at_level_two(kind: u8, tune: impl FnOnce(&mut BalanceData)) -> Harness {
+    let mut tuned = (*shipped_balance()).clone();
+    tuned.match_rules.start_gold = 1_000_000;
+    tuned.match_rules.first_wave_delay = 0.1;
+    tuned.match_rules.wave_interval = 1_000.0;
+    tuned.waves.scaling.count_base = 1.0;
+    tuned.waves.scaling.count_per_wave = 0.0;
+    tuned.waves.scaling.hp_base = 1_000.0;
+    {
+        let tower = &mut tuned.towers[kind as usize];
+        tower.range = 100_000.0; // always in range
+        tower.cooldown = 1_000.0; // fires exactly once in this window
+        tower.damage = 10.0;
+    }
+    tune(&mut tuned);
+
+    let mut harness = Harness::with_balance(Arc::new(tuned));
+    let who = player(1);
+    harness.sim.add_player(who);
+    let cell = cell_beside_the_path(&harness.sim);
+    harness.sim.try_build(who, cell, kind).expect("the build");
+    harness.sim.try_upgrade(who, cell).expect("one upgrade");
+    assert_eq!(
+        harness.sim.towers.get(&cell).map(|tower| tower.level),
+        Some(2),
+        "the tower is level 2"
+    );
+
+    harness.advance_until(600, |sim| sim.creeps.values().any(|c| c.hp < c.max_hp));
+    harness
+}
+
+#[test]
+fn the_tier_scaling_is_read_from_the_table() {
+    let dealt = |growth: f32| {
+        let harness = one_shot_at_level_two(0, |data| data.towers[0].damage_per_level = growth);
+        let creep = harness.sim.creeps.values().next().expect("one creep");
+        creep.max_hp - creep.hp
+    };
+
+    let flat = dealt(0.0);
+    let grown = dealt(0.45);
+    assert!(
+        (flat - 10.0).abs() < 0.01,
+        "no growth: a level-2 shot is 10, got {flat}"
+    );
+    assert!(
+        (grown - 14.5).abs() < 0.01,
+        "at +45% per level a level-2 shot is 14.5, got {grown}"
+    );
+}
+
+#[test]
+fn the_slow_duration_is_read_from_the_table() {
+    let harness = one_shot_at_level_two(2, |data| {
+        data.towers[2].slow = 0.5;
+        data.towers[2].slow_duration = 7.0;
+    });
+    let creep = harness.sim.creeps.values().next().expect("one creep");
+    // `advance_creeps` runs before `fire`, so a timer set this tick has not been
+    // decremented yet: it is exactly the table's duration.
+    assert!(
+        (creep.slow_timer - 7.0).abs() < 1e-4,
+        "the slow lasts the table's duration, got {}",
+        creep.slow_timer
+    );
+    assert!(creep.speed_mult() < 1.0, "a slowed creep moves slower");
+
+    let harness = one_shot_at_level_two(2, |data| {
+        data.towers[2].slow = 0.5;
+        data.towers[2].slow_duration = 0.0;
+    });
+    let creep = harness.sim.creeps.values().next().expect("one creep");
+    assert_eq!(creep.slow_timer, 0.0, "a zero duration never slows");
+    assert_eq!(creep.speed_mult(), 1.0, "an expired slow is not a slow");
+}

@@ -25,9 +25,16 @@ confirm is marked =(tune)=.
    :END:
    =tower_stats(kind)= returned a flat struct ={ name, cost, range, damage,
    cooldown, splash, slow }= and =Tower= carries a =kind: u8= into it plus an
-   unbounded =level: u8= (D18).  The original instead has eleven families with
+   unbounded =level: u8=.  The original instead has eleven families with
    per-tier stats and an explicit upgrade relation, so a tower's identity must
    be a family id plus a tier in a loaded table.
+
+   The struct is data now (=found-004=) and its remaining numbers are too
+   (=audit-011= closed D18: =damage_per_level=, =range_per_level= and
+   =slow_duration= are =towers.ron= fields). What this task changes is the
+   *shape*, not the provenance: a growth fraction applied to one flat entry
+   cannot express eleven families whose tier-3 stats are authored, not
+   computed, and it cannot express branching at all.
 
    - Files: =assets/balance/towers.ron=, =src/game.rs=, =src/sim.rs=
    - Acceptance:
