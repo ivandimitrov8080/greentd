@@ -37,6 +37,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::data::balance::Balance;
 use crate::data::components::*;
+use crate::map::Map;
 use crate::net::messages::*;
 
 /// The wire-format revision this build speaks (`net-001`).
@@ -50,8 +51,11 @@ use crate::net::messages::*;
 /// direction on one reliable channel, six replicated components. Revision 2 is
 /// the handshake that makes the revision checkable (`net-001`). Revision 3 adds
 /// the client identity to that handshake (`net-002`), which is a wire change
-/// even though the message count is unchanged.
-pub const SCHEMA_REVISION: u32 = 3;
+/// even though the message count is unchanged. Revision 4 replaces the closed
+/// ring with a real board of lanes ending at a goal: `MatchView` gains the lives
+/// and the leak count, and `ServerNotice::GameOver` reports lives instead of a
+/// live-creep count, so an older client would mis-read the match it is watching.
+pub const SCHEMA_REVISION: u32 = 4;
 
 /// What a peer speaks, exchanged in [`Handshake`] before it is admitted.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Resource)]
@@ -61,14 +65,24 @@ pub struct ProtocolVersion {
     /// [`BalanceData::hash`](crate::data::balance::BalanceData::hash) of the
     /// tables this peer loaded.
     pub balance_hash: u64,
+    /// [`MapData::hash`](crate::map::MapData::hash) of the board this peer
+    /// loaded.
+    ///
+    /// The board is rules, not decoration: it decides where creeps enter, how
+    /// long their walk is and where the goal is. Two peers on different boards
+    /// would disagree about every leak, so a mismatch is refused exactly as a
+    /// balance mismatch is -- and a client that is drawing a board the server is
+    /// not playing is the one thing a "dumb client" must never do.
+    pub map_hash: u64,
 }
 
 impl ProtocolVersion {
-    /// The version of *this* process, from the tables it loaded.
-    pub fn current(balance: &Balance) -> Self {
+    /// The version of *this* process, from the tables and the board it loaded.
+    pub fn current(balance: &Balance, map: &Map) -> Self {
         Self {
             schema: SCHEMA_REVISION,
             balance_hash: balance.0.hash(),
+            map_hash: map.0.hash(),
         }
     }
 
@@ -95,13 +109,24 @@ impl ProtocolVersion {
                 theirs = peer.balance_hash
             ));
         }
+        if self.map_hash != peer.map_hash {
+            parts.push(format!(
+                "map data (server {ours:016x}, client {theirs:016x})",
+                ours = self.map_hash,
+                theirs = peer.map_hash
+            ));
+        }
         (!parts.is_empty()).then(|| parts.join("; "))
     }
 }
 
 impl fmt::Display for ProtocolVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "v{} (balance {:016x})", self.schema, self.balance_hash)
+        write!(
+            f,
+            "v{} (balance {:016x}, map {:016x})",
+            self.schema, self.balance_hash, self.map_hash
+        )
     }
 }
 
@@ -109,7 +134,10 @@ pub fn build_protocol(app: &mut App) {
     // The version is a property of the tables this process loaded, and the
     // tables are a resource by the time this runs. Computing it here, once, is
     // what makes "both peers agree" checkable rather than hopeful.
-    let version = ProtocolVersion::current(app.world().resource::<Balance>());
+    let version = ProtocolVersion::current(
+        app.world().resource::<Balance>(),
+        app.world().resource::<Map>(),
+    );
     app.insert_resource(version);
 
     // --- messages -----------------------------------------------------------

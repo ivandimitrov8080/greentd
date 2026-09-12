@@ -82,8 +82,10 @@
 
   =cargo run= (host), =cargo run -- server=, =cargo run -- client [port]= all
   work. The project builds; =Cargo.lock= pins bevy 0.19.1 and lightyear 0.29.0.
-  What is implemented is a *vertical slice*: one map, one wave loop, three
-  towers, one lose condition, replicated state, and a text HUD.
+  What is implemented is a *vertical slice*: the real board (Green TD v36.0,
+  ten lanes to one goal), a wave loop that attacks every lane, three towers,
+  both lose conditions with =lives= the default, replicated state, and a text
+  HUD.
 
   *M0's exit criterion is met*, and the milestone is not formally =DONE=, which
   is a distinction worth keeping. The criterion is "no client can affect another
@@ -102,6 +104,20 @@
    :ID:       status-implemented
    :END:
 
+   - =assets/maps/green_td_v36.ron= and =src/map.rs=: the board is *data*, read
+     out of the real map (`wc3maps 153802`). 96x96 tiles of 128 units, ten lanes
+     from ten spawn points, merging into one funnel and ending at a single goal
+     region (=END=, at the bottom centre). A lane is a polyline from its spawn
+     point to the goal; ~120 waypoint-to-waypoint segments in total.
+     =MapData::is_buildable= is "in bounds and further than `path_clearance`
+     from every lane", so the board is one open field. Zones are data and are
+     decoration: the original declares nine and never reads them.
+   - =src/map.rs= also carries the *provenance*: the lane geometry was extracted
+     from the map's own region graph, not invented, and the map file says how.
+   - A creep walks its lane and then **leaks**: past `lane.total` it leaves the
+     match and costs a life (`sim-006`), and running out of lives ends the match
+     (`sim-005`). Creeps are spawned on *every* lane each wave, because that is
+     what the real board's wave triggers do.
    - One crate with a library root and a thin binary: the three run modes share
      one =App= builder in =src/main.rs=, and =src/lib.rs= owns the modules so
      =tests/= can link them.
@@ -111,10 +127,13 @@
      [[file:12-testing.org][12-testing.org]] =test-001= (see =tests/sim_smoke.rs=).
    - Creep model: distance-along-path, =hp/max_hp=, =base_speed=,
      =slow_mult=+ =slow_timer=, =bounty=, =last_hit_by=.
-   - Wave loop: infinite, 20 s between waves, first wave at 3 s, both from =assets/balance/match.ron=. Count is
-     =(4 + wave/2) * connected_players=; =hp = 45 * (1 + 0.28*(w-1))=;
-     =speed = 55 + 2*(w-1)=; =bounty = 6 + w/2=. Creeps are spread evenly
-     around the whole loop.
+   - Wave loop: infinite, 20 s between waves, first wave at 3 s, both from
+     =assets/balance/match.ron=. Count is per *lane*:
+     =(1 + 0.5*w) * connected_players= per lane, so wave 1 on the shipped board
+     is ten creeps, one at each spawn point; =hp = 45 * (1 + 0.28*(w-1))=;
+     =speed = 220 + 8*(w-1)=; =bounty = 6 + w/2=. A wave enters each lane as a
+     column at that lane's spawn point, `spawn_gap` apart, inside `spawn_arc`
+     (`audit-013`, D10).
    - Tower model: =kind= 0/1/2 = Basic/Cannon/Frost, from =assets/balance/towers.ron=;
      unbounded =level=; per-shot tier multipliers on damage, range and rate, with
      the growth fractions themselves read from the table (=damage_per_level=,
@@ -123,8 +142,11 @@
      splashes, Frost slows.
    - =try_build/ try_upgrade/ try_sell/ call_wave= are the only mutators, each
      returning =Result<(), Reject>=.
-   - Lose condition: =creeps.len() > =match_rules.overrun_cap= (=150= in
-     =assets/balance/match.ron=)= ends the match permanently.
+   - Lose condition is a *setting* =match_rules.lose_rule= (`sim-005`, D19):
+     =lives= (the default) ends the match when creeps have reached the goal
+     `starting_lives` times, and =overrun= is the other lineage, ending it when
+     more creeps are alive at once than =overrun_cap=. Both are implemented and
+     tested, and the inactive one is never consulted.
    - =src/map.rs=: 32x24 grid, =TILE = 32.0=, one closed ring path through four
      corner waypoints; buildability is "not within =0.95 * TILE= of the path".
    - =src/net/protocol.rs=: =ClientCmd= (C2S) and =ServerNotice= (S2C) messages (in =src/net/messages.rs=),
@@ -136,9 +158,12 @@
      replicated entities every =Update= with change-diffing.
    - =src/net/client.rs= and =src/ui/hud.rs=: no prediction, no interpolation. Text HUD, keys 1/2/3,
      LMB build, U upgrade, RMB sell, Space calls the next wave.
-   - =src/ui/visuals.rs=: orthographic camera with =AutoMin= scaling, 768 tile
-     sprites, creep sprite darkened by HP fraction, tower sprite coloured by
-     kind and scaled by level. Sprites are attached by =On<Add, ..>= observers.
+   - =src/ui/visuals.rs=: orthographic camera with =AutoMin= scaling sized from
+     the loaded map, the ground as one sprite plus the map's zones, one bar per
+     lane segment, a marker at each spawn point and a gold block at the goal
+     (~145 static entities instead of 768 tiles). Creep sprite darkened by HP
+     fraction, tower sprite coloured by kind and scaled by level. Sprites are
+     attached by =On<Add, ..>= observers.
 
 ** NOT implemented (the bulk of the game)
    :PROPERTIES:
@@ -146,8 +171,8 @@
    :END:
 
    No armour or damage types; no air units; no creep variety whatsoever; no
-   finite wave table; no difficulty; no game modes; no lives/leak model; no
-   income; no bounty scaling table; no gambling; no lumber; no food; no builder
+   finite wave table; no difficulty; no game modes; no income; no bounty
+   scaling table; no gambling; no lumber; no food; no builder
    hero; no skills; no crits; no aura towers; no traps; no spell tower; no
    research tower; no tower tiers or branching (3 towers × N levels is not the
    same design — the original branches at tier 3 into different towers); no
@@ -203,6 +228,13 @@
    | =audit-012= | WAITING     | Blocked on =decide-default-lineage=, which is a sign-off, not a task. |
    | =audit-009= | DONE        | Closed by =net-002=: identity is the client's =PlayerId=, not the socket address. The transcript shows a client rejoining from a new port (5101 to 5102) re-entering the same =PlayerKey(42)= and the same =PlayerView= entity. D9 is =DONE=. |
    | =audit-019= | DONE        | Closed by =net-001=: the refusal is the handshake's other outcome, so the three claims this task makes are the three =net-001= verified. D22 is =DONE=. |
+   | =audit-012= | DONE        | D19: the default lineage is Lineage B, read out of the shipped board's own script. =match_rules.lose_rule= + =starting_lives= (60), both rules implemented in the sim, and the inactive one is never consulted. The cap (150) is left as Lineage A's (tune) value, which =sim-005= still owes a documented number for. |
+   | =audit-013= | DONE        | D10: a wave enters each lane at that lane's spawn point as a column, `spawn_gap` apart, compressed to fit `spawn_arc` so a late wave never starts near the goal. Per-lane, not around a ring. |
+   | =audit-023= | DONE        | D29: the 768 =MapTile= entities are gone -- there is no =MapTile= at all. The board is one ground sprite, the map's zones, one bar per lane segment, a marker per spawn and a block at the goal: ~145 static entities. |
+   | =audit-026= | DONE        | D26: the inside-ring/outside-ring question is moot -- the ring is gone. The ground is drawn from the map's own zone rectangles and the lanes are drawn on top of it. |
+   | =map-001=  | DONE        | The board is data: =assets/maps/green_td_v36.ron=, extracted from the real map (see =map-015=), loaded and validated before any plugin exists, hashed into the protocol version. |
+   | =sim-005=  | PARTIAL     | =LoseRule::{Lives, Overrun}= is a match setting and =lives= is the default, with both rules implemented and tested. Still owed: a documented Lineage A cap (150 is in neither lineage), =boss_leak_cost= (there are no bosses until =waves-004=), and the "runs past 150 creeps under Lives without ending" test. |
+   | =sim-006=  | DONE        | A creep whose distance reaches the end of its lane leaves the match, costs a life and emits =SimEvent::Leaked=. The goal is the end of the lane; there is no second definition of "the end". |
 
   Everything above builds, passes =cargo test= (84 tests: 3 + 8 + 25 + 7 + 7 + 8 +
   26, i.e. the crate's own unit tests plus =tests/balance.rs=, =tests/config.rs=,
@@ -260,20 +292,27 @@
     regression and =audit-003='s box three, so the whole front of the netcode file
     is behind =net-004= (the validation choke point) rather than behind anything
     this machine cannot do.
-  - The audit file's remaining =[#B]= and =[#C]= cluster is unblocked and startable
-    today: =audit-013= (D10, a wave with a front), =audit-021= (D24, mid-match
-    join), =audit-022= (D27, leavers), =audit-023= (D29, the tile entities),
-    =audit-024= (D12, the component merge), =audit-025= (D16, the spatial index)
-    and =audit-026=/=audit-027= (D26, D28, the map). =audit-014= (D11, armour and
-    air) is the exception: it is =waves-004='s content and only its sim half is
-    here.
+  - A second board, and the map registry that lists it: =map-013=. The loader
+    takes an id, the config takes =--map=, and the protocol version carries the
+    board's hash, so a second map is a file plus a line in the registry.
   - =found-011= (D34), the =ci/= scripts' knobs being named inside the reserved
-    =GREENTD_= prefix, which is why setting one makes the script's own child refuse
-    to start. Two hours, no blockers, and it is in the way of nobody.
-  - =found-002='s last box and =audit-020='s, which both need a second machine to
-    join a non-local host. =audit-020= is the last member of the wire-format
-    batch that is work rather than a component-set change.
-  - =decide-default-lineage=, without which =sim-005= cannot start.
+    =GREENTD_= prefix, which is why setting one makes the script's own child
+    refuse to start. Two hours, no blockers, and it is in the way of nobody.
+  - The audit file's remaining =[#C]= polish, all of it unblocked and now mostly
+    about the new board: =audit-024= (D12, the creep component merge),
+    =audit-025= (D16) and =audit-027= (D28) -- the last two are the same
+    question about the *map* (target acquisition and buildability both walk
+    lanes) and want the per-cell mask of =map-006=.
+  - =sim-005='s remainder: a documented Lineage A cap, =boss_leak_cost= once
+    =waves-004= has bosses, and the "runs past 150 creeps under =Lives= without
+    ending" test.
+  - The rest of the M1 board work, now that the geometry is real: =map-002='s
+    shared funnel (the lanes duplicate the funnel in their own polylines rather
+    than re-targeting on entering the region as the original does, which is why
+    lane lengths differ and "furthest along" is an approximation),
+    =map-004=/=map-013=, the terrain palette of =map-007=, and =map-008='s
+    heading for creep rotation. =decide-default-lineage= is *settled* (Lineage
+    B), so =sim-005='/=test-004= are no longer waiting on a human.
 
   =net-001= and =net-002= are both *done*, and closed =audit-019= and
   =audit-009= with them. Between them they cost two defects of the "a message
@@ -321,18 +360,38 @@
   | Waves   | Endless                       | 36 waves (PROs) or 60 waves, then Endless |
   | Source  | hiveworkshop thread 350930    | hiveworkshop thread 249982, wc3maps 356685 |
 
-  The current code implements Lineage A with =match_rules.overrun_cap = 150=
-  (=assets/balance/match.ron=), which does not even match Lineage A's documented
-  numbers (600–1000).
+  The code used to implement Lineage A with =match_rules.overrun_cap = 150=,
+  which does not even match Lineage A's documented numbers (600–1000).
 
-  **Decision:** support both, as data. The lose rule becomes a match setting
-  (=lobby-003=) with two implementations (=sim-005=). Default for a fresh match
-  should be Lineage B (lives), because "leak costs a life" is the mechanic most
-  players remember and because it gives a longer, more forgiving ramp than a
-  hard creep cap.
+  **Decision (settled, =decide-default-lineage=, DONE): support both, as data,
+  and default to Lineage B.** The rule is a match setting
+  (=match_rules.lose_rule=) with two implementations in the sim (=sim-005=), and
+  =lives= is the default. What turned the recommendation below into a decision
+  is the board: the record at =wc3maps= 153802 is a *Lineage B* map, and its own
+  script settles the question the table above could only recommend. Its =END=
+  trigger, fired when a creep enters the goal region at the bottom centre:
+
+  #+BEGIN_EXAMPLE
+  function Trig_END_Action takes nothing returns nothing
+      call AddSpecialEffectLocBJ( GetRectCenter(gg_rct_END), "...NECancelDeath.mdl" )
+      call RemoveUnit( GetEnteringUnit() )
+      set udg_Chances = ( udg_Chances - 1 )
+      call LeaderboardSetPlayerItemValueBJ( Player(11), udg_LEADERBOARD, udg_Chances )
+      call DisplayTextToForce( GetPlayersAll(), "|c00FF0000Warning!|r " + I2S(udg_Chances) + " |c00FF0000Chances left!|r" )
+  endfunction
+  #+END_EXAMPLE
+
+  A creep that reaches the goal is *removed*, the death effect plays at the goal
+  and a counter is decremented -- and =InitGlobals= sets that counter to =60=,
+  which is also the wave count the map advertises. That is Lineage B's rule
+  exactly: a leak costs a life, and zero lives is defeat. So the default is
+  =starting_lives: 60= in =assets/balance/match.ron=, read out of the map rather
+  than invented, and the implementation is =sim-005= and =sim-006=.
 
   This is not scope creep for its own sake: it is one enum, two match settings,
   and it prevents the project from being *wrong about the game it is cloning*.
+  Lineage A remains available (=lose_rule: overrun=) because its board is a
+  different game and =03-map.org= will ship a second map for it.
 
 * Milestones
   :PROPERTIES:
@@ -389,26 +448,26 @@
   | D7  | A   | DONE  | A per-peer token bucket in =src/ratelimit.rs=; over-budget commands are dropped and the peer is told once per frame (=audit-007=). |
   | D8  | A   | DONE  | =players.entry(who).or_default()= mints a zero-gold player record for an unregistered key; diverges from =add_player='s starting gold. |
   | D9  | A   | DONE  | Identity is the UDP socket address, so reconnecting from a new port silently becomes a new player and loses gold and kills. Fixed by =net-002=: a client-generated =PlayerId= in the handshake, and a takeover rule, so a reconnect re-enters the same =PlayerKey= and the same =PlayerView=. |
-  | D10 | B   | open  | A wave is spread evenly around the entire loop, so it has no front; and a creep can spawn already adjacent to the Life Zone. |
+  | D10 | B   | DONE  | A wave was spread evenly around the entire loop, so it had no front, and a creep could spawn already adjacent to the destination. Fixed by =audit-013= and =map-005=: a wave enters each lane at that lane's spawn point as a column, `spawn_gap` apart, compressed into `spawn_arc`, and a startup check refuses a board whose shortest lane is not much longer than that window. |
   | D11 | B   | open  | Creeps are entirely uniform — no armour type, no damage type, no air, no boss, no hero, no immune. |
   | D12 | C   | open  | =CreepVis= and =CreepHp= are distinct components, doubling replication updates per creep per tick. |
   | D13 | B   | open  | No projectile entities; towers damage invisibly on a cooldown. |
   | D14 | B   | open  | No client-side interpolation; creeps visibly step at 30 Hz. |
   | D15 | B   | DONE  | =VisualsPlugin= was added in =server= mode, so a dedicated server opened a window and allocated 768 sprites. Fixed by =found-001=: a server gets =MinimalPlugins= and no window. Held fixed by the =found-007= smoke job, which starts the real binary with the display environment unset (=audit-017=). |
-  | D16 | C   | open  | Target acquisition is O(towers × creeps) per tick, ~115k distance tests at the current caps. |
+  | D16 | C   | open  | Target acquisition is O(towers × creeps) per tick, ~115k distance tests at the current caps, and each test now also computes the target's distance remaining along its lane. =audit-025= owns the index. |
   | D17 | A   | DONE  | Zero tests. The sim is written to be testable and never has been. |
   | D18 | A   | DONE  | Every balance number was a literal in =game.rs= or worse, inline in =sim.rs=. The tables became data in =found-004=; =audit-011= moved the remainder -- the per-tier damage and range growth, the slow duration and the sell refund -- into =towers.ron= and =match.ron=, so =src/sim/= holds no balance literal. |
-  | D19 | A   | open  | The lose condition is the other lineage's lose condition and its constant (150) matches neither. See the lineage section above. |
+  | D19 | A   | DONE  | The lose condition was the other lineage's, and its constant (150) matches neither of that lineage's documented values. Fixed by =decide-default-lineage= (Lineage B, signed off against the shipped board's own script) plus =sim-005= and =sim-006=: =lose_rule= is a match setting, =lives= is the default with 60 starting lives, and both rules are implemented. The cap's own value is still =sim-005='s to document. |
   | D20 | B   | DONE  | =Sim::over= was terminal; there was no restart, rematch or -restart equivalent. Fixed by =audit-018=: =Sim::reset()= clears the board, the wave clock, the creep ids, the terminal flag and each player's gold and kills, and reseeds the generator so a rematch is a fresh match rather than a continuation. |
   | D21 | B   | DONE  | =Net::announced_over= was never reset, so a restarted match would not announce again. Fixed by =audit-018=: the same reset path clears it, driven by one =ResetMatch= request. |
   | D22 | B   | DONE  | No protocol version negotiation; a mismatched client desyncs silently instead of being rejected. Fixed by =net-001=: =ProtocolVersion= = schema revision + balance hash, exchanged in a =Handshake=, with a refusal that names the part that differed, before any entity exists. |
   | D23 | B   | open  | =spawn_client= hardcodes =127.0.0.1=; there is no way to join a remote host. |
   | D24 | B   | open  | A player joining mid-match starts at wave N with starting gold and no catch-up. |
   | D25 | B   | DONE  | =Reject= has no =NotOwner= and no =RateLimited= variant, so D1/D6 cannot report a reason. |
-  | D26 | C   | open  | Grass/path colouring treats "inside the ring" and "outside the ring" identically; undocumented whether that is intended. |
+  | D26 | C   | DONE  | Grass/path colouring treated "inside the ring" and "outside the ring" identically, undocumented. Fixed by =audit-026= with the ring itself: the board is lanes to a goal now, the ground is drawn from the map's zone rectangles and the lanes are drawn over it, so there are no two kinds of empty ground to tell apart. |
   | D27 | B   | open  | No leaver handling: gold is not split, and towers are simply orphaned. |
-  | D28 | C   | open  | =Path::distance_to= walks every segment; =is_buildable= is called per click on the server. Cheap now, wrong shape later. |
-  | D29 | B   | open  | =VisualsPlugin='s =MapTile= is =#[allow(dead_code)]= and tiles are spawned as individual entities rather than a tiled render pass. |
+  | D28 | C   | open  | =Lane::distance_to= walks every segment and =MapData::is_buildable= calls it for every lane on every click, so a query is now ~120 segment tests rather than four. Cheap still, and the wrong shape: =audit-027= and =map-006= own the per-cell mask that replaces it. |
+  | D29 | B   | DONE  | =VisualsPlugin='s =MapTile= was =#[allow(dead_code)]= over one entity per tile. Fixed by =audit-023=: =MapTile= is gone, the ground is a single sprite plus the map's zones, and the board's ~145 static entities are ground, zones, lane bars, spawn markers and the goal. |
   | D30 | C   | DONE  | No =LocalPlayer= marker; the client inferred "my" state from "the one =PlayerView= I happen to hold". Fixed by =found-010=, tracked as =audit-028=. |
   | D31 | A   | DONE  | Host mode ran a =RawClient= over a real UDP socket beside a =RawServer=, which lightyear rejects as =MixedClientServer= and which killed the process three seconds into wave 1. Fixed by =audit-029=, which makes a host a real lightyear host client: in-process messages, no per-peer copy of anything. |
   | D32 | A   | DONE  | =on_client_connected= inserted a fresh =MessageManager= over the one the engine manages, wiping the sender registration the message layer installs from an =on_add= hook. Every =ServerNotice= -- wave started, every refusal, game over -- was silently dropped on the way to a remote client. Fixed by =audit-030=. |
@@ -509,7 +568,7 @@
    8. Update the table above and the one in =Cargo.toml=, and say in the commit
       message which version was left behind.
 
-** TODO Decide the default lineage for a fresh match                     :@sim:
+** DONE Decide the default lineage for a fresh match                     :@sim:
    :PROPERTIES:
    :ID:       decide-default-lineage
    :EFFORT:   2h
@@ -519,6 +578,27 @@
    above). The recommendation is Lineage B (lives). This needs an explicit
    sign-off before =sim-005= is started, because it determines the whole
    difficulty curve and the map's Life Zone geometry.
+
+   *Signed off: Lineage B, and it is no longer a recommendation.* The evidence
+   is the shipped board. Green TD v36.0 is a Lineage B map, and its =END=
+   trigger removes a creep that reaches the goal, plays the death effect there
+   and decrements a counter that =InitGlobals= sets to 60 -- the "chances left"
+   the map announces, and the wave count it advertises. So a fresh match
+   defaults to =lose_rule: lives= with =starting_lives: 60=, both read from
+   =assets/balance/match.ron=, and Lineage A's cap rule stays available for the
+   board that belongs to it.
+
+   Two things this settles beyond the enum:
+
+   - *The Life Zone is the goal, and the goal is one region per board*, not a
+     per-player zone: every lane ends at the same =gg_rct_END= rectangle at the
+     bottom centre of the map, which is why the board's middle is worth
+     defending. `03-map.org` `map-003` carries the region and the rendering.
+   - *The starting lives are 60, not a guess.* It is the number the map itself
+     counts down, so the difficulty curve starts from the original's own
+     arithmetic rather than from a plausible round figure. It is still marked
+     =(tune)=: what 60 lives means at this project's wave sizes is a balance
+     question (=test-014=).
 
 * File index
   :PROPERTIES:
@@ -530,7 +610,7 @@
   | [[file:00-foundation.org][00-foundation.org]] | Build, config, headless mode, logging, data-driven balance loading, CI skeleton |
   | [[file:01-current-code-audit.org][01-current-code-audit.org]] | Fixes for D1–D30; the first thing to do |
   | [[file:02-simulation.org][02-simulation.org]] | Sim data model, armour/damage types, targeting, projectiles, RNG, lose/win rules |
-  | [[file:03-map.org][03-map.org]] | Map data model, path shapes, lanes, Life Zone, build regions, map selection |
+  | [[file:03-map.org][03-map.org]] | Map data model, path shapes, lanes, the goal (Life Zone), build regions, map selection. The shipped board is =assets/maps/green_td_v36.ron=, extracted from the real map. |
   | [[file:04-waves.org][04-waves.org]] | Creep catalogue, wave tables, wave kinds, difficulty scaling, endless |
   | [[file:05-towers.org][05-towers.org]] | The 11 tower families, tiers, branching, auras, traps, spells, research, crits |
   | [[file:06-economy.org][06-economy.org]] | Gold, income, bounty, sell values, gambling, lumber, food, leaver split |

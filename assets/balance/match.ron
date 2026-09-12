@@ -1,6 +1,16 @@
 (
     start_gold: 300,
+    // Lineage A's cap. Only read when lose_rule is `overrun`; see `lose_rule`.
     overrun_cap: 150,
+    // How the match is lost (`sim-005`, D19). The shipped board is a Lineage B
+    // map -- its own script counts "chances" down to zero as creeps reach the
+    // goal -- so `lives` is the default and `overrun` is the other lineage
+    // available. See the lineage section in tasks/README.org.
+    lose_rule: lives,
+    // Lineage B's lives, read out of that board rather than invented: its
+    // `InitGlobals` sets the chances counter to 60, and the map is advertised
+    // as 60 waves. (tune)
+    starting_lives: 60,
     wave_interval: 20.0,
     first_wave_delay: 3.0,
     call_wave_cooldown: 5.0,

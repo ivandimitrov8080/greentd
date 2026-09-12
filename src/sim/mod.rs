@@ -12,9 +12,20 @@
 //! |---------------+-----------------------------------------------------------|
 //! | `mod.rs`      | The state, and the order the phases below run in           |
 //! | `waves.rs`    | When a wave starts, who is in it, and who may summon one   |
-//! | `combat.rs`   | Creep movement and everything a tower's shot does          |
+//! | `combat.rs`   | Creep movement, leaks, and everything a tower's shot does  |
 //! | `economy.rs`  | Every place gold changes hands                             |
 //! | `rng.rs`      | The match's seeded generator (`found-009`)                 |
+//!
+//! # The board, and what a creep is trying to do
+//!
+//! A creep enters the board at its lane's spawn point and walks toward one
+//! thing: the goal. It has no other behaviour, because the goal *is* the game.
+//! Reaching it is a **leak** (`sim-006`): the creep leaves the match and the
+//! match loses a life, and running out of lives loses the match (`sim-005`).
+//! Nothing here is specific to which lineage is configured -- [`LoseRule`]
+//! picks the rule and the phases run either way.
+//!
+//! [`LoseRule`]: crate::data::balance::LoseRule
 
 mod combat;
 mod economy;
@@ -26,9 +37,9 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 
-use crate::data::balance::{Balance, BalanceData};
+use crate::data::balance::{Balance, BalanceData, LoseRule};
 use crate::data::components::{MatchView, Phase};
-use crate::map::*;
+use crate::map::{Map, MapData};
 
 pub use rng::Rng;
 
@@ -47,7 +58,15 @@ pub struct PlayerKey(pub u64);
 
 #[derive(Debug)]
 pub struct Creep {
-    /// Distance travelled along the closed path. Position is derived from this.
+    /// Which lane of the board this creep entered on. An index into
+    /// [`MapData::lanes`], so a creep's position is `lanes[lane].sample(dist)`.
+    ///
+    /// It is a lane and not a player: the real board attacks from every spawn
+    /// region on every wave, so a lane is not owned by whoever happens to be
+    /// standing near it.
+    pub lane: u8,
+    /// Distance travelled along that lane. `>= lane.total` means the creep has
+    /// arrived at the goal and is about to leak.
     pub dist: f32,
     pub hp: f32,
     pub max_hp: f32,
@@ -59,8 +78,8 @@ pub struct Creep {
 }
 
 impl Creep {
-    pub fn pos(&self, path: &Path) -> Vec2 {
-        path.sample(self.dist)
+    pub fn pos(&self, map: &MapData) -> Vec2 {
+        lane_of(map, self.lane).sample(self.dist)
     }
 
     pub fn speed_mult(&self) -> f32 {
@@ -70,6 +89,23 @@ impl Creep {
             1.0
         }
     }
+
+    /// How far this creep still has to walk, in world units. Zero or less means
+    /// it is at the goal.
+    pub fn remaining(&self, map: &MapData) -> f32 {
+        lane_of(map, self.lane).total - self.dist
+    }
+}
+
+/// The lane a wire-level index names.
+///
+/// A creep's lane index is validated when the creep is spawned and comes from
+/// the map itself, so an out-of-range index is a bug in the sim rather than
+/// something a client can ask for. Rather than panic in the tick loop, it reads
+/// as the first lane; `the_shipped_map_has_lanes` and the spawn path are what
+/// keep that unreachable.
+fn lane_of(map: &MapData, lane: u8) -> &crate::map::Lane {
+    map.lanes.get(lane as usize).unwrap_or(&map.lanes[0])
 }
 
 #[derive(Debug)]
@@ -96,12 +132,21 @@ pub struct Sim {
     /// The loaded balance tables. Held by handle, never re-read from disk, so a
     /// running match cannot change its numbers underneath itself.
     pub balance: Arc<BalanceData>,
-    pub path: Path,
+    /// The loaded board: lanes, spawn points and the goal. Loaded by both
+    /// peers and hashed into the protocol version (`net-001`).
+    pub map: Arc<MapData>,
     pub creeps: HashMap<CreepId, Creep>,
     pub towers: HashMap<IVec2, Tower>,
     pub players: HashMap<PlayerKey, Player>,
     pub wave: u32,
     pub wave_timer: f32,
+    /// Lives left, when `lose_rule` is [`LoseRule::Lives`]: one per creep that
+    /// reaches the goal. Starts at `match_rules.starting_lives`.
+    pub lives: u32,
+    /// Creeps that have reached the goal this match, for the HUD and for
+    /// `economy` telemetry. The sim's own record of the leak count, which is
+    /// what makes a leak *observable* rather than only fatal.
+    pub leaks: u32,
     next_id: u32,
     /// The match's seed, kept so a replay can be described by it.
     seed: u64,
@@ -119,36 +164,43 @@ pub struct Sim {
 pub enum SimEvent {
     CreepSpawned(CreepId),
     CreepKilled(CreepId),
+    /// A creep reached the goal (`sim-006`). It is gone, and unless the match
+    /// ran out of lives this event is the only trace of it.
+    Leaked(CreepId),
     WaveStarted(u32),
     GameOver,
 }
 
 impl FromWorld for Sim {
-    /// Built from the [`Balance`] resource, which `main` inserts before any
-    /// plugin is added. There is deliberately no `Default` impl: the sim cannot
-    /// exist without its numbers.
+    /// Built from the [`Balance`] and [`Map`] resources, which `main` inserts
+    /// before any plugin is added. There is deliberately no `Default` impl: the
+    /// sim cannot exist without its numbers or its board.
     fn from_world(world: &mut World) -> Self {
         let balance = world.resource::<Balance>().0.clone();
-        Self::new(balance)
+        let map = world.resource::<Map>().0.clone();
+        Self::new(balance, map)
     }
 }
 
 impl Sim {
-    pub fn new(balance: Arc<BalanceData>) -> Self {
+    pub fn new(balance: Arc<BalanceData>, map: Arc<MapData>) -> Self {
         let seed = balance.match_rules.seed;
         let mut sim = Self {
             balance,
-            path: Path::default(),
+            map,
             creeps: HashMap::new(),
             towers: HashMap::new(),
             players: HashMap::new(),
             wave: 0,
             wave_timer: 0.0,
+            lives: 0,
+            leaks: 0,
             next_id: 1,
             seed,
             rng: Rng::from_seed(seed),
             over: false,
         };
+        sim.lives = sim.balance.match_rules.starting_lives;
         // Wave 1 arrives promptly rather than after a full interval.
         sim.wave_timer = sim.balance.match_rules.first_wave_delay;
         sim
@@ -159,13 +211,24 @@ impl Sim {
         self.seed
     }
 
+    /// How this match is lost (`sim-005`).
+    pub fn lose_rule(&self) -> LoseRule {
+        self.balance.match_rules.lose_rule
+    }
+
+    /// Lineage A's cap. Only meaningful when the rule is [`LoseRule::Overrun`],
+    /// but published either way so the HUD can show what the board is doing.
+    pub fn overrun_cap(&self) -> u32 {
+        self.balance.match_rules.overrun_cap
+    }
+
     /// Return the sim to the state [`Sim::new`] leaves it in, for a rematch
     /// (D20, `audit-018`).
     ///
     /// Everything the match accumulated goes: the board, the wave clock and the
-    /// wave counter, the creep ids, and the lose flag that otherwise made `over`
-    /// terminal -- a match that could be lost once and never again was not a
-    /// match, it was a process.
+    /// wave counter, the creep ids, the lives, the leak count, and the lose flag
+    /// that otherwise made `over` terminal -- a match that could be lost once and
+    /// never again was not a match, it was a process.
     ///
     /// What is *kept* is who is in the match. The player records stay keyed and
     /// stay connected, so a rematch is the same people with fresh gold and kills
@@ -181,6 +244,8 @@ impl Sim {
         self.towers.clear();
         self.wave = 0;
         self.wave_timer = self.balance.match_rules.first_wave_delay;
+        self.lives = self.balance.match_rules.starting_lives;
+        self.leaks = 0;
         self.next_id = 1;
         self.rng = Rng::from_seed(self.seed);
         self.over = false;
@@ -190,11 +255,6 @@ impl Sim {
             player.kills = 0;
             player.wave_call_cooldown = 0.0;
         }
-    }
-
-    /// Lineage A lose condition: more live creeps than this ends the match.
-    pub fn overrun_cap(&self) -> u32 {
-        self.balance.match_rules.overrun_cap
     }
 
     /// Where the match is in its life, for the replicated `MatchView` (D4).
@@ -218,14 +278,15 @@ impl Sim {
             wave: self.wave,
             live_creeps: self.creeps_alive(),
             overrun_cap: self.overrun_cap(),
-            creeps_per_wave: self.creeps_per_wave(),
+            creeps_per_wave: self.wave_size(),
+            lives: self.lives,
+            leaks: self.leaks,
             players: self.players_connected(),
             phase: self.phase().as_u8(),
         }
     }
 
-    /// Players in the match. The HUD's lobby size, and the multiplier behind
-    /// [`Sim::creeps_per_wave`].
+    /// Players in the match. The HUD's lobby size.
     pub fn players_connected(&self) -> u32 {
         self.players.values().filter(|p| p.connected).count() as u32
     }
@@ -254,8 +315,7 @@ impl Sim {
     }
 
     pub fn is_buildable(&self, cell: IVec2) -> bool {
-        // Qualified: the method shares a name with the free function.
-        crate::map::is_buildable(&self.path, cell)
+        self.map.is_buildable(cell)
     }
 
     // -----------------------------------------------------------------------
@@ -264,14 +324,16 @@ impl Sim {
 
     /// One tick.
     ///
-    /// The order of the phases *is* the contract, and every one of them lives
-    /// in a different file:
+    /// The order of the phases *is* the contract, and every one of them lives in
+    /// a different file:
     ///
     ///   1. wave bookkeeping, so a wave summoned this tick exists this tick;
     ///   2. the creeps that exist, moved;
-    ///   3. the towers, firing;
-    ///   4. the bills, paid -- a creep killed this tick is paid for this tick;
-    ///   5. the lose condition, last, so it sees the tick's full result.
+    ///   3. the creeps that arrived, leaked -- before any tower fires, so a
+    ///      creep that reaches the goal this tick cannot also be shot;
+    ///   4. the towers, firing;
+    ///   5. the bills, paid -- a creep killed this tick is paid for this tick;
+    ///   6. the lose condition, last, so it sees the tick's full result.
     pub fn step(&mut self, dt: f32) -> Vec<SimEvent> {
         let mut events = Vec::new();
         if self.over {
@@ -281,19 +343,25 @@ impl Sim {
         self.tick_wave(dt, &mut events);
         self.tick_wave_calls(dt);
         self.advance_creeps(dt);
+        self.leak_arrivals(&mut events);
         self.fire(dt);
         self.reap(&mut events);
-        self.check_overrun(&mut events);
+        self.check_lose(&mut events);
 
         events
     }
 
-    /// Green TD's signature: creeps never leave the map. Lineage A ends the
-    /// match when there are simply too many of them alive at once. See the
-    /// lineage section in `tasks/README.org`; `sim-005` makes the rule
-    /// selectable, `audit-012` picks the default.
-    fn check_overrun(&mut self, events: &mut Vec<SimEvent>) {
-        if self.creeps.len() as u32 > self.overrun_cap() {
+    /// The lose condition, whichever rule the match is playing (`sim-005`).
+    ///
+    /// `Lives` is Lineage B: creeps that reached the goal have used up the
+    /// chances, and the last one ends it. `Overrun` is Lineage A, the rule this
+    /// project started with: too many creeps alive at once.
+    fn check_lose(&mut self, events: &mut Vec<SimEvent>) {
+        let lost = match self.lose_rule() {
+            LoseRule::Lives => self.lives == 0,
+            LoseRule::Overrun => self.creeps.len() as u32 > self.overrun_cap(),
+        };
+        if lost {
             self.over = true;
             events.push(SimEvent::GameOver);
         }

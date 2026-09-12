@@ -62,10 +62,20 @@ pub struct LocalPlayer;
 #[derive(Component, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MatchView {
     pub wave: u32,
-    /// Live creeps on the map. Part of the lose condition (see `Phase::Over`).
+    /// Live creeps on the board. Part of Lineage A's lose condition, and worth
+    /// showing under either rule.
     pub live_creeps: u32,
+    /// Lineage A's cap. Only a lose condition when the match's `lose_rule` is
+    /// `overrun`; the HUD reads it as a denominator.
     pub overrun_cap: u32,
+    /// Creeps one wave puts on the board, across every lane.
     pub creeps_per_wave: u32,
+    /// Lives left (`sim-005`). One creep reaching the goal costs one, and zero
+    /// ends the match.
+    pub lives: u32,
+    /// Creeps that have reached the goal this match, so the HUD can show the
+    /// leak count rather than only the lives it cost.
+    pub leaks: u32,
     /// Connected players. The HUD reads the lobby size from here rather than
     /// counting the views it happens to hold, which in host mode is every view
     /// in the match (`found-010`).

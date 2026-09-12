@@ -16,7 +16,6 @@
 use bevy::prelude::IVec2;
 
 use crate::data::reject::Reject;
-use crate::map::in_bounds;
 
 use super::{PlayerKey, Sim, Tower};
 
@@ -41,7 +40,7 @@ impl Sim {
             return Err(Reject::BadKind);
         };
         let cost = tower.cost;
-        if !in_bounds(cell) {
+        if !self.map.in_bounds(cell) {
             return Err(Reject::OutOfBounds);
         }
         if !self.is_buildable(cell) {

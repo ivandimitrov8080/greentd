@@ -34,7 +34,8 @@ use std::time::Duration;
 
 use bevy::prelude::Resource;
 
-use crate::data::balance::{Balance, BalanceError, default_balance_dir};
+use crate::data::balance::{Balance, BalanceError, above, default_balance_dir};
+use crate::map::{DEFAULT_MAP_ID, Map, MapError, default_map_dir};
 
 // ---------------------------------------------------------------------------
 // Keys, environment names and defaults
@@ -55,6 +56,7 @@ pub const KEY_BIND: &str = "bind";
 pub const KEY_PORT: &str = "port";
 pub const KEY_TICK_HZ: &str = "tick-hz";
 pub const KEY_MAP: &str = "map";
+pub const KEY_MAP_DIR: &str = "map-dir";
 pub const KEY_BALANCE_DIR: &str = "balance-dir";
 pub const KEY_LOG: &str = "log";
 pub const KEY_LOG_DIR: &str = "log-dir";
@@ -84,7 +86,9 @@ pub const DEFAULT_SERVER_BIND: &str = "127.0.0.1:5000";
 pub const DEFAULT_CLIENT_BIND: &str = "127.0.0.1:5100";
 
 /// Map identifier. Only one map exists until `03-map.org`.
-pub const DEFAULT_MAP: &str = "green-ring";
+/// The board a run plays on unless told otherwise. It names
+/// `<map-dir>/<value>.ron`; see [`crate::map`].
+pub const DEFAULT_MAP: &str = DEFAULT_MAP_ID;
 
 /// Directory this match's log file is written to. An empty value turns the file
 /// off; see [`Config::log_dir`].
@@ -112,7 +116,8 @@ pub const USAGE: &str = concat!(
     "  --bind <addr>              the local socket to bind\n",
     "  --port <n>                 --bind, shortened to this port\n",
     "  --tick-hz <n>              simulation rate                 [default: 30]\n",
-    "  --map <id>                 the map to play                 [default: green-ring]\n",
+    "  --map <id>                 the board to play              [default: green_td_v36]\n",
+    "  --map-dir <path>           directory holding the *.ron maps  [default: assets/maps]\n",
     "  --balance-dir <path>       directory holding the *.ron tables\n",
     "  --log <filter>             tracing filter, e.g. info,greentd::sim=debug\n",
     "  --log-dir <path>           where this match's log file goes  [default: logs]\n",
@@ -289,6 +294,8 @@ pub enum StartupError {
     Config(ConfigError),
     /// The balance tables could not be read, parsed or trusted.
     Balance(BalanceError),
+    /// The board could not be read, parsed or trusted.
+    Map(MapError),
 }
 
 impl fmt::Display for StartupError {
@@ -296,6 +303,7 @@ impl fmt::Display for StartupError {
         match self {
             Self::Config(err) => write!(f, "{err}"),
             Self::Balance(err) => write!(f, "{err}"),
+            Self::Map(err) => write!(f, "{err}"),
         }
     }
 }
@@ -305,6 +313,7 @@ impl std::error::Error for StartupError {
         match self {
             Self::Config(err) => Some(err),
             Self::Balance(err) => Some(err),
+            Self::Map(err) => Some(err),
         }
     }
 }
@@ -318,6 +327,12 @@ impl From<ConfigError> for StartupError {
 impl From<BalanceError> for StartupError {
     fn from(err: BalanceError) -> Self {
         Self::Balance(err)
+    }
+}
+
+impl From<MapError> for StartupError {
+    fn from(err: MapError) -> Self {
+        Self::Map(err)
     }
 }
 
@@ -340,8 +355,11 @@ pub struct Config {
     /// The local UDP socket this process binds.
     pub bind_addr: SocketAddr,
 
-    /// Map identifier. Only one map exists until `03-map.org`.
+    /// Which board to play: the name of `<map_dir>/<map>.ron` (`03-map.org`).
     pub map: String,
+
+    /// Directory the map is read from.
+    pub map_dir: PathBuf,
 
     /// Directory holding the `*.ron` balance tables (`found-004`), loaded by
     /// [`startup_from`] into [`Run::balance`].
@@ -404,13 +422,57 @@ pub struct Run {
     pub config: Config,
     /// The balance tables, loaded and validated.
     pub balance: Balance,
+    /// The board, loaded and validated. Both peers play the same one, which is
+    /// why its hash is part of the protocol version (`net-001`).
+    pub map: Map,
+}
+
+/// The board and the tables have to make sense *together*, and one number
+/// decides whether the game works at all: how far a tower's centre must be from
+/// a lane (`path_clearance`, from the map) against how far a tower can shoot
+/// (the shortest `range` in `towers.ron`).
+///
+/// If the clearance is larger than every range, **no tower on the board can ever
+/// hit a creep**: the rule keeps a tower at least `clearance` units from a lane,
+/// and the shortest range then falls short of the lane it is guarding. That is
+/// not a tuning problem, it is a board with no possible defence, and it is
+/// exactly the mistake a map author makes by scaling the geometry without the
+/// balance -- it happened once while this board was being added, which is why
+/// the check is a startup refusal rather than a comment.
+fn check_map_against_balance(balance: &Balance, map: &Map) -> Result<(), StartupError> {
+    let Some(shortest) = balance
+        .towers
+        .iter()
+        .map(|tower| tower.range)
+        .min_by(f32::total_cmp)
+    else {
+        // A table with no towers is refused by the loader; nothing to check.
+        return Ok(());
+    };
+    if !above(shortest, map.0.path_clearance) {
+        return Err(StartupError::Balance(BalanceError::invalid(
+            crate::map::PATH_CLEARANCE_KEY,
+            format!(
+                "the board asks for {} but the shortest tower range is {shortest}; \
+                 no tower could reach a lane",
+                map.0.path_clearance
+            ),
+        )));
+    }
+    Ok(())
 }
 
 /// What a run resolved to, before any plugin exists.
 #[derive(Debug)]
 pub enum Startup {
-    /// Run with this configuration and these tables.
-    Run(Run),
+    /// Run with this configuration, these tables and this board.
+    ///
+    /// Boxed because a `Run` is the sum of its parts -- a whole `Config`, which
+    /// is a dozen paths and addresses -- and the other variant is a unit. The
+    /// enum is built once per process and never copied in a hot path, so the one
+    /// allocation is cheaper than the bytes it saves, and cheaper than making
+    /// every call site destructure a bigger value.
+    Run(Box<Run>),
     /// `--help`: the caller prints [`USAGE`] and exits zero.
     Help,
 }
@@ -453,7 +515,16 @@ pub fn startup_from(args: &[String], env: &Settings) -> Result<Startup, StartupE
     let layers: [Settings; 3] = [cli.settings, env.clone(), file];
     let config = resolve(&layers)?;
     let balance = Balance::load(&config.balance_dir)?;
-    Ok(Startup::Run(Run { config, balance }))
+    // The board is loaded here rather than by the caller, for the same reason
+    // the tables are: a run that cannot agree on its geometry with its peers
+    // must not open a window first (`found-006`).
+    let map = Map::load(&config.map_dir, &config.map)?;
+    check_map_against_balance(&balance, &map)?;
+    Ok(Startup::Run(Box::new(Run {
+        config,
+        balance,
+        map,
+    })))
 }
 
 // ---------------------------------------------------------------------------
@@ -474,6 +545,10 @@ pub fn defaults(mode: Mode) -> Settings {
         },
     );
     settings.insert(KEY_MAP.to_string(), DEFAULT_MAP.to_string());
+    settings.insert(
+        KEY_MAP_DIR.to_string(),
+        default_map_dir().display().to_string(),
+    );
     settings.insert(
         KEY_BALANCE_DIR.to_string(),
         default_balance_dir().display().to_string(),
@@ -651,6 +726,7 @@ pub fn resolve(layers: &[Settings]) -> Result<Config, ConfigError> {
     let bind = take_addr(&mut merged, KEY_BIND)?;
     let port = take_port(&mut merged, KEY_PORT)?;
     let map = take(&mut merged, KEY_MAP)?;
+    let map_dir = take(&mut merged, KEY_MAP_DIR)?;
     let balance_dir = take(&mut merged, KEY_BALANCE_DIR)?;
     let log_filter = take(&mut merged, KEY_LOG)?;
     let log_dir = take(&mut merged, KEY_LOG_DIR)?;
@@ -692,6 +768,7 @@ pub fn resolve(layers: &[Settings]) -> Result<Config, ConfigError> {
             None => bind,
         },
         map,
+        map_dir: PathBuf::from(map_dir),
         balance_dir: PathBuf::from(balance_dir),
         log_filter,
         log_dir: (!log_dir.trim().is_empty()).then(|| PathBuf::from(log_dir)),

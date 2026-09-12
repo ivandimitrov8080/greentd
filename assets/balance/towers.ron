@@ -1,12 +1,19 @@
+// World-unit quantities (range, splash) are expressed against the board's
+// tile, which is 128 units in Green TD v36.0 -- four times the 32 the
+// vertical slice used. Every one of them moved by that factor when the real
+// board landed, so a tower still covers the same *number of tiles* of lane as
+// it did before. This is a units conversion, not a retune: the balance pass
+// that decides whether those numbers are any good is test-014 in 12-testing.
 [
+
     (
         key: "basic",
         name: "Basic",
         cost: 80,
-        range: 115.0,
+        range: 460,
         damage: 14.0,
         cooldown: 0.55,
-        splash: 0.0,
+        splash: 0,
         slow: 1.0,
         damage_per_level: 0.45,
         range_per_level: 0.04,
@@ -18,10 +25,10 @@
         key: "cannon",
         name: "Cannon",
         cost: 150,
-        range: 130.0,
+        range: 520,
         damage: 26.0,
         cooldown: 1.1,
-        splash: 48.0,
+        splash: 192,
         slow: 1.0,
         damage_per_level: 0.45,
         range_per_level: 0.04,
@@ -33,10 +40,10 @@
         key: "frost",
         name: "Frost",
         cost: 120,
-        range: 140.0,
+        range: 560,
         damage: 7.0,
         cooldown: 0.8,
-        splash: 0.0,
+        splash: 0,
         slow: 0.55,
         damage_per_level: 0.45,
         range_per_level: 0.04,

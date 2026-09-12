@@ -14,10 +14,10 @@
 use std::sync::Arc;
 
 use bevy::prelude::IVec2;
-use greentd::data::balance::BalanceData;
+use greentd::data::balance::{BalanceData, LoseRule};
 use greentd::data::components::Phase;
 use greentd::data::reject::Reject;
-use greentd::map::{GRID_H, GRID_W, in_bounds};
+use greentd::map::MapData;
 use greentd::net::messages::ServerNotice;
 use greentd::sim::{PlayerKey, Rng, Sim, SimEvent};
 
@@ -28,6 +28,46 @@ const TICK: f32 = 1.0 / 30.0;
 /// The tables that ship in `assets/balance`.
 fn shipped_balance() -> Arc<BalanceData> {
     Arc::new(BalanceData::shipped().expect("assets/balance must load"))
+}
+
+/// The board that ships in `assets/maps`. The sim needs a board as much as it
+/// needs tables: it is where the lanes, the spawn points and the goal live.
+fn shipped_map() -> Arc<MapData> {
+    Arc::new(MapData::shipped().expect("assets/maps must load"))
+}
+
+/// A deliberately tiny board: two lanes, 2100 units long, ending at one goal.
+///
+/// The shipped board's lanes are 13,000 to 32,000 units and there are ten of
+/// them, which is the right thing to play and the wrong thing to wait for in a
+/// test about leaking. Short lanes make "does a creep that reaches the goal cost
+/// a life" a question about the rule rather than about patience.
+fn short_board() -> Arc<MapData> {
+    use greentd::map::{GoalDef, LaneDef, MapDef};
+
+    let lane = |name: &str, x: f32| LaneDef {
+        name: name.to_string(),
+        spawn: (x, 700.0),
+        waypoints: vec![(x, 700.0), (x, -700.0), (0.0, -700.0)],
+    };
+    let def = MapDef {
+        id: "short".to_string(),
+        name: "Short".to_string(),
+        tiles_x: 16,
+        tiles_y: 16,
+        tile_size: 100.0,
+        path_clearance: 95.0,
+        goal: GoalDef {
+            name: "END".to_string(),
+            x: 0.0,
+            y: -700.0,
+            half_w: 100.0,
+            half_h: 100.0,
+        },
+        lanes: vec![lane("Left", -700.0), lane("Right", 700.0)],
+        zones: vec![],
+    };
+    Arc::new(MapData::from_def(def).expect("the short board is valid"))
 }
 
 // ---------------------------------------------------------------------------
@@ -42,19 +82,39 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
+        Self::with_balance(shipped_balance())
+    }
+
+    /// A match running on modified tables, on the shipped board. Used to make
+    /// the retuned numbers observable without waiting for a real match.
+    fn with_balance(balance: Arc<BalanceData>) -> Self {
         Self {
-            sim: Sim::new(shipped_balance()),
+            sim: Sim::new(balance, shipped_map()),
             tick: TICK,
         }
     }
 
-    /// A match running on modified tables. Used to make the retuned numbers
-    /// observable without waiting for a real 150-creep overrun.
-    fn with_balance(balance: Arc<BalanceData>) -> Self {
+    /// A match on a modified board and modified tables: the tests about leaks
+    /// want a short lane and a known number of lives.
+    fn with_board(balance: Arc<BalanceData>, map: Arc<MapData>) -> Self {
         Self {
-            sim: Sim::new(balance),
+            sim: Sim::new(balance, map),
             tick: TICK,
         }
+    }
+
+    /// One lane's creeps' distances along it, sorted. The arrival shape of a
+    /// wave is a property of a lane, so this is the unit the tests measure.
+    fn lane_distances(map: &MapData, sim: &Sim, lane: u8) -> Vec<f32> {
+        let mut dists: Vec<f32> = sim
+            .creeps
+            .values()
+            .filter(|c| c.lane == lane)
+            .map(|c| c.dist)
+            .collect();
+        dists.sort_by(|a, b| a.partial_cmp(b).expect("no NaN distances"));
+        let _ = map;
+        dists
     }
 
     /// A harness with `ids` joined, mirroring what the server does on connect.
@@ -110,11 +170,12 @@ fn count_matching(events: &[SimEvent], pred: impl Fn(&SimEvent) -> bool) -> usiz
     events.iter().filter(|event| pred(event)).count()
 }
 
-/// A buildable cell that has a path cell for a neighbour, so a tower placed
-/// there actually has something to shoot at.
+/// A buildable cell with a lane cell for a neighbour, so a tower placed there
+/// actually has something to shoot at.
 fn cell_beside_the_path(sim: &Sim) -> IVec2 {
-    for y in 0..GRID_H {
-        for x in 0..GRID_W {
+    let map = &sim.map;
+    for y in 0..map.tiles_y {
+        for x in 0..map.tiles_x {
             let cell = IVec2::new(x, y);
             if !sim.is_buildable(cell) {
                 continue;
@@ -127,13 +188,13 @@ fn cell_beside_the_path(sim: &Sim) -> IVec2 {
             ];
             if neighbours
                 .iter()
-                .any(|n| in_bounds(*n) && !sim.is_buildable(*n))
+                .any(|n| map.in_bounds(*n) && !sim.is_buildable(*n))
             {
                 return cell;
             }
         }
     }
-    panic!("the map has no buildable cell beside the path");
+    panic!("the board has no buildable cell beside a lane");
 }
 
 // ---------------------------------------------------------------------------
@@ -170,8 +231,13 @@ fn a_wave_spawns_after_the_configured_delay() {
     let spawned = harness.sim.creeps_alive();
     assert_eq!(
         spawned,
-        harness.sim.balance.creeps_per_wave(1, 1),
-        "a wave spawns the table's count"
+        harness.sim.balance.creeps_per_lane(1, 1) * harness.sim.lane_count(),
+        "a wave puts the table's count on every lane"
+    );
+    assert_eq!(
+        harness.sim.creeps_per_lane(),
+        harness.sim.balance.creeps_per_lane(1, 1),
+        "and `creeps_per_lane` agrees with the table"
     );
     assert_eq!(
         count_matching(&events, |e| matches!(e, SimEvent::CreepSpawned(_))),
@@ -206,8 +272,17 @@ fn spawned_creeps_use_the_wave_table() {
 
 #[test]
 fn a_tower_kills_a_creep_and_credits_its_owner() {
+    // On the short board, and with fragmentary creeps, on purpose. This test is
+    // about where the bounty goes: on the real board a creep takes a minute to
+    // reach the first tower worth building, which makes the test slow and makes
+    // it about the board rather than about the economy.
+    let mut tuned = (*shipped_balance()).clone();
+    tuned.waves.scaling.hp_base = 10.0;
+    tuned.waves.scaling.hp_growth = 0.0;
+
     let who = player(7);
-    let mut harness = Harness::with_players(&[7]);
+    let mut harness = Harness::with_board(Arc::new(tuned), short_board());
+    harness.sim.add_player(who);
 
     let start_gold = harness.sim.balance.match_rules.start_gold;
     let cost = harness
@@ -243,7 +318,10 @@ fn a_tower_kills_a_creep_and_credits_its_owner() {
 
 #[test]
 fn exceeding_the_overrun_cap_ends_the_match() {
+    // The shipped rule is `lives` (D19); this test is about the other lineage,
+    // so it asks for it rather than relying on the default.
     let mut tuned = (*shipped_balance()).clone();
+    tuned.match_rules.lose_rule = LoseRule::Overrun;
     tuned.match_rules.overrun_cap = 3;
     let mut harness = Harness::with_balance(Arc::new(tuned));
 
@@ -269,7 +347,11 @@ fn a_reset_gives_a_lost_match_back() {
     // so a cap of four lets the first wave through and ends it on the second --
     // which is also what makes the rematch's first wave survivable.
     let mut tuned = (*shipped_balance()).clone();
-    tuned.match_rules.overrun_cap = 4;
+    tuned.match_rules.lose_rule = LoseRule::Overrun;
+    // Between wave 1 and wave 2: a wave is one creep per lane per player, and
+    // the board has ten lanes, so a cap of four would end the match on the very
+    // first wave.
+    tuned.match_rules.overrun_cap = 12;
     tuned.match_rules.first_wave_delay = 0.1;
     tuned.match_rules.wave_interval = 0.5;
     let mut harness = Harness::with_balance(Arc::new(tuned));
@@ -317,7 +399,7 @@ fn a_reset_gives_a_lost_match_back() {
     harness.advance_until(600, |sim| sim.wave == 1);
     assert_eq!(
         harness.sim.creeps_alive(),
-        harness.sim.creeps_per_wave(),
+        harness.sim.wave_size(),
         "the rematch's first wave is a whole wave"
     );
     assert!(
@@ -613,6 +695,7 @@ fn one_player_cannot_call_waves_for_another() {
 #[test]
 fn a_finished_match_refuses_a_wave_call() {
     let mut tuned = (*shipped_balance()).clone();
+    tuned.match_rules.lose_rule = LoseRule::Overrun;
     tuned.match_rules.overrun_cap = 3;
     let mut harness = Harness::with_balance(Arc::new(tuned));
     harness.sim.add_player(player(1));
@@ -667,65 +750,102 @@ fn the_same_seed_replays_and_a_different_seed_does_not() {
 }
 
 #[test]
-fn a_creep_spawns_inside_its_own_slot() {
+fn a_wave_enters_at_its_lane_spawn_point_in_a_column() {
+    // `audit-013` (D10). A wave used to be spread evenly around a closed ring,
+    // which gave it no front and could spawn a creep next to the destination.
+    // It now enters every lane at that lane's spawn point, one behind another.
     let mut harness = Harness::with_balance(seeded_balance(7));
     harness.advance_until(600, |sim| sim.wave == 1);
 
-    let scaling = &harness.sim.balance.waves.scaling;
-    let n = harness.sim.creeps_alive();
-    let spacing = harness.sim.path.total / n as f32;
-    let limit = spacing * scaling.spawn_jitter;
+    let map = harness.sim.map.clone();
+    let scaling = harness.sim.balance.waves.scaling.clone();
+    let per_lane = harness.sim.creeps_per_lane();
+    let steps = per_lane.saturating_sub(1) as f32;
+    let gap = scaling
+        .spawn_gap
+        .min(scaling.spawn_arc / steps.max(1.0))
+        .min(scaling.spawn_arc / steps.max(f32::MIN_POSITIVE));
+    let limit = gap * scaling.spawn_jitter;
     assert!(
         limit > 0.0,
         "the tables must jitter at all for this test to mean anything"
     );
 
-    let dists = creep_distances(&harness.sim);
-    assert_eq!(dists.len(), n as usize);
-    for (slot, dist) in dists.iter().enumerate() {
-        let ideal = spacing * slot as f32;
-        assert!(
-            (dist - ideal).abs() <= limit,
-            "creep {slot} is at {dist}, more than {limit} from its slot at {ideal}"
+    for lane in 0..map.lanes.len() as u8 {
+        let dists = Harness::lane_distances(&map, &harness.sim, lane);
+        assert_eq!(
+            dists.len(),
+            per_lane as usize,
+            "lane {lane} got its whole share of the wave"
         );
+
+        // Nothing has strayed past the arrival window: the whole wave is a
+        // column at the spawn point, and the goal is a whole lane away.
+        assert!(
+            dists.last().copied().unwrap_or_default() <= scaling.spawn_arc,
+            "lane {lane} spawned {} past its arrival window",
+            dists.last().copied().unwrap_or_default()
+        );
+        assert!(
+            map.lanes[lane as usize].total > scaling.spawn_arc,
+            "the window has to be shorter than the lane for that to mean anything"
+        );
+
+        for (slot, dist) in dists.iter().enumerate() {
+            let ideal = gap * slot as f32;
+            assert!(
+                (dist - ideal).abs() <= limit,
+                "lane {lane} creep {slot} is at {dist}, more than {limit} from its slot at {ideal}"
+            );
+        }
     }
-    assert!(
-        dists
+
+    // And the jitter moved something, or the generator is decoration.
+    let moved = (0..map.lanes.len() as u8).any(|lane| {
+        Harness::lane_distances(&map, &harness.sim, lane)
             .iter()
             .enumerate()
-            .any(|(slot, dist)| (dist - spacing * slot as f32).abs() > 0.0),
-        "the jitter has to have moved something"
-    );
+            .any(|(slot, dist)| (dist - gap * slot as f32).abs() > 0.0)
+    });
+    assert!(moved, "the jitter has to have moved something");
 }
 
 #[test]
 fn each_wave_draws_further_along_the_generator() {
     // If the jitter were a pure function of the wave number the second wave
     // would repeat the first, and a "seeded" generator would be a fancy
-    // constant.
-    let mut harness = Harness::with_balance(seeded_balance(11));
+    // constant. This runs on the short board so the first wave has leaked away
+    // before the second arrives, which makes "lane 0's creeps" a clean reading
+    // of one wave's draws.
+    let mut tuned = (*seeded_balance(11)).clone();
+    tuned.match_rules.lose_rule = LoseRule::Overrun;
+    tuned.match_rules.overrun_cap = 1_000_000; // leaks must not end this
+    tuned.match_rules.first_wave_delay = 0.1;
+    tuned.match_rules.wave_interval = 2.0;
+    tuned.waves.scaling.count_base = 1.0;
+    tuned.waves.scaling.count_per_wave = 0.0; // every wave the same size
+    tuned.waves.scaling.speed_base = 21_000.0;
+    tuned.waves.scaling.speed_growth = 0.0;
+    tuned.waves.scaling.hp_base = 1_000.0;
+
+    let mut harness = Harness::with_board(Arc::new(tuned), short_board());
     harness.advance_until(600, |sim| sim.wave == 1);
+    let first = Harness::lane_distances(&harness.sim.map, &harness.sim, 0);
+    assert_eq!(first.len(), 1, "one creep per lane per wave");
 
-    let spacing_for = |sim: &Sim| sim.path.total / sim.creeps_alive() as f32;
-    let offsets = |sim: &Sim| -> Vec<f32> {
-        let spacing = spacing_for(sim);
-        let mut offsets: Vec<f32> = creep_distances(sim)
-            .iter()
-            .enumerate()
-            .map(|(slot, dist)| dist - spacing * slot as f32)
-            .collect();
-        offsets.sort_by(|a, b| a.partial_cmp(b).expect("no NaN offsets"));
-        offsets
-    };
-
-    let first = offsets(&harness.sim);
-    let wave_timer = harness.sim.balance.match_rules.wave_interval;
-    harness.advance((wave_timer / TICK).ceil() as u32 + 2);
-
+    let timer = harness.sim.balance.match_rules.wave_interval;
+    harness.advance((timer / TICK).ceil() as u32 + 2);
     assert_eq!(harness.sim.wave, 2, "the second wave has started");
+    assert_eq!(
+        harness.sim.creeps_alive(),
+        2,
+        "the first wave leaked away, so only the second is on the board"
+    );
+
+    let second = Harness::lane_distances(&harness.sim.map, &harness.sim, 0);
+    assert_eq!(first.len(), second.len(), "both waves are the same size");
     assert_ne!(
-        first,
-        offsets(&harness.sim),
+        first, second,
         "wave 2 must draw fresh numbers, not repeat wave 1"
     );
 }
@@ -795,24 +915,101 @@ fn the_match_seed_comes_from_the_tables() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_non_finite_distance_lands_on_the_path_rather_than_panicking() {
-    use greentd::map::Path;
+fn a_non_finite_distance_lands_on_the_lane_rather_than_panicking() {
+    // `found-006`: a NaN position would travel into a `Transform`, where it is
+    // far harder to find than a creep standing at the start of its lane.
+    let map = shipped_map();
+    let lane = &map.lanes[0];
 
-    let path = Path::default();
     for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-        let at = path.sample(bad);
+        let at = lane.sample(bad);
         assert!(
             at.is_finite(),
             "sampling {bad} produced {at}, which would poison a Transform"
         );
     }
 
-    // The ordinary path is unchanged: the start of the loop, the same point
-    // again a full lap later, and somewhere sensible in between.
-    assert_eq!(path.sample(0.0), path.points[0]);
-    assert_eq!(path.sample(path.total), path.points[0]);
-    let middle = path.sample(path.total * 0.5);
-    assert!(middle.is_finite() && path.distance_to(middle) < 1.0);
+    // The ordinary walk: the spawn point at zero, the goal at the end, and a
+    // point on the lane in between. Unlike the ring this replaced, a lane does
+    // not wrap -- past its end it is the goal, which is what a leak is.
+    assert_eq!(lane.sample(0.0), lane.spawn());
+    assert_eq!(lane.sample(lane.total), map.goal.centre);
+    assert_eq!(
+        lane.sample(lane.total * 2.0),
+        map.goal.centre,
+        "a lane does not wrap around; it ends at the goal"
+    );
+    let middle = lane.sample(lane.total * 0.5);
+    assert!(middle.is_finite() && lane.distance_to(middle) < 1.0);
+}
+
+// ---------------------------------------------------------------------------
+// The board (03-map.org)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_shipped_board_has_lanes_that_end_at_its_goal() {
+    let map = shipped_map();
+
+    assert!(
+        map.lanes.len() >= 9,
+        "the real board has nine colours and ten spawn points, got {}",
+        map.lanes.len()
+    );
+    for lane in &map.lanes {
+        assert!(
+            lane.sample(lane.total).distance(map.goal.centre) < 1.0,
+            "lane {} ends at the goal",
+            lane.name
+        );
+        assert!(
+            map.goal.half.x > 0.0 && map.goal.half.y > 0.0,
+            "the goal is a region, not a point"
+        );
+    }
+
+    // The goal is a single shared region: every lane funnels into it, which is
+    // what makes the board's middle worth defending (map-001, sim-006).
+    let ends: Vec<IVec2> = map
+        .lanes
+        .iter()
+        .map(|lane| map.world_to_cell(lane.sample(lane.total)))
+        .collect();
+    assert_eq!(
+        ends.iter().collect::<std::collections::HashSet<_>>().len(),
+        1,
+        "every lane reaches the same goal, got {ends:?}"
+    );
+}
+
+#[test]
+fn the_board_is_open_ground_except_for_its_lanes() {
+    let map = shipped_map();
+
+    // Green TD's placement rule, and the whole of it: no maze, no blocking.
+    let mut buildable = 0;
+    let mut blocked = 0;
+    for y in 0..map.tiles_y {
+        for x in 0..map.tiles_x {
+            let cell = IVec2::new(x, y);
+            if map.is_buildable(cell) {
+                buildable += 1;
+            } else {
+                blocked += 1;
+            }
+        }
+    }
+    assert!(buildable > 0 && blocked > 0, "the board has both");
+    assert!(
+        buildable > blocked,
+        "most of an open field is buildable: {buildable} of {}",
+        buildable + blocked
+    );
+
+    // A cell on a lane is never buildable, and a cell far from every lane is.
+    assert!(!map.is_buildable(map.world_to_cell(map.lanes[0].sample(0.0))));
+    assert!(map.is_buildable(IVec2::new(0, 0)), "the corner is empty");
+    assert!(!map.is_buildable(IVec2::new(-1, 0)), "off the board");
 }
 
 // ---------------------------------------------------------------------------
@@ -844,8 +1041,8 @@ fn the_match_view_carries_the_lobby_size() {
     // disagree.
     assert_eq!(harness.sim.players_connected(), 2);
     assert_eq!(
-        harness.sim.creeps_per_wave(),
-        harness.sim.balance.creeps_per_wave(harness.sim.wave, 2)
+        harness.sim.wave_size(),
+        harness.sim.balance.creeps_per_lane(harness.sim.wave, 2) * harness.sim.lane_count()
     );
 }
 
@@ -868,6 +1065,7 @@ fn the_match_phase_follows_the_sim() {
 
     // Force the lose condition instead of waiting for a real overrun.
     let mut tuned = (*shipped_balance()).clone();
+    tuned.match_rules.lose_rule = LoseRule::Overrun;
     tuned.match_rules.overrun_cap = 3;
     let mut over = Harness::with_balance(Arc::new(tuned));
     over.advance_until(600, |sim| sim.over);
@@ -879,7 +1077,10 @@ fn the_match_phase_follows_the_sim() {
     let mirrored = over.sim.match_view();
     assert_eq!(mirrored.phase, Phase::Over.as_u8());
     assert_eq!(mirrored.live_creeps, over.sim.creeps_alive());
-    assert_eq!(mirrored.live_creeps, 4);
+    assert!(
+        mirrored.live_creeps > over.sim.overrun_cap(),
+        "the cap is what ended it, so more creeps are alive than it allows"
+    );
     assert_eq!(mirrored.overrun_cap, over.sim.overrun_cap());
 }
 
@@ -922,11 +1123,22 @@ fn one_shot_at_level_two(kind: u8, tune: impl FnOnce(&mut BalanceData)) -> Harne
     harness
 }
 
+/// The one creep a single tower has shot, so a test measures the shot rather
+/// than whichever creep a `HashMap` hands back first.
+fn the_hit_creep(harness: &Harness) -> &greentd::sim::Creep {
+    harness
+        .sim
+        .creeps
+        .values()
+        .find(|creep| creep.hp < creep.max_hp)
+        .expect("something was hit")
+}
+
 #[test]
 fn the_tier_scaling_is_read_from_the_table() {
     let dealt = |growth: f32| {
         let harness = one_shot_at_level_two(0, |data| data.towers[0].damage_per_level = growth);
-        let creep = harness.sim.creeps.values().next().expect("one creep");
+        let creep = the_hit_creep(&harness);
         creep.max_hp - creep.hp
     };
 
@@ -948,7 +1160,7 @@ fn the_slow_duration_is_read_from_the_table() {
         data.towers[2].slow = 0.5;
         data.towers[2].slow_duration = 7.0;
     });
-    let creep = harness.sim.creeps.values().next().expect("one creep");
+    let creep = the_hit_creep(&harness);
     // `advance_creeps` runs before `fire`, so a timer set this tick has not been
     // decremented yet: it is exactly the table's duration.
     assert!(
@@ -962,7 +1174,116 @@ fn the_slow_duration_is_read_from_the_table() {
         data.towers[2].slow = 0.5;
         data.towers[2].slow_duration = 0.0;
     });
-    let creep = harness.sim.creeps.values().next().expect("one creep");
+    let creep = the_hit_creep(&harness);
     assert_eq!(creep.slow_timer, 0.0, "a zero duration never slows");
     assert_eq!(creep.speed_mult(), 1.0, "an expired slow is not a slow");
+}
+
+// ---------------------------------------------------------------------------
+// The goal, the leak and the lives (sim-005, sim-006, D19)
+// ---------------------------------------------------------------------------
+
+/// Tables for the leak tests: one creep per lane, walking a 2100-unit lane fast
+/// enough to arrive in a handful of ticks, on a fixed number of lives.
+fn leak_tables(lives: u32, rule: LoseRule) -> Arc<BalanceData> {
+    let mut tuned = (*shipped_balance()).clone();
+    tuned.match_rules.lose_rule = rule;
+    tuned.match_rules.starting_lives = lives;
+    tuned.match_rules.first_wave_delay = 0.1;
+    tuned.match_rules.wave_interval = 1.0;
+    tuned.waves.scaling.count_base = 1.0;
+    tuned.waves.scaling.count_per_wave = 0.0;
+    tuned.waves.scaling.speed_base = 21_000.0; // a whole lane in three ticks
+    tuned.waves.scaling.speed_growth = 0.0;
+    tuned.waves.scaling.hp_base = 1_000.0; // nothing kills them, they leak
+    Arc::new(tuned)
+}
+
+#[test]
+fn a_creep_that_reaches_the_goal_costs_a_life() {
+    let mut harness = Harness::with_board(leak_tables(10, LoseRule::Lives), short_board());
+    let lanes = harness.sim.lane_count();
+    assert_eq!(lanes, 2, "the short board has two lanes");
+
+    // Both lanes are the same length but the jitter is not, so "wait for the
+    // first leak" is not "wait for the whole wave"; wait for the wave.
+    let (_, events) = harness.advance_until(600, |sim| sim.leaks >= lanes);
+
+    assert_eq!(
+        count_matching(&events, |e| matches!(e, SimEvent::Leaked(_))),
+        harness.sim.leaks as usize,
+        "every leak is announced exactly once"
+    );
+    assert_eq!(
+        harness.sim.leaks, lanes,
+        "one creep per lane reached the goal"
+    );
+    assert_eq!(
+        harness.sim.lives,
+        10 - lanes,
+        "and each of them cost a life"
+    );
+    assert_eq!(
+        harness.sim.creeps_alive(),
+        0,
+        "a leaked creep leaves the board: it is not still walking"
+    );
+    assert!(!harness.sim.over, "there are lives left");
+}
+
+#[test]
+fn running_out_of_lives_ends_the_match() {
+    // Two lanes, five lives, so it takes the third wave to lose.
+    let mut harness = Harness::with_board(leak_tables(5, LoseRule::Lives), short_board());
+    let (_, events) = harness.advance_until(2_000, |sim| sim.over);
+
+    assert_eq!(harness.sim.lives, 0, "the lives are what ran out");
+    assert_eq!(harness.sim.leaks, 6, "three waves of two lanes leaked");
+    assert_eq!(
+        count_matching(&events, |e| matches!(e, SimEvent::GameOver)),
+        1,
+        "game over is announced once"
+    );
+    assert_eq!(harness.sim.phase(), Phase::Over);
+    assert!(harness.step().is_empty(), "a finished match does not step");
+}
+
+#[test]
+fn the_overrun_rule_does_not_spend_lives() {
+    // Lineage A: a creep that reaches the goal is still a creep on the board,
+    // and the match ends because there are too many of them (D19).
+    let mut tuned = (*leak_tables(5, LoseRule::Overrun)).clone();
+    tuned.match_rules.overrun_cap = 1;
+    let mut harness = Harness::with_board(Arc::new(tuned), short_board());
+
+    harness.advance_until(600, |sim| sim.over);
+
+    assert!(harness.sim.over);
+    assert_eq!(
+        harness.sim.leaks, 0,
+        "under overrun the cap ends it, and two creeps are alive"
+    );
+    assert_eq!(
+        harness.sim.lives, 5,
+        "the lives are untouched: the rule is not the reason it ended"
+    );
+}
+
+#[test]
+fn a_leak_is_counted_under_either_rule() {
+    // Under `overrun` a leak costs no life, but it still happened, and the
+    // count is what a multiboard would show (`sim-019`).
+    let mut tuned = (*leak_tables(5, LoseRule::Overrun)).clone();
+    tuned.match_rules.overrun_cap = 1_000; // out of the way
+    let mut harness = Harness::with_board(Arc::new(tuned), short_board());
+
+    harness.advance_until(600, |sim| sim.leaks > 0);
+
+    assert!(harness.sim.leaks > 0, "the creeps reached the goal");
+    assert_eq!(
+        harness.sim.lives, 5,
+        "and cost nothing under the overrun rule"
+    );
+    assert_eq!(harness.sim.match_view().leaks, harness.sim.leaks);
+    assert_eq!(harness.sim.match_view().lives, harness.sim.lives);
 }

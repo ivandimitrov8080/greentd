@@ -81,12 +81,14 @@ fn main() {
     };
     let config = run.config;
     let balance = run.balance;
+    let map = run.map;
 
     let tick = config.tick();
     let mut app = App::new();
 
     app.insert_resource(config.clone())
         .insert_resource(balance)
+        .insert_resource(map)
         .insert_resource(Time::<Fixed>::from_hz(config.tick_hz))
         .add_plugins(engine_plugins(&config, tick));
 

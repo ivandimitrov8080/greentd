@@ -110,7 +110,7 @@ pub enum ServerNotice {
     Ok,
     Err(Reject),
     WaveStarted(u32),
-    GameOver { wave: u32, live: u32 },
+    GameOver { wave: u32, lives: u32, leaks: u32 },
 }
 
 /// Reliable, ordered. Used for commands and notices.

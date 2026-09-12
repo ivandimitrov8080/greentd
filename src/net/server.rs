@@ -615,9 +615,10 @@ fn tick_sim(
             SimEvent::WaveStarted(w) => {
                 info!(
                     target: logging::target::SIM,
-                    "wave {} started ({} creeps)",
+                    "wave {} started ({} creeps per lane over {} lanes)",
                     w,
-                    sim.creeps_per_wave()
+                    sim.creeps_per_lane(),
+                    sim.lane_count()
                 );
                 let notice = ServerNotice::WaveStarted(w);
                 for entity in net.links.values() {
@@ -632,12 +633,27 @@ fn tick_sim(
             SimEvent::CreepKilled(id) => {
                 trace!(target: logging::target::SIM, "creep {:?} killed", id)
             }
+            SimEvent::Leaked(id) => {
+                // `info`, not `warn`: under the lives rule a leak is expected --
+                // an undefended lane leaks every wave -- and a warning per leak
+                // would drown the log the moment a match went badly.
+                info!(
+                    target: logging::target::SIM,
+                    "creep {:?} reached the goal ({} lives left, {} leaks)",
+                    id,
+                    sim.lives,
+                    sim.leaks
+                );
+            }
             SimEvent::GameOver => {
                 warn!(
                     target: logging::target::SIM,
-                    "GAME OVER: {} creeps alive (cap {})",
+                    "GAME OVER at wave {}: {} lives left, {} leaks, {} creeps alive (rule {})",
+                    sim.wave,
+                    sim.lives,
+                    sim.leaks,
                     sim.creeps_alive(),
-                    sim.overrun_cap()
+                    sim.lose_rule().text(),
                 );
             }
         }
@@ -668,7 +684,7 @@ fn sync_creeps(
 
     // Spawn or update.
     for (id, creep) in sim.creeps.iter() {
-        let pos = creep.pos(&sim.path);
+        let pos = creep.pos(&sim.map);
         let existing = net.creeps.get(id).copied();
         match existing {
             Some(entity) => {
@@ -802,7 +818,8 @@ fn announce_game_over(
     net.announced_over = true;
     let notice = ServerNotice::GameOver {
         wave: sim.wave,
-        live: sim.creeps_alive(),
+        lives: sim.lives,
+        leaks: sim.leaks,
     };
     for entity in net.links.values() {
         if let Ok(mut send) = links.get_mut(*entity) {

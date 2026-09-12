@@ -11,7 +11,7 @@ use lightyear::prelude::*;
 
 use crate::data::balance::Balance;
 use crate::data::components::{LocalPlayer, MatchView, Phase, PlayerView};
-use crate::map::{in_bounds, world_to_cell};
+use crate::map::Map;
 use crate::net::messages::{ClientCmd, ReliableChannel, ServerNotice};
 use crate::ui::visuals::MainCamera;
 
@@ -22,6 +22,7 @@ pub struct ClientUi {
     pub kind: u8,
     pub notice: String,
     pub notice_timer: f32,
+    /// How the match ended: the wave, the leaks it took, and the lives left.
     pub over: Option<(u32, u32)>,
 }
 
@@ -56,6 +57,7 @@ fn player_input(
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
     mut senders: Query<&mut MessageSender<ClientCmd>, With<Connected>>,
+    map: Res<Map>,
     mut ui: ResMut<ClientUi>,
 ) {
     let Ok(mut sender) = senders.single_mut() else {
@@ -88,8 +90,8 @@ fn player_input(
     let Ok(world) = camera.viewport_to_world_2d(cam_transform, cursor) else {
         return;
     };
-    let cell = world_to_cell(world);
-    if !in_bounds(cell) {
+    let cell = map.0.world_to_cell(world);
+    if !map.0.in_bounds(cell) {
         return;
     }
 
@@ -147,8 +149,8 @@ fn read_notices(
                     ui.notice = format!("wave {w}");
                     ui.notice_timer = 1.5;
                 }
-                ServerNotice::GameOver { wave, live } => {
-                    ui.over = Some((wave, live));
+                ServerNotice::GameOver { wave, leaks, .. } => {
+                    ui.over = Some((wave, leaks));
                 }
             }
         }
@@ -192,14 +194,20 @@ fn update_hud(
     let mut out = String::new();
 
     match authority.iter().next().or_else(|| received.iter().next()) {
-        Some(mv) => out.push_str(&format!(
-            "wave {:<3}  creeps {}/{}   players {}   [{}]\n",
-            mv.wave,
-            mv.live_creeps,
-            mv.overrun_cap,
-            mv.players,
-            Phase::from_u8(mv.phase).text()
-        )),
+        Some(mv) => {
+            // Lives first: it is the number that decides the match, and under
+            // the lives rule the creep count is a detail (`sim-005`).
+            out.push_str(&format!(
+                "wave {:<3}  lives {:<3}  leaks {:<3}  creeps {}/{}   players {}   [{}]\n",
+                mv.wave,
+                mv.lives,
+                mv.leaks,
+                mv.live_creeps,
+                mv.overrun_cap,
+                mv.players,
+                Phase::from_u8(mv.phase).text()
+            ));
+        }
         None => out.push_str("connecting...\n"),
     }
 
@@ -222,9 +230,9 @@ fn update_hud(
     if !ui.notice.is_empty() {
         out.push_str(&format!("\n{}", ui.notice));
     }
-    if let Some((wave, live)) = ui.over {
+    if let Some((wave, leaks)) = ui.over {
         out.push_str(&format!(
-            "\n\nGAME OVER - overrun at wave {wave} ({live} creeps)"
+            "\n\nGAME OVER - the goal was reached {leaks} times by wave {wave}"
         ));
     }
 

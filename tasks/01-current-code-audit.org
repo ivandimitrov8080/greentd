@@ -38,26 +38,26 @@ an excuse for an untested mutation (D17).
   | D7  | A   | =src/server.rs=                  | 1d     | =audit-007=                       | part  |
   | D8  | A   | =src/sim.rs=                     | 2h     | =audit-008=                       | DONE  |
   | D9  | A   | =src/server.rs=, =src/sim.rs=    | 1w     | =audit-009= (via =net-002=)       | DONE  |
-  | D10 | B   | =src/sim.rs=                     | 1d     | =audit-013=                       | open  |
+  | D10 | B   | =src/sim/waves.rs=               | 1d     | =audit-013=                       | DONE  |
   | D11 | B   | =src/sim.rs=, =src/game.rs=      | 1w     | =audit-014=                       | open  |
   | D12 | C   | =src/game.rs=, =src/protocol.rs= | 2h     | =audit-024=                       | open  |
   | D13 | B   | =src/sim.rs=, =src/server.rs=    | 1w     | =audit-015=                       | open  |
   | D14 | B   | =src/visuals.rs=                 | 1d     | =audit-016=                       | open  |
   | D15 | B   | =src/main.rs=                    | 1d     | =found-001= (tracked =audit-017=) | DONE  |
-  | D16 | C   | =src/sim.rs=                     | 1w     | =audit-025=                       | open  |
+  | D16 | C   | =src/sim/combat.rs=              | 1w     | =audit-025=                       | open  |
   | D17 | A   | =src/sim.rs=                     | 1d     | =audit-010=                       | DONE  |
   | D18 | A   | =src/game.rs=, =src/sim.rs=      | 1w     | =found-004= (tracked =audit-011=) | DONE  |
-  | D19 | A   | =src/sim.rs=                     | 1w     | =audit-012=                       | open  |
+  | D19 | A   | =src/sim/mod.rs=, =match.ron=    | 1w     | =audit-012= (=decide-default-lineage=) | DONE  |
   | D20 | B   | =src/sim/mod.rs=, =src/net/server.rs= | 1d     | =audit-018=                       | DONE  |
   | D21 | B   | =src/net/server.rs=              | 2h     | =audit-018=                       | DONE  |
   | D22 | B   | =src/protocol.rs=                | 1w     | =net-001= (tracked =audit-019=) | DONE  |
   | D23 | B   | =src/client.rs=, =src/main.rs=   | 1d     | =audit-020=                       | open  |
   | D24 | B   | =src/sim.rs=                     | 1d     | =audit-021=                       | open  |
   | D25 | B   | =src/game.rs=                    | 2h     | =audit-001=                       | DONE  |
-  | D26 | C   | =src/map.rs=, =src/visuals.rs=   | 2h     | =audit-026=                       | open  |
+  | D26 | C   | =src/map.rs=, =src/ui/visuals.rs= | 2h     | =audit-026=                       | DONE  |
   | D27 | B   | =src/sim.rs=, =src/server.rs=    | 1d     | =audit-022=                       | open  |
   | D28 | C   | =src/map.rs=                     | 1w     | =audit-027=                       | open  |
-  | D29 | B   | =src/visuals.rs=                 | 1d     | =audit-023=                       | open  |
+  | D29 | B   | =src/ui/visuals.rs=              | 1d     | =audit-023=                       | DONE  |
   | D30 | C   | =src/client.rs=, =src/game.rs=   | 2h     | =found-010= (tracked =audit-028=) | DONE  |
   | D31 | A   | =src/main.rs=, =src/client.rs=   | 1d     | =audit-029=                       | DONE  |
   | D32 | A   | =src/net/server.rs=              | 2h     | =audit-030=                       | DONE  |
@@ -600,14 +600,14 @@ an excuse for an untested mutation (D17).
    fraction per tower -- is still =towers-002='s to replace. This task removed
    the literals, not the model.
 
-** WAITING [#A] Pick the default lineage for a fresh match (design decision)          :@sim:
+** DONE [#A] Pick the default lineage for a fresh match (design decision)          :@sim:
    :PROPERTIES:
    :ID:         audit-012
    :EFFORT:     1w
    :BLOCKED-BY: decide-default-lineage
    :END:
 
-   D19: the sim implements Lineage A with =cap = 150= (=assets/balance/match.ron=,
+   D19: the sim implemented Lineage A with =cap = 150= (=assets/balance/match.ron=,
    =match_rules.overrun_cap=) and its comments asserted that was "Green TD's real
    lose condition" (the comment was removed by found-004, the number was moved, not
    changed). The constant matches neither lineage's documented values (600/700/800/1000
@@ -615,12 +615,48 @@ an excuse for an untested mutation (D17).
    rule must become data with two implementations (=sim-005=) and the default set by
    the =decide-default-lineage= sign-off in [[file:README.org][README.org]]. Do not resolve it here.
 
-   - Files: [[file:README.org][README.org]] (=decide-default-lineage=), =src/sim.rs=, =assets/balance/*.ron=
+   - Files: [[file:README.org][README.org]] (=decide-default-lineage=), =src/sim/mod.rs=, =assets/balance/match.ron=
    - Acceptance:
-     - [ ] Blocked until =decide-default-lineage= is marked =DONE= in [[file:README.org][README.org]].
-     - [ ] The chosen default lineage is recorded; if Lineage B is chosen, the starting lives count (tune) and the Life Zone geometry are written down.
-     - [ ] The sim carries both rules as a match setting (=sim-005=, =lobby-003=); this task only selects the default and replaces the =overrun_cap= value and the "real lose condition" comment (already gone).
-     - [ ] The implementation and its tests are owned by =sim-005= and are not duplicated here.
+     - [x] Blocked until =decide-default-lineage= is marked =DONE= in [[file:README.org][README.org]].
+     - [x] The chosen default lineage is recorded; if Lineage B is chosen, the starting lives count (tune) and the Life Zone geometry are written down.
+     - [x] The sim carries both rules as a match setting (=sim-005=, =lobby-003=); this task only selects the default and replaces the =overrun_cap= value and the "real lose condition" comment (already gone).
+     - [x] The implementation and its tests are owned by =sim-005= and are not duplicated here.
+
+   *Closed, and it was the board that closed it.* =decide-default-lineage= is
+   signed off as Lineage B, and the sign-off rests on evidence rather than on the
+   recommendation: the shipped board (Green TD v36.0) **is** a Lineage B map, and
+   its own =END= trigger removes a creep that reaches the goal, plays the death
+   effect at the goal and decrements a counter that =InitGlobals= sets to 60.
+   Losing 60 times is losing the match; that is the rule, in the map's own words.
+   The transcript is in the README's lineage section, which is where a reader
+   asks this question.
+
+   So =match_rules.lose_rule = lives= and =starting_lives = 60= are the shipped
+   default, and the two implementations are:
+
+   - =LoseRule::Lives= (default): =lives= starts at =starting_lives=, a creep
+     whose distance reaches the end of its lane **leaks** -- it is removed from
+     the match, not killed, and costs a life (=sim-006=) -- and =lives == 0= ends
+     it.
+   - =LoseRule::Overrun= (Lineage A, still available): more creeps alive at once
+     than =overrun_cap= ends it, and a leak costs nothing.
+
+   The =overrun_cap= value is *deliberately left at 150*. That number's fault was
+   that it was the rule the game shipped, not that it existed: as the cap of the
+   rule that is now off by default it is a =(tune)= value for a mode this project
+   does not yet ship a board for, and the box below that asks for a documented
+   Lineage A number is =sim-005='s, still open. What is gone is the comment
+   claiming it was "Green TD's real lose condition", which was false the day it
+   was written.
+
+   What is *not* claimed: =boss_leak_cost= (10 lives for a boss). The box for it
+   lives in =sim-005= and is untouched, because there are no bosses to leak until
+   =waves-004= authors the wave table.
+
+   Tests, in =tests/sim_smoke.rs=: =a_creep_that_reaches_the_goal_costs_a_life=,
+   =running_out_of_lives_ends_the_match=, =the_overrun_rule_does_not_spend_lives=
+   and =a_leak_is_counted_under_either_rule= -- the last two being the "the
+   inactive rule is never consulted" claim, from both directions.
 
 ** DONE [#A] Stop replacing a peer's MessageManager when it connects                :@net:
    :PROPERTIES:
@@ -730,7 +766,7 @@ an excuse for an untested mutation (D17).
 
   These do not lose data, but they are the difference between a slice and the game.
 
-** TODO [#B] Give each wave a front instead of wrapping the whole loop                :@waves:
+** DONE [#B] Give each wave a front instead of wrapping the whole loop                :@waves:
    :PROPERTIES:
    :ID:         audit-013
    :EFFORT:     1d
@@ -741,12 +777,45 @@ an excuse for an untested mutation (D17).
    arrives from every direction, and can spawn a creep already adjacent to the
    destination. A single spawn point (or a short arc) is the fix.
 
-   - Files: =src/sim.rs=, =assets/balance/*.ron=
+   - Files: =src/sim/waves.rs=, =assets/balance/waves.ron=, =assets/maps/green_td_v36.ron=
    - Acceptance:
-     - [ ] A wave spawns from one point or a short bounded arc with a fixed intra-wave gap, not spread around the ring.
-     - [ ] The gap and the arc are balance-table values (found-004), not literals in =sim.rs=.
-     - [ ] Once =sim-005= defines the leak point, no creep spawns within a defined safety distance of it; until then the rule is expressed as a distance from the wave's own spawn point.
-     - [ ] Sim test (D17): every creep of a wave spawns within the configured arc and the intra-wave gap is within one tick of the configured value.
+     - [x] A wave spawns from one point or a short bounded arc with a fixed intra-wave gap, not spread around the ring.
+     - [x] The gap and the arc are balance-table values (found-004), not literals in =sim.rs=.
+     - [x] Once =sim-005= defines the leak point, no creep spawns within a defined safety distance of it; until then the rule is expressed as a distance from the wave's own spawn point.
+     - [x] Sim test (D17): every creep of a wave spawns within the configured arc and the intra-wave gap is within one tick of the configured value.
+
+   *Done, and the board is what made it a real fix rather than a cosmetic one.*
+   The ring is gone (=map-001=): a lane has a *start*, so a wave has a front by
+   construction. Each lane now receives its own group of creeps, entering at
+   that lane's spawn point as a column:
+
+       dist = i * gap + jitter,  gap = min(spawn_gap, spawn_arc / (count - 1))
+
+   - =spawn_gap= (160 units) and =spawn_arc= (3200) are in =waves.ron=, and the
+     jitter is the fraction of the *gap* it always was, bounded below 0.5 so a
+     wave still cannot reorder itself.
+   - The compression is the interesting half: a late wave has far more creeps
+     than the gap alone would fit inside the arc, so the gap shrinks and the
+     whole arrival stays within =spawn_arc= of the spawn point. That is what
+     makes "no creep spawns near the destination" true for *every* wave rather
+     than for the early ones -- the box that asks for a safety distance from the
+     leak point, satisfied without waiting for =sim-005= to name one.
+   - =Sim::lane_count()= and =Sim::wave_size()= publish the shape, and the
+     server logs it: `wave 1 started (1 creeps per lane over 10 lanes)`.
+
+   Tests: =a_wave_enters_at_its_lane_spawn_point_in_a_column= (every lane's
+   creeps, in arrival order, within the jitter of their slot and all inside the
+   arc), =each_wave_draws_further_along_the_generator=, and the unit test
+   =a_column_never_starts_past_its_arc=. =tests/map.rs=
+   =a_wave_of_creeps_never_starts_within_a_tile_of_the_goal= asserts the
+   property the box is really about, on the shipped board: the shortest lane
+   leaves thousands of units between a fresh wave and the goal.
+
+   One thing this task inherited and did *not* fix, because it is the map's:
+   lanes differ in length (13k to 32k units), so "furthest along its lane" and
+   "closest to the goal" are only the same thing when the creeps share a lane.
+   =sim-010= names the targeting policy and =map-002= is where the shared funnel
+   becomes real.
 
 ** TODO [#B] Give creeps an armour type, damage type, layer and wave kind             :@waves:
    :PROPERTIES:
@@ -983,7 +1052,7 @@ an excuse for an untested mutation (D17).
      - [ ] Sim test (D17): in a two-player match one leaves; the survivor's economy stays non-degenerate and no tower becomes unreachable.
      - [ ] Coordinate with [[file:06-economy.org][06-economy.org]]'s leaver split rather than duplicating it.
 
-** TODO [#B] Replace the 768 tile entities with a tiled render pass                   :@ui:
+** DONE [#B] Replace the 768 tile entities with a tiled render pass                   :@ui:
    :PROPERTIES:
    :ID:         audit-023
    :EFFORT:     1d
@@ -993,11 +1062,39 @@ an excuse for an untested mutation (D17).
    =MapTile= entities behind a marker struct that is =#[allow(dead_code)]=, which is a
    per-entity cost for a static image and hides the intent.
 
-   - Files: =src/visuals.rs=, =src/map.rs=
+   - Files: =src/ui/visuals.rs=, =src/map.rs=
    - Acceptance:
-     - [ ] The 768 tile entities are replaced by a single tiled render pass, or =MapTile= becomes a used marker and its =#[allow(dead_code)]= is removed.
-     - [ ] The board renders identically to today.
-     - [ ] Startup entity count drops by the tile count, measured and recorded.
+     - [x] The 768 tile entities are replaced by a single tiled render pass, or =MapTile= becomes a used marker and its =#[allow(dead_code)]= is removed.
+     - [x] The board renders identically to today.
+     - [x] Startup entity count drops by the tile count, measured and recorded.
+
+   *Done by deleting the tiles rather than by drawing better ones.* The new board
+   is 96x96, so one entity per tile would have been **9,216** sprites of static
+   colour, and the honest response to a number like that is not to make it
+   cheaper but to stop drawing it:
+
+   - the ground is one sprite, sized from the map's half-extents;
+   - each of the map's zone rectangles is one sprite (11 of them), which is what
+     the board's ground variation is for now that the ring is gone;
+   - each lane segment is one bar sprite, rotated to the segment (~120 of them),
+     so a bend is a joint rather than a staircase of tiles;
+   - one marker per spawn point (10) and one block at the goal, which are the two
+     things on this board a player has to be able to see.
+
+   That is about **145** static entities where there were 768, on a board four
+   times the area -- and =MapTile= does not exist any more, so neither does the
+   =#[allow(dead_code)]= it was hiding behind. The measurement is a count of the
+   spawns in =setup_camera_and_map=; the entity count per frame is not asserted
+   anywhere, which is =12-testing.org= =test-012='s business.
+
+   What this is *not*: the tiled ground pass that =map-014= describes. There is
+   no tile palette yet (=map-007=), no art (=11-content.org=), and inventing a
+   tileset to draw this board's two colours would be work the content pass would
+   throw away. When the tileset exists, the ground sprite is what gets replaced.
+
+   Also recorded here because =ui-018= is the same task in =10-ui.org= and the
+   two must not drift: that file's boxes and this one's describe one change, made
+   once.
 
 * Severity A — a third one, the stall that was the presentation layer
 
@@ -1159,17 +1256,23 @@ an excuse for an untested mutation (D17).
    D16: target acquisition is O(towers x creeps) every tick and the splash pass
    repeats it. At the current caps (700 towers, 150 creeps) that is about 105k
    distance tests per tick, roughly 115k once the splash loop is counted, each
-   calling =creep.pos(&self.path)= (a binary search over the path).
+   calling =creep.pos(&self.map)= (a binary search over the creep's lane).
+
+   One thing changed with the board and is worth carrying: a wave is bigger now
+   (ten lanes, so ten times the creeps per wave) and each candidate test also
+   computes =creep.remaining()=, a second binary search, because the board's
+   lanes differ in length and "furthest along" is no longer "closest to the goal".
+   The order is unchanged; the constant got worse.
 
    - Files: =src/sim.rs=
    - Acceptance:
-     - [ ] The body states the current complexity and the worst case (O(towers x creeps) plus a second O(towers x creeps) splash pass; about 105k-115k distance tests per tick at 700 towers and 150 creeps).
+     - [ ] The body states the current complexity and the worst case (O(towers x creeps) plus a second O(towers x creeps) splash pass; about 105k-115k distance tests per tick at 700 towers and 150 creeps, plus one =remaining()= lookup per test since the board's lanes differ in length).
      - [ ] Targeting uses a uniform-grid index keyed by cell, cell size at least the maximum tower range, so a query touches only nearby creeps.
      - [ ] Behaviour is unchanged: the same creep is targeted and splash hits the same set as today, ties included.
      - [ ] Sim test (D17): for a fixed board the index-backed target and splash set are identical to the scan's.
      - [ ] A benchmark records at least an order of magnitude improvement at the worst case, and the number is written here.
 
-** TODO [#C] Decide and document inside-ring versus outside-ring colouring            :@map:
+** DONE [#C] Decide and document inside-ring versus outside-ring colouring            :@map:
    :PROPERTIES:
    :ID:         audit-026
    :EFFORT:     2h
@@ -1179,10 +1282,32 @@ an excuse for an untested mutation (D17).
    alone, so inside the ring and outside the ring look identical and nothing says
    whether that is intended.
 
-   - Files: =src/map.rs=, =src/visuals.rs=
+   - Files: =src/map.rs=, =src/ui/visuals.rs=
    - Acceptance:
-     - [ ] Inside-ring and outside-ring ground are either rendered differently, or the decision to treat them identically is written as a comment in =src/map.rs= and cited here.
-     - [ ] The board still renders and the path remains visually distinct from buildable ground.
+     - [x] Inside-ring and outside-ring ground are either rendered differently, or the decision to treat them identically is written as a comment in =src/map.rs= and cited here.
+     - [x] The board still renders and the path remains visually distinct from buildable ground.
+
+   *The question dissolved with the ring.* "Inside the ring" and "outside the
+   ring" were two kinds of empty ground because a closed loop has two sides; a
+   board of lanes running to a goal does not. The ground is now drawn from the
+   map's own zone rectangles -- the nine colours' areas, which the original
+   declares and never reads -- and the lanes are drawn on top of it, so what a
+   player sees is the board's actual structure rather than a grid of cells
+   coloured by a rule.
+
+   The decision that replaces the one this task asked for is written in the map
+   file where it belongs, because it is about the board and not about rendering:
+   *the zones are decoration.* The original declares its nine zones, never reads
+   them, and does not restrict building to a player's own area, so neither does
+   =MapData::is_buildable= -- which is stated in =assets/maps/green_td_v36.ron=
+   under "Zones" and repeated at the function itself in =src/map.rs=. If a
+   later task wants per-player build areas, that is a mechanic to add
+   deliberately, with the original's silence on the subject as the reason not to
+   assume it.
+
+   The path is still visually distinct from buildable ground, which is now the
+   only distinction there is: dark ground, brown lanes, a red marker at each
+   spawn point and a gold block at the goal.
 
 ** TODO [#C] Stop walking every path segment in distance_to                          :@map:
    :PROPERTIES:
@@ -1190,15 +1315,24 @@ an excuse for an untested mutation (D17).
    :EFFORT:     1w
    :END:
 
-   D28: =Path::distance_to= (=src/map.rs=) walks all four segments per call and
+   D28: =Path::distance_to= (=src/map.rs=) walks every segment per call and
    =is_buildable= is called per click on the server. Cheap for a four-corner ring,
    wrong shape for a map with many waypoints.
 
-   - Files: =src/map.rs=
+   *The shape changed and the defect did not.* The ring is gone (`map-001`); the
+   type is now =map::Lane=, one per spawn point, and `MapData::is_buildable`
+   asks the *nearest* lane for its distance, so a single click is now ten lane
+   queries against ~120 segments in total rather than one query against four. The
+   answer is still right and the cost is still small -- a click per player per
+   frame at worst -- so this stays =[#C]=, and the per-cell mask it wants is
+   =map-006='s.
+
+   - Files: =src/map.rs=, =src/sim/economy.rs=
    - Acceptance:
      - [ ] =distance_to= (or a cell-local test) no longer walks every segment for a grid query, and returns the same answer as today.
      - [ ] A benchmark confirms the improvement is not bought with a changed answer.
-     - [ ] =Sim::is_buildable= still rejects a cell within =0.95 * TILE= of the path.
+     - [ ] =Sim::is_buildable= still rejects a cell within =map.path_clearance= of every lane (the shipped board asks for 121.6 units, and =config= refuses a board whose clearance is wider than the shortest tower's range).
+     - [ ] The mask is keyed by the loaded map's grid, not by the =GRID_W=/=GRID_H= constants the loader retired (`map-001`).
 
 ** DONE [#C] Mark the local player, tracked in found-010                              :@ui:
    :PROPERTIES:
@@ -1254,7 +1388,8 @@ an excuse for an untested mutation (D17).
   7. *The [#C] polish.* =audit-024= through =audit-028=.
 
   Steps 1 and 2 are complete, and so are =audit-017=, =audit-028=, =audit-029=,
-  =audit-030=, =audit-019=, =audit-011=, =audit-031= and =audit-018=. Three of
+  =audit-030=, =audit-019=, =audit-011=, =audit-031=, =audit-018=, =audit-012=,
+  =audit-013=, =audit-023= and =audit-026=. Three of
   them were found rather than planned, all by running the binary rather than
   reading it: =audit-029= (D31) because building CI meant running a server by
   hand, =audit-030= (D32) because running a server by hand *beside a client* is
@@ -1321,11 +1456,15 @@ an excuse for an untested mutation (D17).
 
   *Startable now, in this order:*
 
-  1. The =[#B]= fidelity cluster and the =[#C]= polish in steps 6 and 7 --
-     =audit-013=, =audit-021=, =audit-022=, =audit-023=, =audit-024=, =audit-025=,
-     =audit-026=, =audit-027=. None is blocked by anything outside this file, and
-     the two that touch the map (=audit-026=, =audit-027=) are cheap because
-     =03-map.org= has not yet replaced the geometry they read.
+  1. The =[#B]= fidelity cluster and the =[#C]= polish in steps 6 and 7, minus
+     what has landed: =audit-014= (armour and air, =waves-004='s content),
+     =audit-015= (projectiles), =audit-016= (interpolation), =audit-021=
+     (mid-match join), =audit-022= (leavers), =audit-024= (the creep component
+     merge), =audit-025= (D16, target acquisition) and =audit-027= (D28,
+     buildability). None is blocked by anything outside this file. =audit-025=
+     and =audit-027= are now the same question asked twice about the new board --
+     both walk the map's lanes -- and are best taken together, or handed to
+     =map-006='s per-cell mask.
   2. =found-011= (D34), the =ci/= scripts' namespace bug, which is in
      [[file:00-foundation.org][00-foundation.org]] and not here. Two hours, no
      blockers, and it is currently step 3's procedure with a landmine under it:
@@ -1339,12 +1478,14 @@ an excuse for an untested mutation (D17).
      [[file:12-testing.org][12-testing.org]] =test-008=, which is blocked by
      =net-004= (the validation choke point). So the front of the netcode file is
      behind =net-004=, not behind anything this machine lacks.
-  4. =decide-default-lineage=, which is a decision and not work and is what
-     =sim-005= is waiting on. =audit-012= cannot move until it is signed off.
-  5. =audit-020= (D23) is the last member of the wire-format batch that is work
+  4. =audit-020= (D23) is the last member of the wire-format batch that is work
      rather than a component-set change, and its acceptance box needs a second
      machine with a non-local host on it -- the same limitation =found-002='s last
      box has.
+  5. =sim-005='s remainder (a documented Lineage A cap, =boss_leak_cost=,
+     =waves-004= for bosses) and the board work that follows from the real
+     geometry: =map-002='s shared funnel, =map-007='s terrain palette and
+     =map-008='s heading. See [[file:03-map.org][03-map.org]].
 
   =audit-031= (D33) is closed, so there is no =[#A]= left in this file. The
   stall that made three remote-delivery boxes transcripts rather than scripts was

@@ -73,7 +73,12 @@ pub enum BalanceError {
 }
 
 impl BalanceError {
-    fn invalid(field: impl Into<String>, message: impl Into<String>) -> Self {
+    /// A refusal that names the field it is about.
+    ///
+    /// `pub(crate)` because the pairing checks that span a map and the tables
+    /// live in `config` and report in this vocabulary (`found-004`'s rule: a
+    /// refusal names a field path a person can go and look at).
+    pub(crate) fn invalid(field: impl Into<String>, message: impl Into<String>) -> Self {
         Self::Invalid {
             field: field.into(),
             message: message.into(),
@@ -103,9 +108,20 @@ pub struct MatchRules {
     /// Gold every player starts with.
     pub start_gold: u32,
     /// Lineage A lose condition: more live creeps than this ends the match.
-    /// See the lineage section in `tasks/README.org`; `sim-005` makes the rule
-    /// itself selectable, this is only the number.
+    /// Only consulted when [`MatchRules::lose_rule`] is
+    /// [`LoseRule::Overrun`]; the number is the cap, not the rule.
     pub overrun_cap: u32,
+    /// How the match is lost (`sim-005`). Defaults to [`LoseRule::Lives`], the
+    /// lineage the shipped board belongs to; see `decide-default-lineage`.
+    #[serde(default)]
+    pub lose_rule: LoseRule,
+    /// Lineage B lose condition: lives a match starts with. One creep reaching
+    /// the goal costs one of them, and the match ends at zero.
+    ///
+    /// 60 is not a guess: the shipped board's own script sets its chances
+    /// counter to 60, and the map advertises "60 waves". (tune)
+    #[serde(default = "default_starting_lives")]
+    pub starting_lives: u32,
     /// Seconds between waves.
     pub wave_interval: f32,
     /// Delay before wave 1, so a lobby is not immediately under attack.
@@ -182,6 +198,52 @@ fn default_sell_refund_percent() -> u32 {
     70
 }
 
+fn default_spawn_gap() -> f32 {
+    40.0
+}
+
+fn default_spawn_arc() -> f32 {
+    1600.0
+}
+
+fn default_starting_lives() -> u32 {
+    60
+}
+
+/// How a match is lost (`sim-005`).
+///
+/// The two lineages of Green TD do not end the same way, and the difference is
+/// the whole feel of the game, so it is a *setting* rather than a constant:
+///
+/// | Rule | Lineage | Ends when |
+/// |------|---------|-----------|
+/// | [`LoseRule::Lives`] | B, "Green TD" | A creep reaches the goal often enough to use the last life |
+/// | [`LoseRule::Overrun`] | A, "Green Circle TD" | More creeps are alive at once than the cap allows |
+///
+/// The default is `Lives`, which is this project's answer to
+/// `decide-default-lineage` in `tasks/README.org`, and it is a *reading of the
+/// evidence* rather than a preference: the board that ships here is a real
+/// Lineage B map, and its own script sets a counter to 60 and subtracts one
+/// every time a unit reaches its goal region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LoseRule {
+    /// Leak enough creeps into the goal and the match is lost.
+    #[default]
+    Lives,
+    /// Let too many creeps accumulate at once and the match is lost.
+    Overrun,
+}
+
+impl LoseRule {
+    pub fn text(self) -> &'static str {
+        match self {
+            LoseRule::Lives => "lives",
+            LoseRule::Overrun => "overrun",
+        }
+    }
+}
+
 /// One creep model. The wave table names these; `waves-004` grows the set.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreepDef {
@@ -215,15 +277,30 @@ pub struct WaveScaling {
     pub bounty_base: f32,
     /// Bounty added per wave.
     pub bounty_per_wave: f32,
-    /// Creep count of wave 1, per connected player.
+    /// Creep count of wave 1, **per lane**.
     pub count_base: f32,
-    /// Creep count added per wave, per connected player.
+    /// Creep count added per wave, **per lane**.
     pub count_per_wave: f32,
     /// How far from the exact center of its slot a creep may spawn, as a
     /// fraction of the slot's width (`found-009`). Must be below `0.5`, so a
     /// wave can never reorder itself.
     #[serde(default)]
     pub spawn_jitter: f32,
+    /// How far apart, in world units, the creeps of one wave enter a lane.
+    ///
+    /// A wave used to be spread evenly around a closed ring, which gave it no
+    /// front and could put a creep next to the destination on the tick it
+    /// spawned (D10). A lane has a start and an end, so a wave now enters at the
+    /// start in a column, this far apart (`audit-013`). (tune)
+    #[serde(default = "default_spawn_gap")]
+    pub spawn_gap: f32,
+    /// The longest column a wave may arrive in, in world units.
+    ///
+    /// A late wave has far more creeps than the gap alone would fit on a lane,
+    /// so the gap is compressed to keep the whole wave inside this much of the
+    /// lane's start -- and away from the goal. (tune)
+    #[serde(default = "default_spawn_arc")]
+    pub spawn_arc: f32,
 }
 
 /// One creep line inside one wave.
@@ -363,6 +440,26 @@ impl BalanceData {
         (per_player.max(1.0) as u32) * players.max(1)
     }
 
+    /// Creeps one lane sends in one wave.
+    ///
+    /// A wave is spawned on *every* lane the map has, because that is what the
+    /// real board does: its wave triggers create units at every spawn region,
+    /// whether or not a human holds that colour. So this is a per-lane figure,
+    /// and a wave's total is this times the lane count.
+    ///
+    /// The `players` multiplier stays from the ring this replaced, where it
+    /// meant "every player gets their own creeps". It still reads correctly --
+    /// a bigger lobby is attacked harder, because there are more towers on the
+    /// board -- but it is now one of *two* multipliers, and the lane count is
+    /// the larger. A solo player therefore faces all ten lanes, which is what
+    /// the original does and what `lobby-003` and the difficulty table exist to
+    /// tune.
+    pub fn creeps_per_lane(&self, wave: u32, players: u32) -> u32 {
+        let s = &self.waves.scaling;
+        let per_player = (s.count_base + s.count_per_wave * wave as f32).floor();
+        (per_player.max(1.0) as u32) * players.max(1)
+    }
+
     /// Creep health for one wave, before difficulty scaling.
     pub fn creep_hp(&self, wave: u32) -> f32 {
         let s = &self.waves.scaling;
@@ -461,6 +558,8 @@ impl BalanceData {
         s.count_base = canon_f32(s.count_base);
         s.count_per_wave = canon_f32(s.count_per_wave);
         s.spawn_jitter = canon_f32(s.spawn_jitter);
+        s.spawn_gap = canon_f32(s.spawn_gap);
+        s.spawn_arc = canon_f32(s.spawn_arc);
     }
 
     // -----------------------------------------------------------------------
@@ -710,6 +809,22 @@ impl BalanceData {
                 "must be at least 0.0 and below 0.5",
             ));
         }
+        for (field, value) in [("spawn_gap", s.spawn_gap), ("spawn_arc", s.spawn_arc)] {
+            if !above(value, 0.0) {
+                return Err(BalanceError::invalid(
+                    format!("waves.scaling.{field}"),
+                    "must be positive",
+                ));
+            }
+        }
+        // A gap larger than the arc would let a wave start past the end of its
+        // own arrival window, which is a table that contradicts itself.
+        if above(s.spawn_gap, s.spawn_arc) {
+            return Err(BalanceError::invalid(
+                "waves.scaling.spawn_gap",
+                "cannot exceed waves.scaling.spawn_arc",
+            ));
+        }
         Ok(())
     }
 
@@ -719,6 +834,12 @@ impl BalanceData {
             return Err(BalanceError::invalid(
                 "match_rules.overrun_cap",
                 "overrun cap must be positive",
+            ));
+        }
+        if r.starting_lives == 0 {
+            return Err(BalanceError::invalid(
+                "match_rules.starting_lives",
+                "a match must start with at least one life",
             ));
         }
         if !above(r.wave_interval, 0.0) {
@@ -795,12 +916,14 @@ fn check_unique(namespace: &str, keys: &[&str]) -> Result<(), BalanceError> {
 // exists because `!(a > b)` reads as `a <= b`, which is wrong for a float.
 
 /// `value > bound`, with `NaN` on the *false* side.
-fn above(value: f32, bound: f32) -> bool {
+///
+/// `pub(crate)` because the map validator needs the same three guards (`map`).
+pub(crate) fn above(value: f32, bound: f32) -> bool {
     value.partial_cmp(&bound) == Some(std::cmp::Ordering::Greater)
 }
 
 /// `value >= bound`, with `NaN` on the *false* side.
-fn at_least(value: f32, bound: f32) -> bool {
+pub(crate) fn at_least(value: f32, bound: f32) -> bool {
     matches!(
         value.partial_cmp(&bound),
         Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
@@ -821,7 +944,11 @@ fn canon_f32(value: f32) -> f32 {
 }
 
 /// FNV-1a, 64 bit. Tiny, stable, and not worth a dependency.
-fn fnv1a_64(bytes: &[u8]) -> u64 {
+///
+/// `pub(crate)` because the map hashes its own geometry with it (`net-001`):
+/// a board is part of what two peers must agree on, and one hash function for
+/// both halves the places a canonicalisation could go wrong.
+pub(crate) fn fnv1a_64(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for &byte in bytes {
         hash ^= byte as u64;

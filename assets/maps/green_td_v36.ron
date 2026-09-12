@@ -1,0 +1,286 @@
+//! The board that ships with the game: Green TD v36.0 (`Sencility`), 96x96.
+//!
+//! Every number here was read out of the real map rather than invented, and
+//! the provenance matters because the geometry *is* the game design:
+//!
+//!   wc3maps.com/map/153802  ->  `Green TD 36.0.w3x`
+//!     war3map.j          the region rectangles and the enter-region triggers
+//!     war3map.w3e        the 96 x 96 tile grid, 128 units per tile
+//!
+//! The original moves a creep the only way a Warcraft III map can without a
+//! custom movement system: a trigger fires when a unit enters a region and
+//! orders it to "move" to the *centre of the next region*. The map is
+//! therefore a graph of waypoint rectangles, and this file is that graph
+//! flattened into one polyline per lane.
+//!
+//! Coordinates are Warcraft III world units. The playable area is
+//! -6144..6144 on both axes, so the origin is the middle of the board.
+//!
+//! # The shape of a match
+//!
+//! Ten lanes -- nine colours, with red holding two spawns so that the middle
+//! player is attacked from both sides -- run from a spawn on the rim, through
+//! the middle of the board, and into one shared funnel at the bottom centre
+//! where they merge. The last point of every lane is the goal.
+//!
+//! The original spawns every lane on every wave, whether or not a human holds
+//! that colour, which is why a solo game is attacked from all ten directions.
+//! `sim::waves` reproduces that: a wave is spawned on every lane the map has.
+//!
+//! # Deliberate simplifications
+//!
+//! * Each lane is a polyline that repeats the shared funnel, rather than ten
+//!   lanes sharing one segment. The original re-orders a creep on entering
+//!   the next region, so the funnel is genuinely shared; a polyline per lane
+//!   is what the current sim can follow (`creep.dist` along one path), and it
+//!   keeps the visible behaviour: the creeps meet at the funnel and reach the
+//!   same goal. What it costs: lane *lengths* differ (13k to 32k units), so
+//!   "furthest along its lane" is only an approximation of "closest to the
+//!   goal" for creeps in different lanes. Named as a policy in `sim-010`.
+//! * `Path_1d` and `Path_2d` are dead triggers in the original (they register
+//!   on regions that do not exist) and are not reproduced.
+//! * `gg_rct_leftgo3` has a trigger that fires on `leftgo4` -- the author's
+//!   naming, not a missing step. The chain below follows the *regions*, which
+//!   is what the engine did.
+//!
+//! # Zones
+//!
+//! The nine `*Zone` rectangles are kept because they tile the board and are
+//! what the ground is drawn from. They are **decoration**: the original
+//! declares them and never reads them, so nothing here restricts building to
+//! a player's own zone. That is a decision a later task can revisit with the
+//! evidence in hand rather than a rule this file smuggles in.
+(
+    id: "green_td_v36",
+    name: "Green TD v36.0",
+    // war3map.w3e: 97x97 tilepoints, i.e. a 96x96 board of 128-unit tiles.
+    tiles_x: 96,
+    tiles_y: 96,
+    tile_size: 128.0,
+    // A cell with any part of a lane within this radius is not buildable:
+    // the original has the same "no maze, no blocking" rule, and 0.95 of
+    // a tile keeps a tower off the path it is shooting across.
+    path_clearance: 121.6,
+    goal: (
+        name: "END",
+        x: 0.0,
+        y: -5584.0,
+        half_w: 96.0,
+        half_h: 144.0,
+    ),
+    lanes: [
+        // 1_Pink_Spawn — 16 waypoints, 27460 units long.
+        (
+            name: "Pink",
+            spawn: (-5264.0, 736.0),
+            waypoints: [
+                (-5264.0, 736.0),
+                (-5264.0, 2080.0),
+                (-5152.0, 2928.0),
+                (-2336.0, 3024.0),
+                (-2416.0, 2736.0),
+                (-64.0, 2832.0),
+                (-64.0, 736.0),
+                (-848.0, 752.0),
+                (-768.0, -1424.0),
+                (-5248.0, -1392.0),
+                (-48.0, -2304.0),
+                (-48.0, -3488.0),
+                (-848.0, -3424.0),
+                (-736.0, -4432.0),
+                (0.0, -4352.0),
+                (0.0, -5584.0),
+            ],
+        ),
+        // 2_Gray_Spawn — 16 waypoints, 27635 units long.
+        (
+            name: "Gray",
+            spawn: (5232.0, 736.0),
+            waypoints: [
+                (5232.0, 736.0),
+                (5232.0, 1728.0),
+                (5168.0, 2928.0),
+                (2176.0, 3008.0),
+                (2448.0, 2768.0),
+                (64.0, 2832.0),
+                (64.0, 736.0),
+                (848.0, 752.0),
+                (768.0, -1424.0),
+                (5248.0, -1408.0),
+                (48.0, -2304.0),
+                (48.0, -3488.0),
+                (848.0, -3488.0),
+                (752.0, -4400.0),
+                (0.0, -4352.0),
+                (0.0, -5584.0),
+            ],
+        ),
+        // 3_Orange_Spawn — 16 waypoints, 31977 units long.
+        (
+            name: "Orange",
+            spawn: (-1040.0, 5264.0),
+            waypoints: [
+                (-1040.0, 5264.0),
+                (-5456.0, 5120.0),
+                (-5360.0, 4176.0),
+                (-2352.0, 4192.0),
+                (-2416.0, 2736.0),
+                (-64.0, 2832.0),
+                (-64.0, 736.0),
+                (-848.0, 752.0),
+                (-768.0, -1424.0),
+                (-5248.0, -1392.0),
+                (-48.0, -2304.0),
+                (-48.0, -3488.0),
+                (-848.0, -3424.0),
+                (-736.0, -4432.0),
+                (0.0, -4352.0),
+                (0.0, -5584.0),
+            ],
+        ),
+        // 4_Green_Spawn — 16 waypoints, 31930 units long.
+        (
+            name: "Green",
+            spawn: (1040.0, 5264.0),
+            waypoints: [
+                (1040.0, 5264.0),
+                (5520.0, 5152.0),
+                (5456.0, 4192.0),
+                (2416.0, 4128.0),
+                (2448.0, 2768.0),
+                (64.0, 2832.0),
+                (64.0, 736.0),
+                (848.0, 752.0),
+                (768.0, -1424.0),
+                (5248.0, -1408.0),
+                (48.0, -2304.0),
+                (48.0, -3488.0),
+                (848.0, -3488.0),
+                (752.0, -4400.0),
+                (0.0, -4352.0),
+                (0.0, -5584.0),
+            ],
+        ),
+        // 5_Red_Spawn_A — 11 waypoints, 20895 units long.
+        (
+            name: "Red A",
+            spawn: (-112.0, 3936.0),
+            waypoints: [
+                (-112.0, 3936.0),
+                (-64.0, 736.0),
+                (-848.0, 752.0),
+                (-768.0, -1424.0),
+                (-5248.0, -1392.0),
+                (-48.0, -2304.0),
+                (-48.0, -3488.0),
+                (-848.0, -3424.0),
+                (-736.0, -4432.0),
+                (0.0, -4352.0),
+                (0.0, -5584.0),
+            ],
+        ),
+        // 5_Red_Spawn_B — 11 waypoints, 20805 units long.
+        (
+            name: "Red B",
+            spawn: (112.0, 3936.0),
+            waypoints: [
+                (112.0, 3936.0),
+                (64.0, 736.0),
+                (848.0, 752.0),
+                (768.0, -1424.0),
+                (5248.0, -1408.0),
+                (48.0, -2304.0),
+                (48.0, -3488.0),
+                (848.0, -3488.0),
+                (752.0, -4400.0),
+                (0.0, -4352.0),
+                (0.0, -5584.0),
+            ],
+        ),
+        // 6_Purple_Spawn — 13 waypoints, 16284 units long.
+        (
+            name: "Purple",
+            spawn: (-3088.0, 496.0),
+            waypoints: [
+                (-3088.0, 496.0),
+                (-3104.0, -1440.0),
+                (-5200.0, -1392.0),
+                (-5088.0, -2896.0),
+                (-3632.0, -2816.0),
+                (-3712.0, -2176.0),
+                (-1648.0, -2208.0),
+                (-48.0, -2304.0),
+                (-48.0, -3488.0),
+                (-848.0, -3424.0),
+                (-736.0, -4432.0),
+                (0.0, -4352.0),
+                (0.0, -5584.0),
+            ],
+        ),
+        // 7_Yellow_Spawn — 13 waypoints, 16399 units long.
+        (
+            name: "Yellow",
+            spawn: (3072.0, 496.0),
+            waypoints: [
+                (3072.0, 496.0),
+                (2832.0, -1424.0),
+                (5200.0, -1408.0),
+                (5120.0, -2880.0),
+                (3632.0, -2800.0),
+                (3696.0, -2208.0),
+                (1664.0, -2224.0),
+                (48.0, -2304.0),
+                (48.0, -3488.0),
+                (848.0, -3488.0),
+                (752.0, -4400.0),
+                (0.0, -4352.0),
+                (0.0, -5584.0),
+            ],
+        ),
+        // 8_Blue_Spawn — 9 waypoints, 13505 units long.
+        (
+            name: "Blue",
+            spawn: (-5440.0, -5248.0),
+            waypoints: [
+                (-5440.0, -5248.0),
+                (-1552.0, -5248.0),
+                (-1648.0, -2208.0),
+                (-48.0, -2304.0),
+                (-48.0, -3488.0),
+                (-848.0, -3424.0),
+                (-736.0, -4432.0),
+                (0.0, -4352.0),
+                (0.0, -5584.0),
+            ],
+        ),
+        // 9_Teal_Spawn — 9 waypoints, 13354 units long.
+        (
+            name: "Teal",
+            spawn: (5408.0, -5232.0),
+            waypoints: [
+                (5408.0, -5232.0),
+                (1568.0, -5232.0),
+                (1664.0, -2224.0),
+                (48.0, -2304.0),
+                (48.0, -3488.0),
+                (848.0, -3488.0),
+                (752.0, -4400.0),
+                (0.0, -4352.0),
+                (0.0, -5584.0),
+            ],
+        ),
+    ],
+    zones: [
+        (name: "BlueZone", min: (-2240.0, -6144.0), max: (0.0, -1760.0)),
+        (name: "BlueZone2", min: (-6144.0, -6144.0), max: (-2240.0, -4000.0)),
+        (name: "GreenZone", min: (1856.0, 4384.0), max: (6144.0, 6144.0)),
+        (name: "GreyZone", min: (2624.0, 960.0), max: (6144.0, 4032.0)),
+        (name: "OrangeZone", min: (-6144.0, 4384.0), max: (-1856.0, 6144.0)),
+        (name: "PinkZone", min: (-6144.0, 992.0), max: (-2592.0, 4032.0)),
+        (name: "PurpleZone", min: (-6144.0, -3392.0), max: (-2528.0, -704.0)),
+        (name: "RedZone", min: (-1888.0, -1760.0), max: (1856.0, 3200.0)),
+        (name: "TealZone", min: (0.0, -6144.0), max: (2240.0, -1760.0)),
+        (name: "TealZone2", min: (2240.0, -6144.0), max: (6144.0, -4000.0)),
+        (name: "YellowZone", min: (2496.0, -3392.0), max: (6144.0, -672.0)),
+    ],
+)

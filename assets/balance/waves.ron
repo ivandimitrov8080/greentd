@@ -2,17 +2,32 @@
     scaling: (
         hp_base: 45.0,
         hp_growth: 0.28,
-        speed_base: 55.0,
-        speed_growth: 2.0,
+        // World units, like the tower ranges: the slice's numbers times four,
+        // because the board's tile is four times larger (see towers.ron). Speed
+        // is what sets how long a lane takes -- 13,000 units at 220 is a minute,
+        // which is about what the ring took before.
+        speed_base: 220,
+        speed_growth: 8,
         bounty_base: 6.0,
         bounty_per_wave: 0.5,
-        count_base: 4.0,
+        // Creeps per lane, per connected player. This used to be the whole
+        // wave -- one closed ring, so `players` was the only multiplier. The
+        // real board has ten lanes and attacks every one of them on every
+        // wave, so the lane count multiplies this and the base had to come
+        // down to keep a wave the same size as before: 1 creep per lane is 10
+        // on the board, where it used to be 4. (tune)
+        count_base: 1.0,
         count_per_wave: 0.5,
-        // How far a creep may stand from the exact center of its slot in the
-        // wave, as a fraction of the slot's width. Strictly below 0.5, so the
-        // jitter can never reorder a wave; it only keeps the pulse from
-        // reading as a rigid comb. (tune)
+        // How far a creep may stand from the exact centre of its slot in the
+        // wave's arrival column, as a fraction of the gap between two creeps.
+        // Strictly below 0.5, so the jitter can never reorder a wave; it only
+        // keeps the column from reading as a rigid comb. (tune)
         spawn_jitter: 0.3,
+        // The wave's arrival shape: its creeps enter at the lane's spawn point,
+        // this far apart, and the whole column fits inside `spawn_arc` so a
+        // late wave never starts anywhere near the goal. (tune)
+        spawn_gap: 160,
+        spawn_arc: 3200,
     ),
     waves: [],
 )
