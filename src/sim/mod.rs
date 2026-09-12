@@ -109,8 +109,8 @@ pub struct Sim {
     /// function of the sim's state and `dt`, and a global generator would make
     /// that false (`found-009`).
     rng: Rng,
-    /// Set once the lose condition is met. Terminal until `audit-018` adds a
-    /// reset path.
+    /// Set once the lose condition is met. `step` returns immediately while it
+    /// is set; [`Sim::reset`] is the only thing that clears it (`audit-018`).
     pub over: bool,
 }
 
@@ -157,6 +157,39 @@ impl Sim {
     /// The seed this match was built from, as the tables asked for it.
     pub fn seed(&self) -> u64 {
         self.seed
+    }
+
+    /// Return the sim to the state [`Sim::new`] leaves it in, for a rematch
+    /// (D20, `audit-018`).
+    ///
+    /// Everything the match accumulated goes: the board, the wave clock and the
+    /// wave counter, the creep ids, and the lose flag that otherwise made `over`
+    /// terminal -- a match that could be lost once and never again was not a
+    /// match, it was a process.
+    ///
+    /// What is *kept* is who is in the match. The player records stay keyed and
+    /// stay connected, so a rematch is the same people with fresh gold and kills
+    /// rather than a lobby that has to be rebuilt; and the generator is reseeded,
+    /// because a fresh match on the same tables should be the *same* match, which
+    /// is exactly what `found-009` promises a seed buys.
+    ///
+    /// This is the sim half of one reset path. The other half is `Net`, whose
+    /// `announced_over` latch would otherwise swallow the second defeat's notice
+    /// (D21); `net::server::reset_match` clears both together.
+    pub fn reset(&mut self) {
+        self.creeps.clear();
+        self.towers.clear();
+        self.wave = 0;
+        self.wave_timer = self.balance.match_rules.first_wave_delay;
+        self.next_id = 1;
+        self.rng = Rng::from_seed(self.seed);
+        self.over = false;
+        let gold = self.balance.match_rules.start_gold;
+        for player in self.players.values_mut() {
+            player.gold = gold;
+            player.kills = 0;
+            player.wave_call_cooldown = 0.0;
+        }
     }
 
     /// Lineage A lose condition: more live creeps than this ends the match.

@@ -193,6 +193,15 @@ extends.
    a foreign peer, commands from an unregistered player, and reconnect identity
    takeover.
 
+   This is also where three separate tasks' "a run showed it, but only once"
+   claims would become tests, because a two-peer run is the only instrument that
+   sees them: =net-006='s last box (a host plus one remote client, each HUD
+   showing its own figures), =net-001='s refusal as a second process sees it, and
+   =audit-030='s notice regression (D32). =audit-031= has meanwhile made the
+   *one-way* half scriptable -- =ci/windowed-client-liveness.sh= runs a headless
+   server and a windowed client and checks every wave notice arrives -- so what
+   this harness adds is the in-process, CI-able, both-directions version.
+
    - Files: =tests/net.rs=
    - Acceptance:
      - [ ] A mismatched protocol version is rejected at the handshake (=net-001=).

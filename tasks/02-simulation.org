@@ -435,7 +435,7 @@ the creep data model and adds the armour/damage system (=src/game.rs=,
    - Acceptance:
      - [ ] =Player= tracks kills, leaks, gold earned and total damage dealt; each tower tracks damage dealt this match.
      - [ ] The counters are derivable from =SimEvent=s, so they are a cache, not a second source of truth.
-     - [ ] Counters reset on a rematch and are not replicated (recomputed client-side from events).
+     - [ ] Counters reset on a rematch and are not replicated (recomputed client-side from events). =audit-018= is the reset path to hang them off; adding the counters without resetting them there would leave a rematch's multiboard reading the previous match's totals.
      - [ ] A test sums the events of a short match and matches the counters exactly.
 
 * Non-goals

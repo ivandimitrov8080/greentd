@@ -310,17 +310,20 @@ state or the local build ghost, and every action is an intent, never a mutation.
    :BLOCKED-BY: ui-002, audit-018, lobby-010
    :END:
    The original shows a 60-second timer when the game is lost and offers
-   =-restart=. Today the HUD prints a permanent =GAME OVER= line, =Sim::over= is
-   terminal with no reset path (=D20=), and =Net::announced_over= is never reset
-   (=D21=). Show a proper screen with the outcome, the final wave, a countdown,
-   and a restart action that drives the server reset path (=audit-018=, =lobby-010=).
+   =-restart=. Today the HUD prints a permanent =GAME OVER= line and there is no
+   screen for it. The *server* side of a restart exists as of =audit-018=
+   (=Sim::reset()= and a =ResetMatch= request, which clears =Net::announced_over=
+   so the next defeat announces too - that is D20 and D21 closed); what is missing
+   is everything a player sees: a screen with the outcome and the final wave, the
+   countdown, and a control that fires the request. The flow itself is =lobby-010=.
 
-   - Files: =src/ui/game_over.rs=, =src/client.rs=
+   - Files: =src/ui/game_over.rs=, =src/net/client.rs=, =src/ui/hud.rs=
    - Acceptance:
      - [ ] The screen appears on game over with the outcome, the final wave and a 60-second countdown (tune).
      - [ ] The countdown reaching zero returns the lobby to setup without any client-side authority decision.
-     - [ ] A restart action drives the server reset path and returns to setup (=audit-018=, =lobby-010=).
+     - [ ] A restart action sends the =ResetMatch= request and returns to setup (=audit-018=, =lobby-010=); it does not touch sim state from the client.
      - [ ] The screen never shows a stale value after the match ends (=D4=).
+     - [ ] The permanent =GAME OVER= line is removed from the HUD in favour of the screen.
 
 ** TODO [#A] Add a connect screen with an address field and status :@ui:net:
    :PROPERTIES:

@@ -114,6 +114,14 @@ and none of it is optional, and =found-004= is the loader named by the
    old meaning for free, because the environment mapping is ="GREENTD_"+ the key
    upper-cased, so the balance loader did not have to change.
 
+   One consequence of that mapping is a *reserved namespace*, and it is written
+   here because it is this task's: =GREENTD_*= belongs to the config layer, an
+   unknown name in it is an error, and every child process inherits it. That makes
+   =GREENTD_*= unusable as a name for anything else -- including a shell script's
+   own knobs, which is exactly what =ci/= did (D34, =found-011=). The rule for a
+   reader: put a variable in this prefix only to name a config key, or a process
+   you start will refuse to run.
+
 * Observability
 
 ** DONE [#B] Structure logs on stable targets and write a per-match log file          :@found:
@@ -559,11 +567,27 @@ and none of it is optional, and =found-004= is the loader named by the
 
    The lesson is not "run things by hand"; it is narrower and more useful. This
    pipeline starts *one* process, so it can only check what one process can show,
-   and the two defects above live in what happens *between* processes. A CI job
-   that starts a server and a client and waits for a wave notice on the client is
-   the natural next one and is not here yet; it needs the two-process harness that
-   =test-008= ([[file:12-testing.org][12-testing.org]]) is for, and until it
-   exists the manual run is the instrument.
+   and the two defects above live in what happens *between* processes. A job that
+   starts a server and a client and waits for a wave notice on the client is the
+   natural next one.
+
+   *It exists now, as a script, and still not as a job* -- added by =audit-031=,
+   which needed it to hold its own fix. =ci/windowed-client-liveness.sh= starts a
+   headless server and a windowed client, joins the server's =wave N started=
+   lines against the client's =notice: WaveStarted(N)= lines, and fails if a wave
+   the server started while the client was connected has no notice within four
+   seconds. It is deliberately *not* in =.github/workflows/ci.yml=: it needs a
+   display and a working Vulkan driver, and a hosted runner has neither, so the
+   job would be skipped on every run -- and a check that is always skipped is
+   worse than a documented manual one. What would be CI-able is the in-process
+   harness of =test-008= ([[file:12-testing.org][12-testing.org]]), and that is
+   still not written.
+
+   A smaller thing found while adding it, filed as D34 and fixed by =found-011=
+   below: the knobs of both older scripts are named inside the =GREENTD_= prefix
+   that =found-002= reserves for config keys, so *setting* one breaks the very
+   process the script starts. The new script's knobs are =LIVENESS_*= because of
+   it.
 
 ** DONE [#B] Pin workspace dependencies and document the bevy/lightyear upgrade path    :@found:
    :PROPERTIES:
@@ -630,3 +654,50 @@ and none of it is optional, and =found-004= is the loader named by the
     =(tune)=.
   - *Art and audio.* No sprites, animation, VFX or sound; those belong to
     =11-content.org=.
+
+** TODO [#C] Move the CI scripts' own knobs out of the =GREENTD_= namespace   :@found:test:
+   :PROPERTIES:
+   :ID:         found-011
+   :EFFORT:     2h
+   :END:
+
+   D34: =ci/smoke-server.sh= and =ci/check-balance-refusal.sh= read their own
+   configuration from =GREENTD_BIN=, =GREENTD_SMOKE_PORT=, =GREENTD_PORT=,
+   =GREENTD_READY_TIMEOUT=, =GREENTD_WAVE_TIMEOUT= and =GREENTD_TERM_TIMEOUT=.
+   That prefix is not the scripts' to use: =found-002= maps *every* =GREENTD_*=
+   variable to a config key and refuses an unknown one, and a child inherits its
+   parent's environment -- so exporting any documented knob makes the server the
+   script starts abort. Measured, not inferred:
+
+   #+BEGIN_EXAMPLE
+   $ GREENTD_SMOKE_PORT=5311 ./ci/smoke-server.sh
+   smoke: starting .../greentd server --bind 127.0.0.1:5311 (no display)
+   smoke: FAIL: the server exited before the server listened
+   --- server output ---
+     greentd: config: unknown key "smoke-port"
+   #+END_EXAMPLE
+
+   Read that carefully, because the two halves disagree: the knob *worked* (the
+   script bound 5311), and then the child inherited =GREENTD_SMOKE_PORT=, tried to
+   read it as a config key, and refused to start. The smoke script reports that as
+   "the server exited before the server listened", which is indistinguishable from
+   a real regression. That is the cost, and it is not the wasted minute: the place
+   a developer looks when CI is red is the place that lies.
+
+   - Files: =ci/smoke-server.sh=, =ci/check-balance-refusal.sh=, =ci/windowed-client-liveness.sh=, =00-foundation.org= (=found-007=)
+   - Acceptance:
+     - [ ] No script under =ci/= reads or documents a knob in the =GREENTD_= namespace; =ci/windowed-client-liveness.sh='s =LIVENESS_*= is the pattern, and =found-007='s body lists the new names.
+     - [ ] Every script starts its child with the =GREENTD_= names found in its own environment removed (enumerate them and pass =env -u=), so an inherited variable can neither change what the test measures nor stop the child from starting. A test script that leaves the reserved namespace half-set is running a different test than the one it announces.
+     - [ ] A regression check: a script run with a bogus =GREENTD_*= name exported still passes. Today that is the failure above.
+     - [ ] The scripts are still runnable by hand and by =.github/workflows/ci.yml= with no change to the pipeline, which sets none of these knobs -- so this is why the defect could sit unnoticed.
+
+   =[#C]= by this file's own definition: it cannot lose a player's state, it
+   cannot let a client cheat, and it is not a gameplay fidelity gap. It is filed
+   rather than fixed in passing because what is wrong is a *rule about a
+   namespace*, not six variable names, and the rule outlives the rename: the next
+   knob somebody adds to a script under =ci/= will reach for =GREENTD_*= too
+   unless the reason it must not is written down where the scripts live.
+
+* Non-goals
+
+  This file is plumbing only. It deliberately excludes:

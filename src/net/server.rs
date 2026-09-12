@@ -811,6 +811,48 @@ fn announce_game_over(
     }
 }
 
+/// Ask the server for a rematch (`audit-018`).
+///
+/// This is the server end of a restart. The user-facing half -- a button, a
+/// countdown, red's authority to press it -- is `08-lobby.org`'s (`lobby-012`),
+/// and nothing fires this yet; the point of having it here is that a rematch is
+/// one path rather than two, because the two pieces of state that say "this
+/// match is over" live in different modules.
+#[derive(Message)]
+pub struct ResetMatch;
+
+/// One reset path: the sim, and the bookkeeping that outlives it (`audit-018`).
+///
+/// Two pieces of state say a match is finished. `Sim::over` is terminal and
+/// stops `step`, so without a reset a rematch needs a process restart (D20).
+/// `Net::announced_over` latches the first game-over broadcast and is never
+/// cleared, so a restarted match would announce its *first* defeat and then go
+/// quiet (D21). Clearing one without the other is either a match that cannot be
+/// replayed or a rematch whose ending nobody is told about, so both are cleared
+/// here, together, from a single request.
+///
+/// The creep and tower mirrors do not need clearing: `sync_creeps` and
+/// `sync_towers` already reap a mirror whose sim counterpart is gone, so an
+/// emptied sim empties the board on the next frame.
+fn reset_match(
+    mut requests: MessageReader<ResetMatch>,
+    mut sim: ResMut<Sim>,
+    mut net: ResMut<Net>,
+) {
+    if requests.read().next().is_none() {
+        return;
+    }
+    let cleared = (sim.creeps.len(), sim.towers.len());
+    sim.reset();
+    net.announced_over = false;
+    info!(
+        target: logging::target::NET,
+        "match reset for a rematch ({} creeps and {} towers cleared from the board)",
+        cleared.0,
+        cleared.1
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Plugin
 // ---------------------------------------------------------------------------
@@ -821,6 +863,7 @@ impl Plugin for GreenTdServerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Sim>()
             .init_resource::<Net>()
+            .add_message::<ResetMatch>()
             .add_systems(Startup, spawn_server)
             .add_observer(on_server_started)
             .add_observer(on_client_disconnected)
@@ -829,6 +872,10 @@ impl Plugin for GreenTdServerPlugin {
                 Update,
                 (
                     setup_match,
+                    // A reset request is served before anything else looks at the
+                    // sim this frame, so the board a restart clears is empty by
+                    // the time the mirrors run (`audit-018`).
+                    reset_match,
                     // A refusal is aged before new ones are made, so the frame
                     // a peer is refused is never the frame it is dropped.
                     age_refusals,

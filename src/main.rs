@@ -51,6 +51,8 @@ use bevy::app::{PluginGroupBuilder, ScheduleRunnerPlugin};
 use bevy::log::LogPlugin;
 use bevy::prelude::*;
 use bevy::state::app::StatesPlugin;
+use bevy::window::PresentMode;
+use bevy::winit::{UpdateMode, WinitSettings};
 use lightyear::prelude::client::ClientPlugins;
 use lightyear::prelude::server::ServerPlugins;
 
@@ -123,10 +125,43 @@ fn main() {
     // renders nothing, so it gets neither a window nor 768 map tiles, and can
     // run on a box with no GPU at all (found-001, D15).
     if config.mode.runs_client() {
+        app.insert_resource(win_settings());
         app.add_plugins(VisualsPlugin);
     }
 
     app.run();
+}
+
+/// Bound a windowed peer's frame rate at the display rate (`audit-031`, D33).
+///
+/// This is the second half of the D33 fix; the first is the window's present
+/// mode, set in [`engine_plugins`]. The peer must not present with FIFO,
+/// because Mesa's Vulkan Wayland WSI blocks `vkQueuePresentKHR` in
+/// `wl_display_dispatch_queue` until the compositor releases a buffer, and a
+/// window that is not being presented -- hidden, on another workspace, or in a
+/// session that is not presenting -- never gets one. The render thread then
+/// blocks in `present`, the main thread blocks behind it in `bevy_render`'s
+/// `extract`, and the peer stops running its `Update` schedule: it misses every
+/// wave notice until the window is visible again. That is the observed symptom
+/// -- "a windowed peer stops updating after one to two seconds" -- and the
+/// backtrace that names it is in `audit-031`.
+///
+/// But a peer that does not present with FIFO has nothing left to stop it
+/// rendering as fast as the GPU allows, so the frame rate has to be bounded
+/// somewhere. [`UpdateMode::Reactive`] ticks the event loop on a timer
+/// (`ControlFlow::WaitUntil`) rather than waiting for a redraw
+/// (`ControlFlow::Wait`, which is what `UpdateMode::Continuous` degrades to on
+/// Linux and is the one mode that cannot be trusted to keep ticking for a
+/// window the compositor has stopped presenting). Sixty hertz is the display
+/// rate this game is built around; it is a presentation number, not a balance
+/// one, so it lives here and not in `assets/balance/`.
+fn win_settings() -> WinitSettings {
+    const RENDER_HZ: f64 = 60.0;
+    let hz = Duration::from_secs_f64(1.0 / RENDER_HZ);
+    WinitSettings {
+        focused_mode: UpdateMode::reactive(hz),
+        unfocused_mode: UpdateMode::reactive_low_power(hz),
+    }
 }
 
 /// The engine plumbing one mode needs.
@@ -145,6 +180,12 @@ fn engine_plugins(config: &Config, tick: Duration) -> PluginGroupBuilder {
                 primary_window: Some(Window {
                     title: format!("Green TD - {}", config.mode.as_str()),
                     resolution: (1280, 800).into(),
+                    // Never FIFO. A FIFO present blocks this peer's whole
+                    // `Update` schedule while its window is not being
+                    // presented; the full story is on `win_settings`. NoVsync
+                    // costs tearing at worst, and the frame rate that FIFO used
+                    // to cap is capped by `win_settings` instead.
+                    present_mode: PresentMode::AutoNoVsync,
                     ..default()
                 }),
                 ..default()

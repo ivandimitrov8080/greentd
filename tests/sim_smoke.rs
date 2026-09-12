@@ -263,6 +263,105 @@ fn exceeding_the_overrun_cap_ends_the_match() {
 }
 
 #[test]
+fn a_reset_gives_a_lost_match_back() {
+    // A shrunken cap and a fast clock, so a defeat and a rematch arrive in
+    // seconds rather than in a match. Wave 1 is four creeps and wave 2 is five,
+    // so a cap of four lets the first wave through and ends it on the second --
+    // which is also what makes the rematch's first wave survivable.
+    let mut tuned = (*shipped_balance()).clone();
+    tuned.match_rules.overrun_cap = 4;
+    tuned.match_rules.first_wave_delay = 0.1;
+    tuned.match_rules.wave_interval = 0.5;
+    let mut harness = Harness::with_balance(Arc::new(tuned));
+    harness.sim.add_player(player(7));
+
+    harness.advance_until(600, |sim| sim.over);
+    assert!(harness.sim.over, "drive it to a defeat first");
+    assert!(
+        !harness.sim.creeps.is_empty(),
+        "the board was not empty when the match ended"
+    );
+
+    let rules = harness.sim.balance.match_rules.clone();
+    harness.sim.reset();
+
+    assert!(
+        !harness.sim.over,
+        "a reset is a match that can be lost again, not a terminal flag (D20)"
+    );
+    assert_eq!(harness.sim.wave, 0, "the wave counter starts over");
+    assert_eq!(
+        harness.sim.wave_timer, rules.first_wave_delay,
+        "the wave clock is reset, not left where the defeat stopped it"
+    );
+    assert!(harness.sim.creeps.is_empty(), "the board is cleared");
+    assert!(harness.sim.towers.is_empty(), "the towers go with it");
+
+    let reset_player = harness
+        .sim
+        .players
+        .get(&player(7))
+        .expect("a reset keeps the players who were in the match");
+    assert_eq!(
+        reset_player.gold, rules.start_gold,
+        "gold is back to the starting value"
+    );
+    assert_eq!(reset_player.kills, 0, "so are the kills");
+    assert!(
+        reset_player.connected,
+        "and the player is still in the match"
+    );
+
+    // And it is a match again: a fresh wave arrives, on a board with nothing on
+    // it, without the sim having to be rebuilt.
+    harness.advance_until(600, |sim| sim.wave == 1);
+    assert_eq!(
+        harness.sim.creeps_alive(),
+        harness.sim.creeps_per_wave(),
+        "the rematch's first wave is a whole wave"
+    );
+    assert!(
+        harness.sim.creeps_alive() <= harness.sim.overrun_cap(),
+        "the rematch is not over before it starts"
+    );
+}
+
+#[test]
+fn a_reset_match_begins_like_a_fresh_one() {
+    // Non-zero jitter, so the generator is observable in the creeps' positions.
+    let mut tuned = (*shipped_balance()).clone();
+    tuned.waves.scaling.spawn_jitter = 0.25;
+    let mut harness = Harness::with_balance(Arc::new(tuned));
+    harness.sim.add_player(player(1));
+
+    // Play for a while, so the generator is somewhere other than its seed.
+    harness.advance(200);
+    harness.sim.reset();
+
+    let mut after_reset = Harness::with_balance(harness.sim.balance.clone());
+    after_reset.sim.add_player(player(1));
+    let mut fresh = Harness::with_balance(harness.sim.balance.clone());
+    fresh.sim.add_player(player(1));
+
+    let (reset_ticks, _) = after_reset.advance_until(600, |sim| sim.wave == 1);
+    let (fresh_ticks, _) = fresh.advance_until(600, |sim| sim.wave == 1);
+    assert_eq!(
+        reset_ticks, fresh_ticks,
+        "both matches start at the same beat"
+    );
+
+    let positions = |harness: &Harness| {
+        let mut dists: Vec<f32> = harness.sim.creeps.values().map(|c| c.dist).collect();
+        dists.sort_by(f32::total_cmp);
+        dists
+    };
+    assert_eq!(
+        positions(&after_reset),
+        positions(&fresh),
+        "a reseeded match is a fresh match, not a continued one (found-009)"
+    );
+}
+#[test]
 fn the_sim_reads_the_tables_rather_than_a_const() {
     let mut tuned = (*shipped_balance()).clone();
     tuned.waves.scaling.hp_base = 7.0;

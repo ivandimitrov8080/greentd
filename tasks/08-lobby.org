@@ -281,22 +281,38 @@ and =assets/balance/*.ron=. Numbers research could not confirm are =(tune)=.
    :BLOCKED-BY: lobby-001
    :END:
    The original's =-restart= (offered on 0 lives) begins a fresh game in the
-   same lobby, and shows a 60-second timer on loss. Today =Sim::over= is terminal
-   (D20) and =Net::announced_over= is never cleared (D21), so a restarted match
-   could neither run nor announce its next defeat. Specify exactly what a
+   same lobby, and shows a 60-second timer on loss. Specify exactly what a
    restart resets: creeps, towers, gold, kills, builder ("hero") levels, the wave
-   counter, the lose state and =announced_over= - but not the chosen modes,
-   difficulty, disabled towers or lose rule, which persist into the new match.
-   The mechanical =Sim::reset()= path is tracked in
-   [[file:01-current-code-audit.org][01-current-code-audit.org]] (D20, D21).
+   counter and the lose state - but not the chosen modes, difficulty, disabled
+   towers or lose rule, which persist into the new match.
 
-   - Files: =src/sim.rs=, =src/server.rs=, =src/lobby.rs=, =src/client.rs=
+   *The mechanical half is done, in =audit-018=.* =Sim::reset()= clears the board,
+   the wave clock, the creep ids and the terminal =over= flag and restores each
+   player's gold, kills and wave-call cooldown; =net::server::reset_match= clears
+   =Net::announced_over= in the same call. So D20 and D21 are closed, and the
+   sentence that used to stand here - "a restarted match could neither run nor
+   announce its next defeat" - is no longer true. What is left is the *flow*,
+   which is this task: what triggers the reset (the original's timer, or red's
+   command), what the phase does across it, and that the lobby's settings survive
+   it. Nothing fires =ResetMatch= yet.
+
+   One thing =audit-018= settled that this task's earlier boxes got wrong, and it
+   is worth stating because the old wording asked for the opposite: the per-peer
+   =PlayerView= mirrors are *not* despawned and respawned. A rematch is the same
+   players on the same keys, so their views persist and their figures are
+   overwritten by =sync_player_views= from the reset sim. Only the board is
+   rebuilt, and even that needs no new code - =sync_creeps= and =sync_towers=
+   already reap a mirror whose sim counterpart is gone. The boxes below say this
+   now.
+
+   - Files: =src/sim/mod.rs=, =src/net/server.rs=, =src/lobby.rs=, =src/ui/hud.rs=
    - Acceptance:
-     - [ ] A restart resets =Sim= (=wave=, =creeps=, =towers=, per-player gold and kills, builder levels) to a fresh state and returns the phase to Setup or Running.
-     - [ ] =Net::announced_over= is cleared so the next defeat announces again (D21).
-     - [ ] Every replicated creep, tower and =PlayerView= mirror is despawned and respawned from the new sim with no orphans (D20).
+     - [ ] A restart resets =Sim= (=wave=, =creeps=, =towers=, per-player gold and kills, builder levels once =07-builder.org= has them) to a fresh state and returns the phase to Setup or Running.
+     - [x] =Net::announced_over= is cleared so the next defeat announces again (D21) - closed by =audit-018=, which clears it in the same call as =Sim::reset()=.
+     - [ ] The board is emptied of this match's creeps and towers with no orphans, and the per-peer =PlayerView= mirrors survive the reset with their figures overwritten (=audit-018=).
      - [ ] The match settings (modes, difficulty, disabled towers, lose rule) survive a restart unchanged.
      - [ ] The client HUD is cleared and the game-over text removed.
+     - [ ] The restart is driven by a =ResetMatch= request rather than by a second reset path (=audit-018=).
 
 ** TODO [#B] Decide and implement the late-join rule                       :@lobby:
    :PROPERTIES:

@@ -151,7 +151,8 @@
    hero; no skills; no crits; no aura towers; no traps; no spell tower; no
    research tower; no tower tiers or branching (3 towers × N levels is not the
    same design — the original branches at tier 3 into different towers); no
-   projectiles; no audio; no lobby or setup phase; no kick; no restart; no
+   projectiles; no audio; no lobby or setup phase; no kick; no restart *flow*
+   (the reset path itself landed in =audit-018=; the button is =lobby-010=); no
    reconnect; no spectators; no multiboard; no tower tooltips or build panel;
    no minimap; no camera controls; no unit-health bars; no floating damage
    text.
@@ -179,7 +180,7 @@
    | =found-004= | DONE        | =src/data/balance.rs= and =assets/balance/*.ron=; every tuned number is data, validated and hashed. D18 is =DONE= as of =audit-011=, which removed the last per-tier and refund literals from =src/sim/=. |
    | =found-005= | DONE        | The flat crate is now =data/=, =sim/=, =net/= and =ui/=, with the reason for each placement written down in =src/main.rs=. |
    | =found-006= | DONE        | One =StartupError= for the config and the balance loader; the last =unwrap()= in =src/= (=Path::sample=) is NaN-safe. |
-   | =found-007= | DONE        | =.github/workflows/ci.yml= (=check=, =smoke=, =release=), =rust-toolchain.toml=, =ci/smoke-server.sh= and =ci/check-balance-refusal.sh=. Unblocked by dealing with the 16 standing clippy warnings, with =-D warnings= as the gate from here on. |
+   | =found-007= | DONE        | =.github/workflows/ci.yml= (=check=, =smoke=, =release=), =rust-toolchain.toml=, =ci/smoke-server.sh= and =ci/check-balance-refusal.sh=. Unblocked by dealing with the 16 standing clippy warnings, with =-D warnings= as the gate from here on. =ci/windowed-client-liveness.sh= has since joined the scripts but *not* the pipeline -- it needs a display and a Vulkan driver, so a hosted runner would always skip it. The knobs of the two older scripts are in the wrong namespace: see =found-011= (D34). |
    | =found-008= | DONE        | =Cargo.toml= carries the resolved-version table and a justification per lightyear feature; =rust-toolchain.toml= pins 1.97.1; the upgrade procedure is the =decide-upgrade-path= decision below. The MSRV is lightyear's 1.95, not the edition's 1.85. |
    | =found-009= | DONE        | =sim::Rng=, seeded from =match_rules.seed=; the wave's spawn jitter is its first consumer. Same seed, same match -- proven, not asserted. |
    | =found-010= | DONE        | =data::components::LocalPlayer=, marked by the server on a host and by the client on a remote peer; =MatchView.players= replaces counting the views the HUD happens to hold. Closes D30 and =audit-028=. |
@@ -194,25 +195,27 @@
    | =audit-010= | DONE        | =tests/sim_smoke.rs= + =tests/balance.rs=; zero tests is no longer true (D17). |
    | =audit-017= | DONE        | The audit-side check for D15, now permanent: the smoke job starts the real server with the display environment unset. |
    | =audit-029= | DONE        | *D31, found while building CI.* Host mode ran a =RawClient= over UDP beside a =RawServer=, which lightyear calls =MixedClientServer= and which killed the process about three seconds into wave 1. A host is now a real lightyear host client: in-process messages, no per-peer copy of anything. |
-  | =audit-030= | DONE        | *D32, found by running a server and a client side by side.* =on_client_connected= inserted a default =MessageManager= over the engine-managed one, wiping the sender registration; every notice to a remote client was dropped inside the process. |
-  | =audit-031= | TODO        | *D33.* A windowed peer stalls after one to two seconds here, dropping the packets that make =audit-005= and =audit-003= verifiable end to end. =[#A]= because an unexplained main-loop stall is either an environment fact worth recording or a deadlock. |
+   | =audit-030= | DONE        | *D32, found by running a server and a client side by side.* =on_client_connected= inserted a default =MessageManager= over the engine-managed one, wiping the sender registration; every notice to a remote client was dropped inside the process. |
+   | =audit-031= | DONE        | *D33.* The stall was the presentation layer's: Mesa's Vulkan Wayland WSI blocks =vkQueuePresentKHR= in =wl_display_dispatch_queue= until the compositor releases a buffer, so the render thread parks in =present= and the main thread parks behind it in =bevy_render='s =extract=, stopping =Update=. Fixed by presenting with =PresentMode::AutoNoVsync= (so the present never waits on a frame callback) and capping the frame rate at 60 Hz through =WinitSettings= (which FIFO used to cap). Held by =ci/windowed-client-liveness.sh=, which fails on a build without the fix. |
+   | =audit-018= | DONE        | A rematch is one path now: =Sim::reset()= clears the board, wave clock, creep ids and the terminal =over= flag and restores gold and kills, and =net::server::reset_match= clears =Net::announced_over= in the same call, from a =ResetMatch= message that =08-lobby.org= will fire. D20 and D21. |
    | =test-001=  | IN-PROGRESS | Same harness. Its last box was blocked on =found-009= for the seeded RNG; =found-009= has landed, so the box is now true and unticked by choice -- see the task, which records both readings and says the choice is a milestone owner's to make. |
    | =audit-011= | DONE        | The last literals left =src/sim/=. =towers.ron= gained =damage_per_level=, =range_per_level= and =slow_duration=; =match.ron= gained =sell_refund_percent=; both are validated, hashed into the handshake, and tested (=the_last_sim_literals_are_data_now=, =the_tier_scaling_is_read_from_the_table=, =the_slow_duration_is_read_from_the_table=). D18 is =DONE=; the flat tier *model* is still =towers-002='s. |
    | =audit-012= | WAITING     | Blocked on =decide-default-lineage=, which is a sign-off, not a task. |
    | =audit-009= | DONE        | Closed by =net-002=: identity is the client's =PlayerId=, not the socket address. The transcript shows a client rejoining from a new port (5101 to 5102) re-entering the same =PlayerKey(42)= and the same =PlayerView= entity. D9 is =DONE=. |
    | =audit-019= | DONE        | Closed by =net-001=: the refusal is the handshake's other outcome, so the three claims this task makes are the three =net-001= verified. D22 is =DONE=. |
 
-  Everything above builds, passes =cargo test= (82 tests: 3 + 8 + 25 + 7 + 7 + 8 +
-  24, i.e. the crate's own unit tests plus =tests/balance.rs=, =tests/config.rs=,
+  Everything above builds, passes =cargo test= (84 tests: 3 + 8 + 25 + 7 + 7 + 8 +
+  26, i.e. the crate's own unit tests plus =tests/balance.rs=, =tests/config.rs=,
   =tests/identity.rs=, =tests/protocol.rs=, =tests/ratelimit.rs= and
   =tests/sim_smoke.rs=) and =cargo clippy --all-targets -- -D warnings=, and was
   walked by hand in a running =host=, =server= and =client=. CI's three jobs'
   commands were run locally in full, including the headless smoke run and the
   balance-refusal check.
 
-  The count is a running total, not a target: it moved 64 -> 71 -> 79 -> 82 as
-  =net-001=, =net-002= and =audit-011= landed, and the arithmetic in this line
-  is only worth keeping in step with =cargo test='s own output.
+  The count is a running total, not a target: it moved 64 -> 71 -> 79 -> 82 ->
+  84 as =net-001=, =net-002=, =audit-011= and =audit-018= landed, and the
+  arithmetic in this line is only worth keeping in step with =cargo test='s own
+  output.
 
   *M0's exit criterion holds; the milestone is unblocked rather than stamped.*
   The four things the criterion names are true -- no client can touch another
@@ -242,15 +245,31 @@
     rather than inherited. See [[file:01-current-code-audit.org][01-current-code-audit.org]]
     for why, and for the rule it settles: a task is not discharged by a later
     task that happens to delete the same line.
-  - =audit-031= (D33), the windowed-peer stall. It is now the *only* =[#A]=
-    unclosed in the audit file, and it is the reason three boxes above are weaker
-    than they read: it decides whether those verifications can become scripted or
-    have to stay transcripts. It needs a display, so it is the one task here a
-    headless session cannot finish -- though its first box ("ours or the
-    presentation layer's?") is answerable without one.
+  - =audit-031= (D33) is *done*, and closing it is what turns the
+    remote-delivery boxes from transcripts into a script. The stall was Mesa's
+    Wayland WSI blocking in =vkQueuePresentKHR= while the window was not being
+    presented; the audit file carries the backtrace. The fix is
+    =PresentMode::AutoNoVsync= plus a 60 Hz frame cap, and
+    =ci/windowed-client-liveness.sh= is the script that holds it. No =[#A]= is
+    left in the audit file.
   - =net-006='s last box, which is the network-design statement of what
     =audit-029= fixed mechanically, and still owns a test for "a host plus one
-    remote client".
+    remote client". =net-006= is =DONE= with that box open on purpose, and the
+    test it asks for is =test-008='s, which is itself blocked by =net-004=. The
+    same harness is what would close =net-001='s two-process refusal, =audit-030='s
+    regression and =audit-003='s box three, so the whole front of the netcode file
+    is behind =net-004= (the validation choke point) rather than behind anything
+    this machine cannot do.
+  - The audit file's remaining =[#B]= and =[#C]= cluster is unblocked and startable
+    today: =audit-013= (D10, a wave with a front), =audit-021= (D24, mid-match
+    join), =audit-022= (D27, leavers), =audit-023= (D29, the tile entities),
+    =audit-024= (D12, the component merge), =audit-025= (D16, the spatial index)
+    and =audit-026=/=audit-027= (D26, D28, the map). =audit-014= (D11, armour and
+    air) is the exception: it is =waves-004='s content and only its sim half is
+    here.
+  - =found-011= (D34), the =ci/= scripts' knobs being named inside the reserved
+    =GREENTD_= prefix, which is why setting one makes the script's own child refuse
+    to start. Two hours, no blockers, and it is in the way of nobody.
   - =found-002='s last box and =audit-020='s, which both need a second machine to
     join a non-local host. =audit-020= is the last member of the wire-format
     batch that is work rather than a component-set change.
@@ -263,20 +282,18 @@
   plan did not anticipate: raw UDP never reports a dead peer, which is why the
   identity rule is a logged takeover rather than a refusal.
 
-  Two debts are left, and both are downstream of =audit-031= (D33), which is why
-  that task is =[#A]= and why it is the next thing in this file after the rest of
-  the netcode block:
+  The remote-delivery debt is settled, and =audit-031= is what settled it:
 
-  - Remote delivery is verified in one direction only. The server demonstrably
-    *sends* every wave notice and every refusal, and a host demonstrably *shows*
-    them; a remote client showing them was observed once and has not been
-    reproduced, because the windowed client's frame loop stalls after one to two
-    seconds here. Rather than present a transcript as a repeatable result, the
-    boxes are left as they are and the measurement is on =audit-031=.
-  - =audit-003='s box three has been verified structurally (the host's world holds
-    two =PlayerView= entities and exactly one is marked) but not by making one
-    player's gold diverge from another's, because this machine has no
-    input-injection tool.
+  - Remote delivery is no longer a transcript. =audit-031= found the windowed
+    client's stall -- Mesa's Wayland WSI blocking in =vkQueuePresentKHR= -- and
+    fixed it, and a headless server plus a windowed client now delivers a notice
+    for every wave, in order, within seconds; =ci/windowed-client-liveness.sh= is
+    the script and it fails against a build without the fix.
+  - The one debt that is left is =audit-003='s box three: it has been verified
+    structurally (the host's world holds two =PlayerView= entities and exactly one
+    is marked) but not by making one player's gold diverge from another's, because
+    this machine has no input-injection tool. That is a missing instrument, not a
+    stalled peer, and =test-008='s =App= harness is still what would cover it.
 
   The larger lesson of =audit-029= and =audit-030= is procedural and worth keeping
   where it will be read: *reading =src/= is what wrote this plan, and reading
@@ -382,8 +399,8 @@
   | D17 | A   | DONE  | Zero tests. The sim is written to be testable and never has been. |
   | D18 | A   | DONE  | Every balance number was a literal in =game.rs= or worse, inline in =sim.rs=. The tables became data in =found-004=; =audit-011= moved the remainder -- the per-tier damage and range growth, the slow duration and the sell refund -- into =towers.ron= and =match.ron=, so =src/sim/= holds no balance literal. |
   | D19 | A   | open  | The lose condition is the other lineage's lose condition and its constant (150) matches neither. See the lineage section above. |
-  | D20 | B   | open  | =Sim::over= is terminal; there is no restart, rematch or -restart equivalent. |
-  | D21 | B   | open  | =Net::announced_over= is never reset, so a restarted match would not announce again. |
+  | D20 | B   | DONE  | =Sim::over= was terminal; there was no restart, rematch or -restart equivalent. Fixed by =audit-018=: =Sim::reset()= clears the board, the wave clock, the creep ids, the terminal flag and each player's gold and kills, and reseeds the generator so a rematch is a fresh match rather than a continuation. |
+  | D21 | B   | DONE  | =Net::announced_over= was never reset, so a restarted match would not announce again. Fixed by =audit-018=: the same reset path clears it, driven by one =ResetMatch= request. |
   | D22 | B   | DONE  | No protocol version negotiation; a mismatched client desyncs silently instead of being rejected. Fixed by =net-001=: =ProtocolVersion= = schema revision + balance hash, exchanged in a =Handshake=, with a refusal that names the part that differed, before any entity exists. |
   | D23 | B   | open  | =spawn_client= hardcodes =127.0.0.1=; there is no way to join a remote host. |
   | D24 | B   | open  | A player joining mid-match starts at wave N with starting gold and no catch-up. |
@@ -395,7 +412,8 @@
   | D30 | C   | DONE  | No =LocalPlayer= marker; the client inferred "my" state from "the one =PlayerView= I happen to hold". Fixed by =found-010=, tracked as =audit-028=. |
   | D31 | A   | DONE  | Host mode ran a =RawClient= over a real UDP socket beside a =RawServer=, which lightyear rejects as =MixedClientServer= and which killed the process three seconds into wave 1. Fixed by =audit-029=, which makes a host a real lightyear host client: in-process messages, no per-peer copy of anything. |
   | D32 | A   | DONE  | =on_client_connected= inserted a fresh =MessageManager= over the one the engine manages, wiping the sender registration the message layer installs from an =on_add= hook. Every =ServerNotice= -- wave started, every refusal, game over -- was silently dropped on the way to a remote client. Fixed by =audit-030=. |
-  | D33 | A   | open  | A windowed peer stops running its =Update= schedule after one to two seconds in a detached session: the socket buffer fills and the kernel drops 95% of the packets it is sent. Measured, not inferred; cause unknown. =audit-031=. |
+  | D33 | A   | DONE  | A windowed peer stopped running its =Update= schedule after one to two seconds in a detached session, so the socket buffer filled and the kernel dropped 95% of the packets it was sent. The cause was the presentation layer: Mesa's Vulkan Wayland WSI blocks =vkQueuePresentKHR= in =wl_display_dispatch_queue= until the compositor releases a buffer, which a window that is not being presented never gets, so the render thread parked in =present= and the main thread parked behind it in =bevy_render='s =extract=. Fixed by =audit-031=: =PresentMode::AutoNoVsync= so the present never waits on a frame callback, plus a 60 Hz frame cap through =WinitSettings= to replace the vsync FIFO used to provide. |
+  | D34 | C   | open  | Both =ci/= scripts name their own knobs inside the =GREENTD_= prefix (=GREENTD_BIN=, =GREENTD_SMOKE_PORT=, =GREENTD_PORT= and three timeouts), which =found-002= reserves for config keys and *rejects* when unknown. The child inherits them, so setting any documented knob makes the script's own server refuse to start: =GREENTD_SMOKE_PORT=5311 ci/smoke-server.sh= fails with =greentd: config: unknown key "smoke-port"=. Fixed by =found-011= in [[file:00-foundation.org][00-foundation.org]], which is why there is no =audit-032= tracking row. |
 
 * Cross-cutting decisions
   :PROPERTIES:

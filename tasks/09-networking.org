@@ -566,6 +566,14 @@ server. It touches =src/protocol.rs=, =src/server.rs=, =src/client.rs=,
    drive them come from [[file:02-simulation.org][02-simulation.org]] (=sim-007= and
    =sim-011=); the audit-side branch fix is =audit-005=.
 
+   Since =audit-005= landed, "is any notice reaching a remote client at all" is
+   settled and repeatable: a headless server plus a windowed client delivers a
+   notice for every wave, and =ci/windowed-client-liveness.sh= is the script that
+   asserts it (=audit-031= found and fixed the stall that used to make it
+   timing-dependent). So box one below stands on a script rather than a
+   transcript, and this task is about the *set* -- wave cleared, victory, message,
+   rejection -- not about whether the wire works.
+
    - Files: =src/protocol.rs=, =src/server.rs=, =src/client.rs=
    - Acceptance:
      - [ ] =ServerNotice::WaveStarted= is emitted at the start of every wave and reaches the client (D5).

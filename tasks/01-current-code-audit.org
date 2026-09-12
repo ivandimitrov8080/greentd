@@ -1,5 +1,5 @@
 #+TITLE: greentd — current-code audit
-#+SUBTITLE: One task per defect in the code that already exists (D1–D30)
+#+SUBTITLE: One task per defect found in the code that already exists (D1–D34)
 #+TODO: TODO NEXT IN-PROGRESS WAITING BLOCKED | DONE CANCELLED
 #+TAGS: FOUNDATION(f) SIM(s) MAP(m) WAVES(w) TOWERS(t) ECON(e) BUILDER(b) LOBBY(l) NET(n) UI(u) CONTENT(c) TEST(x) RELEASE(r)
 #+FILETAGS: :greentd:
@@ -16,7 +16,9 @@ an excuse for an untested mutation (D17).
 
   Every D-number, the severity, whether it still exists, the files it lives in, a
   rough effort, and the task that fixes it. D15 and D30 are fixed in
-  [[file:00-foundation.org][00-foundation.org]]; D18 was started there and finished here by =audit-011=.
+  [[file:00-foundation.org][00-foundation.org]]; D18 was started there and finished here by =audit-011=;
+  D34 is a defect in the =ci/= scripts, so its fix is =found-011= there and it has
+  no audit task of its own.
   Where a fix lives in =00-foundation.org=, the audit task named beside it only
   tracks the defect, so this index stays complete.
 
@@ -46,8 +48,8 @@ an excuse for an untested mutation (D17).
   | D17 | A   | =src/sim.rs=                     | 1d     | =audit-010=                       | DONE  |
   | D18 | A   | =src/game.rs=, =src/sim.rs=      | 1w     | =found-004= (tracked =audit-011=) | DONE  |
   | D19 | A   | =src/sim.rs=                     | 1w     | =audit-012=                       | open  |
-  | D20 | B   | =src/sim.rs=, =src/server.rs=    | 1d     | =audit-018=                       | open  |
-  | D21 | B   | =src/server.rs=                  | 2h     | =audit-018=                       | open  |
+  | D20 | B   | =src/sim/mod.rs=, =src/net/server.rs= | 1d     | =audit-018=                       | DONE  |
+  | D21 | B   | =src/net/server.rs=              | 2h     | =audit-018=                       | DONE  |
   | D22 | B   | =src/protocol.rs=                | 1w     | =net-001= (tracked =audit-019=) | DONE  |
   | D23 | B   | =src/client.rs=, =src/main.rs=   | 1d     | =audit-020=                       | open  |
   | D24 | B   | =src/sim.rs=                     | 1d     | =audit-021=                       | open  |
@@ -59,7 +61,8 @@ an excuse for an untested mutation (D17).
   | D30 | C   | =src/client.rs=, =src/game.rs=   | 2h     | =found-010= (tracked =audit-028=) | DONE  |
   | D31 | A   | =src/main.rs=, =src/client.rs=   | 1d     | =audit-029=                       | DONE  |
   | D32 | A   | =src/net/server.rs=              | 2h     | =audit-030=                       | DONE  |
-  | D33 | A   | =src/ui/=, =src/net/client.rs=   | 1d     | =audit-031=                       | open  |
+  | D33 | A   | =src/main.rs=                   | 1d     | =audit-031=                       | DONE  |
+  | D34 | C   | =ci/=                            | 2h     | =found-011= (in =00-foundation=)  | open  |
 
 * Severity A — exploitable or loses player state
 
@@ -317,6 +320,12 @@ an excuse for an untested mutation (D17).
    So the box is ticked on the strength of the host observation plus the traced
    send, not on a repeatable remote delivery, and =audit-031= is what would let it
    be ticked the other way.
+
+   *That is now done.* =audit-031= found the stall -- Mesa's Wayland WSI blocking
+   in =vkQueuePresentKHR= -- and fixed it, and a headless server plus a windowed
+   client now delivers a notice for every wave, in order, within seconds. The run
+   is =ci/windowed-client-liveness.sh=; see =audit-031=. The box stands on a
+   repeatable remote delivery now, not on the single observation it had.
 
    The =debug= line is new, and deliberate: a notice is the client's half of "what
    the server did with my intents", which is what the =greentd::commands= target
@@ -825,7 +834,7 @@ an excuse for an untested mutation (D17).
    away, so it does not claim the second. The first is the one that was broken --
    a window was being created -- and it is the one CI can hold.
 
-** TODO [#B] Add the sim reset path and clear announced_over                          :@sim:
+** DONE [#B] Add the sim reset path and clear announced_over                          :@sim:
    :PROPERTIES:
    :ID:         audit-018
    :EFFORT:     1d
@@ -837,12 +846,44 @@ an excuse for an untested mutation (D17).
    never cleared, so a restarted match would never announce again. Both are one reset
    path, so this task closes D20 and D21 together.
 
-   - Files: =src/sim.rs=, =src/server.rs=
+   - Files: =src/sim/mod.rs=, =src/net/server.rs=, =tests/sim_smoke.rs=
    - Acceptance:
-     - [ ] A =Sim::reset()= clears =over=, =wave=, =wave_timer=, creeps and towers, and restores each player's gold and kills to the configured starting values.
-     - [ ] The same path clears =Net::announced_over=, so a rematch announces game over again.
-     - [ ] Sim test (D17): drive to over, reset, then observe a fresh wave spawn with empty boards.
-     - [ ] The user-facing restart flow is out of scope here and lives in [[file:08-lobby.org][08-lobby.org]].
+     - [x] A =Sim::reset()= clears =over=, =wave=, =wave_timer=, creeps and towers, and restores each player's gold and kills to the configured starting values.
+     - [x] The same path clears =Net::announced_over=, so a rematch announces game over again.
+     - [x] Sim test (D17): drive to over, reset, then observe a fresh wave spawn with empty boards.
+     - [x] The user-facing restart flow is out of scope here and lives in [[file:08-lobby.org][08-lobby.org]].
+
+   Done, and the shape is a *request*, not a button. =Sim::reset()= does the sim
+   half -- board, wave clock, wave counter, creep ids, the terminal =over= flag,
+   and each player's gold, kills and wave-call cooldown back to the tables'
+   starting values -- and =net::server::reset_match= does the bookkeeping half,
+   clearing =Net::announced_over= in the same call so the two cannot drift apart.
+   The trigger is a =ResetMatch= message, which nothing fires yet: the
+   user-facing restart is =08-lobby.org='s =lobby-012=, and inventing a button
+   here would have been a second implementation of one rule.
+
+   Three decisions worth recording:
+
+   - *What is kept.* The player records stay keyed and stay connected. A rematch
+     is the same people with fresh gold, not a lobby that has to be rebuilt, and
+     a reset that dropped them would have had to re-derive identity from the
+     handshake again (D9).
+   - *The generator is reseeded.* A fresh match on the same tables should be the
+     *same* match, which is what =found-009= promises a seed buys; leaving the
+     generator where the last defeat stopped it would make the second match a
+     continuation in the one way nobody can see.
+   - *The mirrors are not touched.* =sync_creeps= and =sync_towers= already reap
+     a mirror whose sim counterpart is gone, so an emptied sim empties the board
+     on the next frame. Clearing =Net::creeps= / =Net::towers= here would have
+     been a second reaper for the same job.
+
+   Tests, both in =tests/sim_smoke.rs=: =a_reset_gives_a_lost_match_back= (drive
+   to a defeat on a shrunken cap, reset, and find =over= clear, the board empty,
+   the clock back at =first_wave_delay=, gold and kills restored, and a whole
+   first wave arriving on an empty board) and =a_reset_match_begins_like_a_fresh_one=
+   (a match played for a while, reset, and then compared creep for creep against
+   a brand-new =Sim= on the same tables -- the reseed, stated as an equality).
+   26 tests in the file, 0 failures.
 
 ** DONE [#B] Negotiate the protocol version and refuse a mismatched peer               :@net:
    :PROPERTIES:
@@ -958,9 +999,9 @@ an excuse for an untested mutation (D17).
      - [ ] The board renders identically to today.
      - [ ] Startup entity count drops by the tile count, measured and recorded.
 
-* Severity A — a third one, an unexplained stall
+* Severity A — a third one, the stall that was the presentation layer
 
-** TODO [#A] Find out why a windowed peer stops updating                     :@net:test:
+** DONE [#A] Find out why a windowed peer stops updating                     :@net:test:
    :PROPERTIES:
    :ID:         audit-031
    :EFFORT:     1d
@@ -993,22 +1034,101 @@ an excuse for an untested mutation (D17).
    alive the notice arrives; when it stalls the socket buffer fills and the kernel
    drops it. A windowed =host= stalled too, once, before it ever logged wave 1.
 
-   Hypotheses, none confirmed: a =PresentMode::Fifo= present that blocks because the
-   window is not on screen in this session; an event-loop wait that never wakes; a
-   system of ours that blocks on something. Ruling the last one in or out is the
-   first step, and it is cheap: run a client with rendering disabled and see
-   whether the stall survives.
+   Hypotheses, none confirmed at the time: a =PresentMode::Fifo= present that
+   blocks because the window is not on screen in this session; an event-loop wait
+   that never wakes; a system of ours that blocks on something.
 
-   - Files: =src/ui/=, =src/net/client.rs=, =src/main.rs=
+   - Files: =src/main.rs=, =ci/windowed-client-liveness.sh= (new)
    - Acceptance:
-     - [ ] Whether the stall is in winit/wgpu presentation or in this crate's systems is determined and written here.
-     - [ ] A windowed peer keeps updating for at least 60 seconds in a detached session, byte-for-byte as it does under a visible window, or the environment limitation is documented as unfixable with the evidence that says so.
-     - [ ] If it is ours, it stops stalling; if it is not, =audit-005= and =audit-003='s remote boxes can be ticked by a scripted run rather than a transcript.
-     - [ ] A test or a script exists that would have caught it: the natural one is the two-process harness of [[file:12-testing.org][12-testing.org]] =test-008=, which is also where =audit-030='s regression belongs.
+     - [x] Whether the stall is in winit/wgpu presentation or in this crate's systems is determined and written here.
+     - [x] A windowed peer keeps updating for at least 60 seconds in a detached session, byte-for-byte as it does under a visible window, or the environment limitation is documented as unfixable with the evidence that says so.
+     - [x] If it is ours, it stops stalling; if it is not, =audit-005= and =audit-003='s remote boxes can be ticked by a scripted run rather than a transcript.
+     - [x] A test or a script exists that would have caught it: the natural one is the two-process harness of [[file:12-testing.org][12-testing.org]] =test-008=, which is also where =audit-030='s regression belongs.
 
-   Not fixed here on purpose. The workaround that made every earlier verification
-   pass was to run the *headless* half (server) and observe from a host or a
-   transcript, which is exactly the kind of accommodation that hides a defect.
+   *The first hypothesis was the right one, and the answer is `present`.* Made
+   deterministic instead of intermittent by hiding the window on demand -- one
+   line, `swaymsg '[title="Green TD - client"] move scratchpad'`, while the client
+   runs -- the stall reproduces on every attempt, and a backtrace from the blocked
+   process names it exactly. Condensed to the frames that matter, main thread then
+   render thread:
+
+   #+BEGIN_EXAMPLE
+   (main thread, blocked)
+   #0  syscall ()
+   #1  <std::sys::sync::condvar::futex::Condvar>::wait ()
+   #7  parking::Inner::park (timeout=...)
+   #8  ...::block_on (future=...)                    bevy_tasks/task_pool.rs:413
+   #13 bevy_render::pipelined_rendering::renderer_extract (world=...)
+   #16 bevy_render::pipelined_rendering::renderer_extract (world=...)
+   #20 bevy_app::sub_app::SubApp::extract (self=..., world=...)
+   #21 bevy_app::sub_app::SubApps::update (self=...)
+   #22 bevy_winit::state::WinitAppRunnerState::run_app_update (self=...)   state.rs:772
+   #23 bevy_winit::state::WinitAppRunnerState::redraw_requested (self=...) state.rs:620
+   #24 bevy_winit::state::about_to_wait (self=...)                         state.rs:470
+
+   (render thread, the thing the main thread is waiting for)
+   #4  wl_display_poll ()                            libwayland-client.so
+   #5  wl_display_dispatch_queue_timeout ()          libwayland-client.so
+   #6  wl_display_dispatch_queue ()                  libwayland-client.so
+   #7  wsi_wl_swapchain_queue_present ()             libvulkan_intel.so
+   #8  wsi_common_queue_present ()                   libvulkan_intel.so
+   #9  anv_QueuePresentKHR ()                        libvulkan_intel.so
+   #10 ash::...::khr::swapchain::Device::queue_present (self=..., queue=..., ...)
+   #17 wgpu::api::surface_texture::SurfaceTexture::present (self=...)
+   #19 bevy_render::view::window::ExtractedWindow::present (self=...)
+   #20 bevy_render::renderer::render_system (world=..., windows=...)   renderer/mod.rs:106
+   #+END_EXAMPLE
+
+   Read bottom-up on each. The event loop is *running*: =about_to_wait= called
+   =run_app_update=. It is the update that stops, parked in =bevy_render='s
+   =extract=, waiting on the render thread -- which is stuck in Mesa's Vulkan
+   Wayland WSI, where =vkQueuePresentKHR= is sitting in =wl_display_dispatch_queue=
+   waiting for the compositor to release a buffer, and a window that is not being
+   presented never gets one. So the cause is the presentation layer, Mesa plus the
+   compositor, and not one of this crate's systems: box one's answer, and it also
+   rules out the "event loop never wakes" reading of the symptom, which is why
+   =WinitSettings= makes no difference to it (tested: identical stall with a
+   timer-driven =Reactive= update mode).
+
+   *Fixed on our side by not presenting with FIFO.* =PresentMode::AutoNoVsync=
+   picks a present mode that does not wait on a frame callback, so the render
+   thread never parks and the update loop keeps running whether or not the window
+   is on screen. Measured, with the window hidden for the middle of the run:
+
+   #+BEGIN_EXAMPLE
+   $ ci/windowed-client-liveness.sh                    # window left alone
+   liveness: OK (4 waves delivered, each within 4s)
+   $ LIVENESS_HIDE=1 ci/windowed-client-liveness.sh     # hidden for the middle third
+   liveness: OK (4 waves delivered, each within 4s)
+   #+END_EXAMPLE
+
+   and the same script against a build without the present-mode change, as the
+   negative control:
+
+   #+BEGIN_EXAMPLE
+   $ LIVENESS_HIDE=1 ci/windowed-client-liveness.sh
+   liveness: FAIL: wave 2 notice was 8.1s late (tolerance 4)
+   #+END_EXAMPLE
+
+   The cost is vsync, and it is not free: with the blocking present gone, nothing
+   else caps the frame rate, and the same change with Bevy's default free-running
+   focused mode renders at about 330 fps. So =WinitSettings= is set to a
+   timer-driven 60 Hz -- a frame *cap*, not the fix -- and the rate was measured
+   back at 60 fps. The two changes are one fix and belong together; =main.rs=
+   documents the pair at =win_settings=.
+
+   *What this unblocks.* Remote delivery is no longer a transcript. A headless
+   server plus a windowed client now delivers a notice for every wave, in order,
+   within seconds, for the whole run -- the instrument =audit-005= and =audit-003=
+   were owed, now a script (=ci/windowed-client-liveness.sh=) rather than a shell
+   history. It also gives =audit-005='s third box a repeatable remote delivery to
+   stand on, instead of the single host observation and traced send it had.
+
+   Not done here, and said so rather than implied: the script is deliberately not
+   wired into CI, because it needs a display *and* a Vulkan driver and a hosted
+   runner has neither, so the job would always be skipped; the in-process harness
+   that *would* be CI-able is =test-008='s, and it is still unwritten. The frame
+   cap stays a constant because a display rate is not a balance number.
 
 * Severity C — polish
 
@@ -1128,16 +1248,22 @@ an excuse for an untested mutation (D17).
      it gates =sim-005=, and the lose condition cannot be finalised until it resolves.
   6. *The [#B] fidelity cluster.* =audit-013= (D10), =audit-014= (D11), =audit-015=
      (D13), =audit-016= (D14), =audit-017= (D15), =audit-018= (D20/D21), =audit-021=
-     (D24), =audit-022= (D27), =audit-023= (D29).
+     (D24), =audit-022= (D27), =audit-023= (D29). =audit-017= and =audit-018= are
+     =DONE=; the rest are open and unblocked, except =audit-014=, whose sim half
+     cannot be finished without =waves-004='s creep catalogue.
   7. *The [#C] polish.* =audit-024= through =audit-028=.
 
   Steps 1 and 2 are complete, and so are =audit-017=, =audit-028=, =audit-029=,
-  =audit-030=, =audit-019= and =audit-011=. Two of them were found rather than
-  planned: =audit-029= (D31) because building CI meant running a server by hand,
-  and =audit-030= (D32) because running a server by hand *beside a client* is the
-  only way to see a message that never leaves the process. Both are reasons to
-  keep doing that, and both say the same thing about this list: every task in it
-  was written from reading =src/=, and reading =src/= is what missed them.
+  =audit-030=, =audit-019=, =audit-011=, =audit-031= and =audit-018=. Three of
+  them were found rather than planned, all by running the binary rather than
+  reading it: =audit-029= (D31) because building CI meant running a server by
+  hand, =audit-030= (D32) because running a server by hand *beside a client* is
+  the only way to see a message that never leaves the process, and D34 because
+  =audit-031= needed a script and the scripts it learned from had a namespace bug
+  in them. That is four defects now -- D31, D32, D33 and D34 -- that no test in
+  this repository could have caught, and it says the same thing each time: every
+  task in this file was written from reading =src/=, and reading =src/= is what
+  missed them.
 
   =audit-011= closed with a deliberate non-answer worth recording, because the
   same choice will come up again. Its body conceded that the remaining literals
@@ -1184,29 +1310,76 @@ an excuse for an untested mutation (D17).
   =net-002= for the measurement; the session token that would let a returning
   client prove itself, and so narrow the takeover, is =net-003='s.
 
-  Next, in order, now that =audit-011= is done:
+  What is left, and in what order:
 
-  1. =audit-031= (D33). It is the only =[#A]= left in this file, it is
-     unexplained, and three acceptance boxes above are weaker than they read
-     because of it. It needs a display to reproduce, so it is the one task here
-     that a headless session cannot finish -- but the first box ("is the stall in
-     winit/wgpu or in this crate?") is answerable without one, by running a
-     client with rendering disabled.
-  2. =net-006='s last box, a host plus one remote client asserted by a test
-     ([[file:12-testing.org][12-testing.org]] =test-008='s =App= harness, the
-     same place =net-001='s refusal and =audit-030='s regression belong).
-  3. =decide-default-lineage=, which is a decision and not work and is what
+  =audit-031= and =audit-018= have since closed too, and they closed in that
+  order for a reason worth keeping: =audit-031= was the last =[#A]= and the thing
+  that made several other verifications weaker than they read, and =audit-018= was
+  the first task in this file that could be taken *after* it because it needed a
+  windowed client to be worth re-running. What is left sorts into the startable
+  and the waiting:
+
+  *Startable now, in this order:*
+
+  1. The =[#B]= fidelity cluster and the =[#C]= polish in steps 6 and 7 --
+     =audit-013=, =audit-021=, =audit-022=, =audit-023=, =audit-024=, =audit-025=,
+     =audit-026=, =audit-027=. None is blocked by anything outside this file, and
+     the two that touch the map (=audit-026=, =audit-027=) are cheap because
+     =03-map.org= has not yet replaced the geometry they read.
+  2. =found-011= (D34), the =ci/= scripts' namespace bug, which is in
+     [[file:00-foundation.org][00-foundation.org]] and not here. Two hours, no
+     blockers, and it is currently step 3's procedure with a landmine under it:
+     the smoke script a developer reaches for when the pipeline is red fails
+     confusingly if they set any of its documented knobs.
+
+  *Waiting on something, and on what:*
+
+  3. =net-006='s last box, and with it =net-001='s two-process refusal and
+     =audit-030='s regression. All three want the =App= harness of
+     [[file:12-testing.org][12-testing.org]] =test-008=, which is blocked by
+     =net-004= (the validation choke point). So the front of the netcode file is
+     behind =net-004=, not behind anything this machine lacks.
+  4. =decide-default-lineage=, which is a decision and not work and is what
      =sim-005= is waiting on. =audit-012= cannot move until it is signed off.
-  4. The rest of step 4's batch: =audit-020= (D23) is the only member left that
-     is work rather than a component-set change, and it needs a second machine;
-     =audit-024= (D12) is =[#C]= and is the component merge.
+  5. =audit-020= (D23) is the last member of the wire-format batch that is work
+     rather than a component-set change, and its acceptance box needs a second
+     machine with a non-local host on it -- the same limitation =found-002='s last
+     box has.
 
-  =audit-031= (D33) is still =[#A]= and still unexplained, and it is the reason
-  the remote-delivery boxes above are transcripts rather than scripts.
+  =audit-031= (D33) is closed, so there is no =[#A]= left in this file. The
+  stall that made three remote-delivery boxes transcripts rather than scripts was
+  the presentation layer's, and =ci/windowed-client-liveness.sh= is the script
+  that now holds them.
 
-  One addition to step 3, now that D32 has been seen: the wire-format batch should
-  include a smoke-run of a *remote* client for every change to =src/net/server.rs=.
-  =audit-030= is a two-word mistake that no test in this repository can catch, and
-  the only instrument that sees it is =RUST_LOG=lightyear_debug::message=trace= on
-  a server and a client at once. That is a procedure, not a task, and it belongs in
-  the same list as "run all three modes by hand" in the =found-008= upgrade path.
+  =audit-018= (D20, D21) closed with it, and it cost less than its body expected
+  because the two halves of "the match is over" turned out to be one request
+  rather than two features. Three decisions from it are worth carrying forward,
+  because each is a place a later task could re-open the same question:
+
+  - *A reset is a request, not a button.* =ResetMatch= is a message; the timer and
+    the control that fire it are =lobby-010='s and =ui-015='s. The temptation to
+    put a key handler on it here would have made the server's restart semantics a
+    client's business.
+  - *A rematch keeps its players and reseeds its generator.* The player records
+    survive and stay connected -- a rematch is the same people, and re-deriving
+    identity would mean re-running the handshake (D9) -- but the RNG is rebuilt
+    from the match seed, so a rematch on the same tables is the same match. The
+    test asserts that by comparing a reset sim against a brand-new one, creep for
+    creep.
+  - *The mirrors were left alone, and that is the point.* =sync_creeps= and
+    =sync_towers= already reap a mirror whose sim counterpart is gone, so an
+    emptied sim empties the board by itself; a second reaper in the reset path
+    would have been one more thing to keep in step. =lobby-010='s old acceptance
+    box asked for the opposite (despawn and respawn every =PlayerView= too) and
+    has been corrected to match.
+
+  One addition to step 4, the wire-format batch, now that D32 has been seen: it
+  should include a smoke-run of a *remote* client for every change to
+  =src/net/server.rs=. =audit-030= is a two-word mistake that no test in this
+  repository can catch, and the only instrument that sees it is
+  =RUST_LOG=lightyear_debug::message=trace= on a server and a client at once. That
+  is a procedure, not a task, and it belongs in the same list as "run all three
+  modes by hand" in the =found-008= upgrade path. =audit-031= has since given that
+  procedure a script to lean on -- =ci/windowed-client-liveness.sh= runs the
+  remote pair and fails when a notice does not arrive -- so the trace is now for
+  diagnosing a failure the script reports, rather than the only way to notice one.
