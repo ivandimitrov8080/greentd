@@ -31,7 +31,7 @@ server. It touches =src/protocol.rs=, =src/server.rs=, =src/client.rs=,
 
    - Files: =src/protocol.rs=, =src/server.rs=, =src/client.rs=, =src/game.rs=
    - Acceptance:
-     - [x] The version is =hash(balance data) ++ schema revision=, computed once and identical on both peers.
+     - [x] The version is =schema revision ++ hash(balance data) ++ hash(map data)=, computed once and identical on both peers.
      - [x] A client whose hash or revision differs is refused during the handshake with a message naming which part mismatched, and the server logs it (D22).
      - [x] The refusal happens before any =Replicate= entity or =Sim= player record is created.
      - [x] A matching client still completes the handshake and receives its =PlayerView=.
@@ -39,13 +39,19 @@ server. It touches =src/protocol.rs=, =src/server.rs=, =src/client.rs=,
 
    Done. Three pieces, one per file the task names, plus a test file.
 
-   *The version.* =net::protocol::ProtocolVersion= is two numbers, because a
-   mismatch has two causes with two different fixes and a player told only the
-   first would fix the wrong thing: =schema=, the hand-kept wire revision, now
-   =2= (=SCHEMA_REVISION=), and =balance_hash=, =BalanceData::hash= from
-   =found-004=. =build_protocol= computes it once from the =Balance= resource
-   and inserts it, so both halves of one process -- and both ends of a
-   connection -- necessarily agree about what they speak.
+   *The version.* =net::protocol::ProtocolVersion= is three numbers, because a
+   mismatch has three causes with three different fixes and a player told only
+   one would fix the wrong thing: =schema=, the hand-kept wire revision, now
+   =4= (=SCHEMA_REVISION=); =balance_hash=, =BalanceData::hash= from
+   =found-004=; and =map_hash=, =MapData::hash= from =map-001=. The board is
+   rules, not decoration — it decides where creeps enter, how long their walk is
+   and where the goal is — so a client drawing a board the server is not playing
+   is the one thing a dumb client must never do. =build_protocol= computes it
+   once from the =Balance= and =Map= resources and inserts it, so both halves of
+   one process -- and both ends of a connection -- necessarily agree about what
+   they speak. Revision 4 is the map: =MatchView= gained =lives= and =leaks=,
+   =ServerNotice::GameOver= reports lives rather than a live-creep count, and the
+   map hash joined the version.
    =disagreement(&peer)= returns =None=, or a sentence naming every part that
    differed; =tests/protocol.rs= (7 tests) drives the whole matrix and each
    refusal case, headless.
@@ -429,9 +435,11 @@ server. It touches =src/protocol.rs=, =src/server.rs=, =src/client.rs=,
    :EFFORT:     1w
    :BLOCKED-BY: found-001
    :END:
-   D15: today =main= adds =VisualsPlugin= in =server= mode, so a "dedicated"
-   server opens a 1280x800 window and allocates the 768 tile sprites. Make server
-   mode headless: no window, no asset load, a fixed deterministic tick and a
+   D15: =main= added =VisualsPlugin= in =server= mode, so a "dedicated" server
+   opened a 1280x800 window and allocated the board's static sprites (768 tiles
+   when this was written; ~145 entities now, and =MapTile= is gone, =audit-023=).
+   =found-001= has since made the server arm headless, so what is left here is
+   the rest of the specification: no asset load, a fixed deterministic tick and a
    graceful shutdown. The config layer that supplies the tick and player cap is
    [[file:00-foundation.org][00-foundation.org]] (=found-001=), and the
    audit-side check is =audit-017=.

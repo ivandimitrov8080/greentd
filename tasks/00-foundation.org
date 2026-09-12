@@ -25,6 +25,11 @@ and none of it is optional, and =found-004= is the loader named by the
    and CI (found-007) cannot start one. Split the app builder so a server build
    adds no window or GPU plugins, and only a rendering peer adds =VisualsPlugin=.
 
+   (=MapTile= and its 768 tiles are the board as it was when this was written;
+   the board is data now and draws about 145 entities with no =MapTile= at all —
+   =map-001=, =audit-023=. The fix below is what makes the server not draw any of
+   them, whichever board is loaded.)
+
    - Files: =src/main.rs=, =src/visuals.rs=, =src/server.rs=
    - Acceptance:
      - [x] The =server= arm adds no =VisualsPlugin=, requests no primary window, and creates no camera or =MapTile= entity.
@@ -389,19 +394,21 @@ and none of it is optional, and =found-004= is the loader named by the
    =waves.ron= carries =spawn_jitter=, the fraction of a slot a creep may be
    displaced from the center of it.
 
-   The generator's consumer today is that jitter: a wave is still spread evenly
-   around the loop, but no longer as a rigid comb. The jitter is validated to be
-   below half a slot, so it can never reorder a wave and never touches gameplay --
-   and it is the reason a different seed is observable at all, which is what
+   The generator's consumer today is that jitter: a wave enters each lane as a
+   column at that lane's spawn point, and the creeps are displaced within their
+   own slots rather than set as a rigid comb. The jitter is validated to be below
+   half the gap, so it can never reorder a wave and never touches gameplay -- and
+   it is the reason a different seed is observable at all, which is what
    =the_same_seed_replays_and_a_different_seed_does_not=,
-   =a_creep_spawns_inside_its_own_slot= and
+   =a_wave_enters_at_its_lane_spawn_point_in_a_column= and
    =each_wave_draws_further_along_the_generator= pin down. The last of those
    matters most: it proves the generator is a stream, not a constant dressed up
    as a seed.
 
    =waves-002= (chaos) and =econ-00x= (gambling) are the intended real consumers.
-   When =waves-001= moves wave spawning to a single spawn point the jitter may go
-   with it; the seed stays regardless, because sim-012 and every replay need it.
+   The wave's arrival shape is =audit-013='s now (a per-lane column), so the
+   jitter may move with that task's follow-ups; the seed stays regardless, because
+   =sim-012= and every replay need it.
 
    Two deliberate deviations from the file list above: =src/game.rs= is untouched
    -- the seed is *not* replicated, because a client does not simulate and has no

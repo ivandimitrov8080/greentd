@@ -47,7 +47,7 @@ extends.
    =tests/sim_smoke.rs=: events are asserted per tick through =Harness::step=, and
    the =seeded_balance(seed)= helper threads a fixed seed in -- which is exactly
    what =the_same_seed_replays_and_a_different_seed_does=,
-   =a_creep_spawns_inside_its_own_slot= and =the_match_seed_comes_from_the_tables=
+   =a_wave_enters_at_its_lane_spawn_point_in_a_column= and =the_match_seed_comes_from_the_tables=
    exercise.
 
    *The box and the state are left alone anyway, and that is a deliberate

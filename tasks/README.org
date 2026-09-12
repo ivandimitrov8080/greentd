@@ -94,9 +94,8 @@
   the rule above says a milestone ends when every =[#A]= task in it is =DONE=,
   and two are not: =found-002= (one acceptance box needs a second machine to join
   a host on another box) and =test-001= (the harness works; the task is open
-  because its siblings keep arriving). =audit-012= is =WAITING= on a human
-  sign-off rather than on work. Those three are listed under *Progress against
-  M0* and nowhere else, so read the milestone as "unblocked" rather than
+  because its siblings keep arriving). Those two are listed under *Progress
+  against M0* and nowhere else, so read the milestone as "unblocked" rather than
   "stamped".
 
 ** Implemented
@@ -111,7 +110,8 @@
      point to the goal; ~120 waypoint-to-waypoint segments in total.
      =MapData::is_buildable= is "in bounds and further than `path_clearance`
      from every lane", so the board is one open field. Zones are data and are
-     decoration: the original declares nine and never reads them.
+     decoration: the original declares nine colour zones (eleven rectangles
+     here, blue and teal split into two each) and never reads them.
    - =src/map.rs= also carries the *provenance*: the lane geometry was extracted
      from the map's own region graph, not invented, and the map file says how.
    - A creep walks its lane and then **leaks**: past `lane.total` it leaves the
@@ -138,8 +138,8 @@
      unbounded =level=; per-shot tier multipliers on damage, range and rate, with
      the growth fractions themselves read from the table (=damage_per_level=,
      =range_per_level=, =slow_duration=) as of =audit-011=.
-     Targeting picks the creep furthest along the path inside range. Cannon
-     splashes, Frost slows.
+     Targeting picks the creep closest to the goal -- the least distance
+     remaining along its lane -- inside range. Cannon splashes, Frost slows.
    - =try_build/ try_upgrade/ try_sell/ call_wave= are the only mutators, each
      returning =Result<(), Reject>=.
    - Lose condition is a *setting* =match_rules.lose_rule= (`sim-005`, D19):
@@ -147,8 +147,6 @@
      `starting_lives` times, and =overrun= is the other lineage, ending it when
      more creeps are alive at once than =overrun_cap=. Both are implemented and
      tested, and the inactive one is never consulted.
-   - =src/map.rs=: 32x24 grid, =TILE = 32.0=, one closed ring path through four
-     corner waypoints; buildability is "not within =0.95 * TILE= of the path".
    - =src/net/protocol.rs=: =ClientCmd= (C2S) and =ServerNotice= (S2C) messages (in =src/net/messages.rs=),
      one bidirectional reliable channel, six replicated components.
    - =src/net/server.rs=: player identity is the client's own =PlayerId=, sent in
@@ -225,10 +223,9 @@
    | =audit-018= | DONE        | A rematch is one path now: =Sim::reset()= clears the board, wave clock, creep ids and the terminal =over= flag and restores gold and kills, and =net::server::reset_match= clears =Net::announced_over= in the same call, from a =ResetMatch= message that =08-lobby.org= will fire. D20 and D21. |
    | =test-001=  | IN-PROGRESS | Same harness. Its last box was blocked on =found-009= for the seeded RNG; =found-009= has landed, so the box is now true and unticked by choice -- see the task, which records both readings and says the choice is a milestone owner's to make. |
    | =audit-011= | DONE        | The last literals left =src/sim/=. =towers.ron= gained =damage_per_level=, =range_per_level= and =slow_duration=; =match.ron= gained =sell_refund_percent=; both are validated, hashed into the handshake, and tested (=the_last_sim_literals_are_data_now=, =the_tier_scaling_is_read_from_the_table=, =the_slow_duration_is_read_from_the_table=). D18 is =DONE=; the flat tier *model* is still =towers-002='s. |
-   | =audit-012= | WAITING     | Blocked on =decide-default-lineage=, which is a sign-off, not a task. |
+   | =audit-012= | DONE        | D19: the default lineage is Lineage B, read out of the shipped board's own script. =match_rules.lose_rule= + =starting_lives= (60), both rules implemented in the sim, and the inactive one is never consulted. The cap (150) is left as Lineage A's (tune) value, which =sim-005= still owes a documented number for. |
    | =audit-009= | DONE        | Closed by =net-002=: identity is the client's =PlayerId=, not the socket address. The transcript shows a client rejoining from a new port (5101 to 5102) re-entering the same =PlayerKey(42)= and the same =PlayerView= entity. D9 is =DONE=. |
    | =audit-019= | DONE        | Closed by =net-001=: the refusal is the handshake's other outcome, so the three claims this task makes are the three =net-001= verified. D22 is =DONE=. |
-   | =audit-012= | DONE        | D19: the default lineage is Lineage B, read out of the shipped board's own script. =match_rules.lose_rule= + =starting_lives= (60), both rules implemented in the sim, and the inactive one is never consulted. The cap (150) is left as Lineage A's (tune) value, which =sim-005= still owes a documented number for. |
    | =audit-013= | DONE        | D10: a wave enters each lane at that lane's spawn point as a column, `spawn_gap` apart, compressed to fit `spawn_arc` so a late wave never starts near the goal. Per-lane, not around a ring. |
    | =audit-023= | DONE        | D29: the 768 =MapTile= entities are gone -- there is no =MapTile= at all. The board is one ground sprite, the map's zones, one bar per lane segment, a marker per spawn and a block at the goal: ~145 static entities. |
    | =audit-026= | DONE        | D26: the inside-ring/outside-ring question is moot -- the ring is gone. The ground is drawn from the map's own zone rectangles and the lanes are drawn on top of it. |
@@ -252,8 +249,8 @@
   *M0's exit criterion holds; the milestone is unblocked rather than stamped.*
   The four things the criterion names are true -- no client can touch another
   player's towers, the sim has tests, the balance numbers are one table, and the
-  server runs headless under CI -- but three tasks keep the milestone from being
-  *stamped*, and they are open for three different reasons, which is worth
+  server runs headless under CI -- but two tasks keep the milestone from being
+  *stamped*, and they are open for two different reasons, which is worth
   separating rather than lumping:
 
   - =found-002= is =IN-PROGRESS= for a reason no amount of work on this machine
@@ -262,9 +259,7 @@
   - =test-001= is =IN-PROGRESS= by *choice*, not by blocker. Its last box was
     held on =found-009='s seeded RNG, which has landed, so the box is now true and
     unticked; the task records both readings and calls it a milestone owner's
-    decision. This is the one of the three that is not waiting on anything.
-  - =audit-012= is =WAITING= on =decide-default-lineage=, which is a sign-off
-    rather than work, and it gates =sim-005= and so all of M1's lose conditions.
+    decision. This is the one of the two that is not waiting on anything.
 
   What is left before M1, in the order it should be taken:
 
@@ -309,8 +304,8 @@
   - The rest of the M1 board work, now that the geometry is real: =map-002='s
     shared funnel (the lanes duplicate the funnel in their own polylines rather
     than re-targeting on entering the region as the original does, which is why
-    lane lengths differ and "furthest along" is an approximation),
-    =map-004=/=map-013=, the terrain palette of =map-007=, and =map-008='s
+    lane lengths differ and "furthest along" is an approximation), the terrain
+    palette of =map-007=, =map-013='s second board and registry, and =map-012='s
     heading for creep rotation. =decide-default-lineage= is *settled* (Lineage
     B), so =sim-005='/=test-004= are no longer waiting on a human.
 
@@ -448,7 +443,7 @@
   | D7  | A   | DONE  | A per-peer token bucket in =src/ratelimit.rs=; over-budget commands are dropped and the peer is told once per frame (=audit-007=). |
   | D8  | A   | DONE  | =players.entry(who).or_default()= mints a zero-gold player record for an unregistered key; diverges from =add_player='s starting gold. |
   | D9  | A   | DONE  | Identity is the UDP socket address, so reconnecting from a new port silently becomes a new player and loses gold and kills. Fixed by =net-002=: a client-generated =PlayerId= in the handshake, and a takeover rule, so a reconnect re-enters the same =PlayerKey= and the same =PlayerView=. |
-  | D10 | B   | DONE  | A wave was spread evenly around the entire loop, so it had no front, and a creep could spawn already adjacent to the destination. Fixed by =audit-013= and =map-005=: a wave enters each lane at that lane's spawn point as a column, `spawn_gap` apart, compressed into `spawn_arc`, and a startup check refuses a board whose shortest lane is not much longer than that window. |
+  | D10 | B   | DONE  | A wave was spread evenly around the entire loop, so it had no front, and a creep could spawn already adjacent to the destination. Fixed by =audit-013= and =map-005=: a wave enters each lane at that lane's spawn point as a column, `spawn_gap` apart, compressed into `spawn_arc`, so no wave starts near the goal. A test on the shipped board asserts every lane leaves ten tiles between its wave's arrival window and the goal (=tests/map.rs=); turning that into a load refusal for any board is =map-011='s. |
   | D11 | B   | open  | Creeps are entirely uniform — no armour type, no damage type, no air, no boss, no hero, no immune. |
   | D12 | C   | open  | =CreepVis= and =CreepHp= are distinct components, doubling replication updates per creep per tick. |
   | D13 | B   | open  | No projectile entities; towers damage invisibly on a cooldown. |
@@ -577,7 +572,7 @@
    Two lineages exist (see *The single most important correctness question*
    above). The recommendation is Lineage B (lives). This needs an explicit
    sign-off before =sim-005= is started, because it determines the whole
-   difficulty curve and the map's Life Zone geometry.
+   difficulty curve and the map's goal region.
 
    *Signed off: Lineage B, and it is no longer a recommendation.* The evidence
    is the shipped board. Green TD v36.0 is a Lineage B map, and its =END=

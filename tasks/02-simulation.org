@@ -5,11 +5,11 @@
 #+FILETAGS: :greentd:
 #+STARTUP: overview indent
 
-This file plans the authoritative simulation that lives in =src/sim.rs= (later
-split into =src/sim/*=), the one component that decides every outcome. It fixes
-the creep data model and adds the armour/damage system (=src/game.rs=,
+This file plans the authoritative simulation that lives in =src/sim/= (already
+split from the flat =src/sim.rs=), the one component that decides every outcome. It fixes
+the creep data model and adds the armour/damage system (=src/data/balance.rs=,
 =assets/balance/*.ron=), defines how the sim talks to the network through
-=src/protocol.rs= and =src/server.rs=, and pins the win/lose conditions that
+=src/net/protocol.rs= and =src/net/server.rs=, and pins the win/lose conditions that
 [[file:03-map.org][03-map.org]] and [[file:04-waves.org][04-waves.org]] feed. Wave *content* lives in
 [[file:04-waves.org][04-waves.org]]; this file owns only the machinery that consumes it.
 
@@ -41,7 +41,7 @@ the creep data model and adds the armour/damage system (=src/game.rs=,
    | 4 | fire      | create projectiles / schedule shots, spend cooldowns      |
    | 5 | damage    | resolve projectiles, apply damage and bounty              |
    | 6 | reap      | remove dead creeps, fire kill events                      |
-   | 7 | leak      | creeps past the Life Zone, lives decrement                |
+   | 7 | leak      | creeps that reach the goal leak, lives decrement          |
    | 8 | win/lose  | evaluate the active lose rule and the victory condition   |
 
 ** TODO [#A] Quantise sim time into integer ticks   :@sim:
@@ -219,54 +219,73 @@ the creep data model and adds the armour/damage system (=src/game.rs=,
 
 * Waves, leakage and match flow
 
-** TODO [#A] Implement both lose rules behind one data-driven =LoseRule=   :@sim:
+** IN-PROGRESS [#A] Implement both lose rules behind one data-driven =LoseRule=   :@sim:
    :PROPERTIES:
    :ID:         sim-005
    :EFFORT:     1w
    :BLOCKED-BY: decide-default-lineage
    :END:
-   "Green TD" is two lineages with different lose conditions, and the sim
-   hardcodes one of them — =match_rules.overrun_cap = 150= as of =found-004= —
-   which matches neither (D19; Lineage A documents 600/700/800/1000). Implement
-   both as data: =LoseRule::Overrun { cap }= (too many creeps alive at once) and
-   =LoseRule::Lives { lives, boss_leak_cost }= (a creep reaching the Life Zone
-   costs lives; a boss costs 10; 0 lives is defeat).
+   "Green TD" is two lineages with different lose conditions, and the sim used to
+   hardcode one of them — =match_rules.overrun_cap = 150= as of =found-004= —
+   which matches neither (D19; Lineage A documents 600/700/800/1000). Both are
+   now data: =LoseRule::Overrun= (too many creeps alive at once) and
+   =LoseRule::Lives= (a creep reaching the goal costs a life; 0 lives is defeat).
 
-   Note: =Sim::overrun_cap()= already reads the value from the table and
-   =Sim::step= compares against it, so what is left here is the *rule* enum and
-   the =Lives= implementation, not the de-literalisation.
+   *What landed* (=audit-012=, =decide-default-lineage=): =LoseRule= is an enum
+   in =src/data/balance.rs= and a field of =match_rules=, the default is
+   =Lives=, and =starting_lives = 60= is read out of the shipped board's own
+   script rather than a round number. The sim carries =lives= and =leaks=,
+   =MatchView= exposes both, =ServerNotice::GameOver= reports them instead of a
+   live-creep count (schema revision 4), and =check_lose= consults exactly the
+   rule that is on. The =Lives= implementation is =sim-006='s leak, below.
 
-   - Files: =src/sim.rs=, =src/game.rs=, =src/protocol.rs=
+   *What is left:*
+
+   - A documented Lineage A cap. 150 is still in =match.ron=, deliberately, as a
+     =(tune)= value for a rule whose board does not ship yet ([[file:03-map.org][03-map.org]]
+     =map-013=); it is not one of the 600/700/800/1000 the lineage documents.
+   - =boss_leak_cost= (10 lives for a boss). There is nothing to leak until
+     [[file:04-waves.org][04-waves.org]] =waves-004= authors a boss.
+   - The "runs =Lives= past the old 150-creep point without ending" test. The
+     inactive rule is already shown never to be consulted from both directions
+     (=the_overrun_rule_does_not_spend_lives=, =a_leak_is_counted_under_either_rule=);
+     what is still owed is the test that makes the 150 concrete.
+
+   - Files: =src/sim/mod.rs=, =src/data/balance.rs=, =src/net/protocol.rs=, =assets/balance/match.ron=
    - Acceptance:
-     - [ ] =LoseRule= is an enum with exactly the =Overrun= and =Lives= variants above and is a field of the match settings.
-     - [ ] Under =Overrun= the match ends when live creeps exceed =cap=, and the =cap= value is corrected to a documented Lineage A number (150 is in neither lineage); it already comes from =assets/balance/match.ron= and not a const.
-     - [ ] Under =Lives= a boss leak costs =boss_leak_cost= (default 10) and 0 lives is defeat; =SimEvent= gains =CreepLeaked=, =LivesLost= and =GameOver= carrying remaining lives.
-     - [ ] The default rule for a fresh match comes from the lobby setting (lobby-003), not a hardcoded constant.
+     - [x] =LoseRule= is an enum with exactly the =Overrun= and =Lives= variants above and is a field of the match settings.
+     - [ ] Under =Overrun= the match ends when live creeps exceed =cap=, and the =cap= value is corrected to a documented Lineage A number (150 is in neither lineage); it comes from =assets/balance/match.ron= and not a const.
+     - [ ] Under =Lives= a boss leak costs =boss_leak_cost= (default 10) and 0 lives is defeat. (The leak and the 0-lives defeat landed with =sim-006=; the boss cost waits on =waves-004=.)
+     - [ ] The default rule for a fresh match comes from the lobby setting (lobby-003). (It is data today — =match_rules.lose_rule= — but not yet a lobby choice.)
      - [ ] The inactive rule is never consulted, proven by a test that runs =Lives= mode past the old 150-creep point without ending.
 
-** TODO [#A] Define creep leakage and the Life Zone hand-off   :@sim:
+** DONE [#A] Define creep leakage and the goal hand-off   :@sim:
    :PROPERTIES:
    :ID:         sim-006
    :EFFORT:     1d
-   :BLOCKED-BY: sim-005
    :END:
-   Creeps advance =dist= and wrap with =rem_euclid= inside =Path::sample=, so
-   nothing can ever leak and the =Lives= rule from =sim-005= has no trigger.
-   Define the end-of-path behaviour: the creep is removed (not killed), lives
-   are decremented, effects fire, and in Gold Rush mode the leak costs 5 lives.
+   Creeps advanced =dist= and wrapped with =rem_euclid= inside =Path::sample=, so
+   nothing could ever leak and the =Lives= rule from =sim-005= had no trigger.
+   The board fixed the precondition — a lane *ends* (=map-001=) — and the
+   end-of-lane behaviour is the game's signature: the creep is removed (not
+   killed) and a life is spent.
 
-   - Files: =src/sim.rs=, =src/map.rs=
+   - Files: =src/sim/combat.rs=, =src/sim/mod.rs=, =src/map.rs=
    - Acceptance:
-     - [ ] A creep whose =dist= reaches the path end ([[file:03-map.org][03-map.org]] =map-002=, =map-003=) is removed from =self.creeps= and never sampled past the end.
-     - [ ] A leak emits =SimEvent::CreepLeaked= and =LivesLost= with the creep id and its leak cost.
-     - [ ] Under =LoseRule::Overrun= on a closed ring the sim never leaks; a test asserts the path never reports arrival there.
-     - [ ] A Gold Rush creep ([[file:04-waves.org][04-waves.org]] =waves-011=) leaks for 5 lives, read from creep flags and not hardcoded.
+     - [x] A creep whose =dist= reaches =lane.total= ([[file:03-map.org][03-map.org]] =map-003=) is removed from =self.creeps= and never sampled past the end.
+     - [x] The leak emits =SimEvent::Leaked(id)=, and =Sim::leaks= counts it under either rule so an economy or a multiboard can show it without asking which rule is on.
+     - [x] Under =Lives= it costs a life and 0 lives ends the match; the tick order makes a creep that reaches the goal this tick impossible to also shoot (=Sim::step= leaks before =fire=).
+     - [ ] A Gold Rush creep ([[file:04-waves.org][04-waves.org]] =waves-011=) leaks for 5 lives, read from creep flags and not hardcoded. (Waits on the mode.)
+
+   The event name is =Leaked=, not the =CreepLeaked=/=LivesLost= pair the plan
+   first sketched: one event names the creep, and the lives that were spent are
+   =MatchView.lives=, which the HUD already reads. There is no second definition
+   of "the end" in the sim — the goal is the end of a lane and nothing else.
 
 ** TODO [#A] Detect wave completion and model the inter-wave gap   :@sim:
    :PROPERTIES:
    :ID:         sim-007
    :EFFORT:     1d
-   :BLOCKED-BY: sim-005
    :END:
    Waves spawn on a blind 20 s timer and never "complete", which is why Blitz
    (spawn on a timer) and normal play (spawn when cleared) are indistinguishable
@@ -287,14 +306,14 @@ the creep data model and adds the armour/damage system (=src/game.rs=,
    :PROPERTIES:
    :ID:         sim-011
    :EFFORT:     1w
-   :BLOCKED-BY: sim-005
    :END:
-   =SimEvent= has four variants and =ServerNotice= duplicates one of them
-   (=WaveStarted=), which is how D5 (a wave notice the server never sends)
-   happened. Expand =SimEvent= to everything the client needs and classify each
-   variant as replicated or local-only.
+   =SimEvent= has the five variants the current sim emits
+   (=CreepSpawned=, =CreepKilled=, =Leaked=, =WaveStarted=, =GameOver=) and
+   =ServerNotice= duplicates one of them (=WaveStarted=), which is how D5 (a
+   wave notice the server never sends) happened. Expand =SimEvent= to everything
+   the client needs and classify each variant as replicated or local-only.
 
-   - Files: =src/sim.rs=, =src/protocol.rs=, =src/server.rs=
+   - Files: =src/sim/mod.rs=, =src/net/protocol.rs=, =src/net/server.rs=
    - Acceptance:
      - [ ] =SimEvent= covers spawn, kill, leak, wave start, wave clear, bounty/gold change, build/upgrade/sell, crit, ability cast, game over and victory.
      - [ ] Each variant is annotated replicated or local-only, and a test enumerates the set so a new variant must declare itself.
@@ -443,7 +462,7 @@ the creep data model and adds the armour/damage system (=src/game.rs=,
   - Tower families, tiers, branching, auras and traps: [[file:05-towers.org][05-towers.org]].
   - Income, bounty tables, gambling, lumber and food: [[file:06-economy.org][06-economy.org]].
   - Wave content, the creep catalogue and the wave table: [[file:04-waves.org][04-waves.org]].
-  - Map geometry, lanes, the Life Zone's shape and build regions: [[file:03-map.org][03-map.org]].
+  - Map geometry, lanes, the goal region's shape and build regions: [[file:03-map.org][03-map.org]].
   - Transport, prediction, interpolation and reconnection: [[file:09-networking.org][09-networking.org]].
   - HUD, toasts and floating text: [[file:10-ui.org][10-ui.org]].
 
@@ -455,7 +474,10 @@ the creep data model and adds the armour/damage system (=src/game.rs=,
   - *Is Divine armour fully immune or merely resistant?* Some versions say
     "killable only by Chaos"; others imply reduction. Default: full immunity to
     non-Chaos, =(tune)=.
-  - *Starting lives for =LoseRule::Lives=.* Unconfirmed. Default: 100 =(tune)=.
+  - *Starting lives for =LoseRule::Lives=.* Settled by the shipped board, not
+    guessed: =starting_lives = 60=, read out of the map's own =InitGlobals=
+    (=decide-default-lineage=). It is still =(tune)= — what 60 lives means at
+    this project's wave sizes is the balance pass (=test-014=).
   - *Slow/effect stacking rule.* Nobody documented it. Default: strongest wins
     with duration refresh for slows; poisons stack up to a cap.
   - *Does a Lineage A ring creep loop forever?* Default: yes, =Overrun= needs

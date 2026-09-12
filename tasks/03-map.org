@@ -1,281 +1,367 @@
 #+TITLE: greentd — map
-#+SUBTITLE: The map as data: tile grid, path shapes, spawn lanes, the Life Zone, build regions and framing
+#+SUBTITLE: The board as data: lanes to a goal, the shared funnel, buildability, framing and map selection
 #+TODO: TODO NEXT IN-PROGRESS WAITING BLOCKED | DONE CANCELLED
 #+TAGS: FOUNDATION(f) SIM(s) MAP(m) WAVES(w) TOWERS(t) ECON(e) BUILDER(b) LOBBY(l) NET(n) UI(u) CONTENT(c) TEST(x) RELEASE(r)
 #+FILETAGS: :greentd:
 #+STARTUP: overview indent
 
-This file plans the map system that today is a single hardcoded ring in
-=src/map.rs=: a 32x24 grid (=GRID_W=, =GRID_H=), =TILE = 32.0=, four corner
-waypoints in =RING=, and a buildability test that is nothing but "further than
-=0.95 * TILE= from the path". Every task here moves a constant out of the
-source and into an asset (=assets/maps/*.ron=), generalises the path shape, and
-adds the Life Zone and per-player lanes that [[file:02-simulation.org][02-simulation.org]] and
-[[file:04-waves.org][04-waves.org]] depend on. The map module stays shared by client and server and
-carries no authority.
+This file plans the board. It used to open by naming "a single hardcoded ring in
+=src/map.rs=" — a 32x24 grid, =TILE = 32.0=, four corner waypoints in =RING= —
+and to set out to move that into an asset. It moved: =map-001= is =DONE=, and
+what is left here is what the ring never had.
+
+The board is *data*. =src/map.rs= is a loader and a validator over
+=assets/maps/*.ron=, and the board that ships is the real one, Green TD v36.0
+(=assets/maps/green_td_v36.ron=, `wc3maps 153802`, =map-015=): 96x96 tiles of
+128 world units, ten lanes from ten spawn points, merging into one funnel and
+ending at a single goal region (=END=) at the bottom centre. A creep walks its
+lane and, at the end of it, **leaks** — it leaves the match and costs a life
+([[file:02-simulation.org][02-simulation.org]] =sim-005=, =sim-006=). The module stays shared by
+client and server and carries no authority, and the board is hashed into the
+protocol version, because two peers on different boards would disagree about
+every leak ([[file:09-networking.org][09-networking.org]] =net-001=).
+
+What the ring did not have, and so what is left here: the shared funnel that
+makes "closest to the goal" mean the same thing on every lane (=map-002=), the
+per-cell build mask (=map-006=), a terrain palette for a board drawn from its own
+zones (=map-007=), a second board and the registry that lists it (=map-013=), the
+picker that chooses between them (=map-009=), heading for a creep drawn along a
+lane (=map-012=), a doodad layer (=map-010=) and the tiled ground pass
+(=map-014=).
 
 * Map data model and loading
 
-** TODO [#A] Load the map from a data asset instead of the =RING= constant   :@map:
+** DONE [#A] Load the board from a data asset instead of the =RING= constant   :@map:
    :PROPERTIES:
    :ID:         map-001
    :EFFORT:     1w
    :END:
-   =map.rs= hardcodes the grid (=GRID_W = 32=, =GRID_H = 24=, =TILE = 32.0=) and
-   the path as the four-corner =RING= array, so a second map cannot exist and
-   nothing outside =map.rs= can vary the field. Move all of it into a
-   serialisable map definition that also names build regions and path
-   waypoints.
+   =map.rs= hardcoded the grid (=GRID_W = 32=, =GRID_H = 24=, =TILE = 32.0=) and
+   the path as the four-corner =RING= array, so a second map could not exist and
+   nothing outside =map.rs= could vary the field. All of it moved into a
+   serialisable board definition, loaded and validated before any plugin exists.
 
-   - Files: =src/map.rs=, =src/map/loader.rs=, =assets/maps/ring-classic.ron=
+   - Files: =src/map.rs=, =assets/maps/green_td_v36.ron=
    - Acceptance:
-     - [ ] A map asset declares the tile grid, path waypoints, named build regions and named path waypoints, and is loaded at match setup (found-004).
-     - [ ] =GRID_W=, =GRID_H=, =TILE= and =RING= no longer determine the loaded map; the shipped =ring-classic.ron= reproduces today's geometry exactly.
-     - [ ] A malformed or missing asset fails with a readable error naming the field, not a panic from =Path::build=.
-     - [ ] The map type is shared by client and server and imports no =lightyear= type.
+     - [x] A map asset declares the tile grid, the lanes, the goal and the named zones, and is loaded at match setup (found-004).
+     - [x] =GRID_W=, =GRID_H=, =TILE= and =RING= no longer determine the loaded map; they no longer exist.
+     - [x] A malformed or missing asset fails with a readable error naming the field, not a panic from =Path::build=.
+     - [x] The map type is shared by client and server and imports no =lightyear= type.
 
-** TODO [#B] Validate every map at load with actionable errors   :@map:
+   *Done, and the board that landed is not a placeholder.* The shipped asset is
+   the real board, extracted from the map's own region graph (`map-015`), so the
+   constants were not moved — they were replaced by the geometry that the game
+   they were approximating actually runs. Four things came with the change and
+   are worth keeping in view:
+
+   - The origin is the *middle* of the board. The extracted coordinates are
+     Warcraft III world units over a playable =−6144..6144= square, so
+     =cell_to_world= / =world_to_cell= are centred and the whole 32x24/edge-at-zero
+     assumption is gone. =tests/map.rs= asserts =world_to_cell(goal.centre) ==
+     IVec2::new(48, 4)=.
+   - A lane *ends*. =Lane::sample= clamps and reports arrival rather than wrapping
+     with =rem_euclid=, and =Lane::total= is the end of the lane — which is what
+     =sim-006= leaks against.
+   - The board is part of the protocol version. =MapData::hash()= is FNV-1a over
+     the canonicalised geometry, and =ProtocolVersion= carries it beside the
+     balance hash, so a peer with a different board is refused before an entity
+     exists (`net-001`, revision 4 of the schema).
+   - =config::check_map_against_balance= refuses a board whose =path_clearance=
+     the shortest tower cannot reach: a map and a table that make a tower unable
+     to hit a lane is a board with no possible defence, not a tuning problem.
+
+** DONE [#C] Record how the shipped board was extracted                      :@map:
+   :PROPERTIES:
+   :ID:         map-015
+   :EFFORT:     2h
+   :END:
+   A board that claims to be a real map is worth nothing unless a reader can
+   check where its geometry came from, and a future board (or a corrected
+   version of this one) needs the recipe rather than a pile of numbers.
+
+   - Files: =assets/maps/green_td_v36.ron=
+   - Acceptance:
+     - [x] The board file names its source (the map at `wc3maps 153802`) and the two files the geometry was read out of.
+     - [x] The extraction's method is written down: the original moves a creep by triggering a "move to the next region" order on region entry, so the board is a graph of waypoint rectangles and each lane is that graph flattened into one polyline.
+     - [x] Every deliberate simplification is listed where the reader meets it, with the cost: the shared funnel is repeated per lane rather than re-targeted on entry (so lane lengths differ, 13k to 32k), two dead triggers are not reproduced, and one region chain follows the regions rather than the author's mistyped trigger name.
+     - [x] The zones are recorded as *decoration*: the original declares nine colour zones (eleven rectangles on this board, blue and teal split into two each) and never reads them, so nothing here restricts a build to a player's own zone.
+
+** TODO [#B] Validate every board at load with actionable errors   :@map:
    :PROPERTIES:
    :ID:         map-011
    :EFFORT:     1d
-   :BLOCKED-BY: map-001, map-002
+   :BLOCKED-BY: map-002
    :END:
-   =Path::build= assumes well-formed waypoints and indexes =cumulative[i + 1]=
-   without checking, so a doubled waypoint or one off the grid panics or yields
-   a silently wrong path. Validate once at load with errors that name the field
-   and the index.
+   =MapData::from_def= already refuses most of a broken board — non-positive
+   grid, tile size, clearance or goal, no lanes, a lane shorter than a tile, a
+   non-finite or off-board waypoint, a spawn that is not the first waypoint, a
+   last waypoint that is not the goal. What it does not yet refuse is the class
+   of *self-contradictory* geometry: a zero-length segment, a doubled waypoint,
+   or a lane whose length is shorter than the wave's own arrival window
+   (=spawn_arc=), which would put a fresh creep near the goal (`audit-013`).
+   Today the last of those is asserted by a test on the shipped board rather than
+   by the loader on any board.
 
-   - Files: =src/map/validate.rs=, =src/map.rs=, =assets/maps/*.ron=
+   - Files: =src/map.rs=, =assets/maps/*.ron=
    - Acceptance:
      - [ ] A zero-length segment, a duplicate waypoint or a non-increasing cumulative length is reported with the segment index.
      - [ ] The self-intersection policy (allowed or rejected) is stated and enforced for every shipped map.
-     - [ ] Every spawn point and Life Zone is asserted to lie on the path, and every player start region inside the grid.
-     - [ ] Validation runs at load and a failing map cannot start a match.
+     - [ ] A lane shorter than the wave's arrival window (=waves.ron= =spawn_arc=) is refused at load, so "a fresh creep never starts near the goal" is a property of the loader and not of one board.
+     - [ ] The goal region is asserted to lie inside the grid, and every lane's spawn is asserted inside it too.
+     - [ ] Validation runs at load and a failing board cannot start a match.
 
-** TODO [#B] Ship a map registry and a second map   :@map:
+** TODO [#B] Ship a map registry and a second board   :@map:
    :PROPERTIES:
    :ID:         map-013
    :EFFORT:     1d
-   :BLOCKED-BY: map-001, map-011
+   :BLOCKED-BY: map-011
    :END:
-   Both lineages must be exercisable, which needs at least a classic multi-lane
-   ring (Lineage A) and an open-path map with a Life Zone (Lineage B). Add a
-   registry that enumerates and validates the shipped maps at startup.
+   One board ships (=green_td_v36=, a Lineage B board), and the loader already
+   takes an id and the config already takes =--map=. What is missing is the list:
+   a registry that enumerates the boards under =assets/maps/=, validates each at
+   startup, and carries the metadata a picker needs. Lineage A still has no
+   board to play =Overrun= on, and =decide-default-lineage= left it available
+   precisely so its board could exist.
 
-   - Files: =src/map/registry.rs=, =assets/maps/ring-classic.ron=, =assets/maps/lane-open.ron=
+   - Files: =src/map.rs= (=src/map/registry.rs= if the module splits), =assets/maps/*.ron=
    - Acceptance:
-     - [ ] At least one Lineage A ring map and one Lineage B open-path map with a Life Zone ship under =assets/maps/=.
-     - [ ] The registry enumerates maps and validates each at load; a broken map is reported without crashing startup.
-     - [ ] Every map carries a display name, author, lineage and wave count for the picker (=map-009=).
-     - [ ] The registry is the single source of the map list, so the lobby has no hardcoded table.
+     - [ ] A Lineage A ring board ships beside =green_td_v36= so both lose rules have a board.
+     - [ ] The registry enumerates boards and validates each at load; a broken board is reported without crashing startup.
+     - [ ] Every board carries a display name, author, lineage and wave count for the picker (=map-009=).
+     - [ ] The registry is the single source of the board list, so the lobby has no hardcoded table.
 
 * Path geometry
 
-** TODO [#A] Support the path shapes the real maps use   :@map:
+** TODO [#A] Make the funnel genuinely shared   :@map:
    :PROPERTIES:
    :ID:         map-002
    :EFFORT:     1w
-   :BLOCKED-BY: map-001
    :END:
-   There is exactly one closed ring through four corners and =Path::sample=
-   wraps every distance with =rem_euclid(self.total)=, so no other shape is
-   expressible. Generalise =Path= to the classic circle (Lineage A), a
-   serpentine, a multi-lane layout and a figure-8, each providing =sample(dist)=
-   and =distance_to(p)=.
+   The board has three distinct path shapes — a ring (Lineage A), an open lane
+   to a goal (Lineage B), and the funnel the ten lanes merge into — and only the
+   first and second are expressible today. The third is the one that costs
+   something: in the original a creep is *re-ordered* to the next region when it
+   enters the funnel, so ten lanes become one path near the goal. Here each lane
+   repeats the funnel in its own polyline, which keeps the visible behaviour (the
+   creeps meet and reach the same goal) but leaves the lanes 13k to 32k units
+   long, so "furthest along its lane" is only an approximation of "closest to the
+   goal" ([[file:02-simulation.org][02-simulation.org]] =sim-010=, =sim-004=).
 
-   - Files: =src/map/path.rs=, =src/map.rs=, =assets/maps/*.ron=
+   - Files: =src/map.rs=, =assets/maps/*.ron=
    - Acceptance:
-     - [ ] At least four shapes are expressible as waypoint lists and at least two ship (the classic ring and one other).
-     - [ ] =sample(dist)= is continuous and, for a closed shape, wraps exactly as today; for an open shape it reports arrival at the Life Zone.
-     - [ ] =distance_to(p)= is correct for a leg that crosses the path's own interior (a figure-8 crosses itself).
-     - [ ] Building is still forbidden within =0.95 * TILE= of any shape.
+     - [ ] The funnel is one shared segment (or one shared region) that the lanes re-enter, not a copy per lane, so lane length measures the walk to the funnel plus the funnel.
+     - [ ] =sample(dist)= is continuous across a lane's junction with the funnel, and a ring still wraps while a lane-to-goal still reports arrival.
+     - [ ] =distance_to(p)= stays correct for a shape that crosses itself (a figure-8 or the funnel's own turns).
+     - [ ] With a shared funnel, "least distance remaining" and "furthest along" agree for creeps in different lanes, and =sim-004='s policy is the one the board actually wants.
 
-** TODO [#B] Expose heading and arrival along the path   :@map:
+** TODO [#B] Expose heading and arrival along a lane   :@map:
    :PROPERTIES:
    :ID:         map-012
    :EFFORT:     2h
    :BLOCKED-BY: map-002
    :END:
-   Creeps are drawn upright, so on every corner they visibly slide sideways; and
-   an open path needs to report "arrived" rather than a clamped position. Add
-   =Path::heading(dist)= and make =sample= expose arrival.
+   Creeps are drawn upright, so on every bend they visibly slide sideways; and a
+   lane needs to report "arrived" rather than a clamped position at the goal.
+   Add =Lane::heading(dist)= and make arrival explicit.
 
-   - Files: =src/map/path.rs=, =src/protocol.rs=, =src/visuals.rs=
+   - Files: =src/map.rs=, =src/net/protocol.rs=, =src/ui/visuals.rs=
    - Acceptance:
-     - [ ] =Path::heading(dist)= returns a unit vector for the segment at that distance and the destination direction on an open path's last leg.
-     - [ ] =sample= reports arrival (or the caller can test =dist >= total=) on an open path instead of wrapping.
-     - [ ] Heading is smooth across a corner, with no 90-degree snap in one tick.
-     - [ ] Heading travels with the replicated creep position without adding a second component (see net-001 on D12).
+     - [ ] =Lane::heading(dist)= returns a unit vector for the segment at that distance, and the goal direction on a lane's last leg.
+     - [ ] Arrival is testable (=dist >= lane.total=) rather than inferred from a clamped position, and =sim-006= uses that test rather than a second definition.
+     - [ ] Heading is smooth across a bend, with no 90-degree snap in one tick.
+     - [ ] Heading travels with the replicated creep position without adding a second component (see [[file:09-networking.org][09-networking.org]] =net-010=, D12).
 
 * Spawns, lanes and build regions
 
-** TODO [#A] Give every player a spawn lane   :@map:
+** DONE [#A] Make the board's lanes the spawn set, not the lobby's   :@map:
    :PROPERTIES:
    :ID:         map-004
    :EFFORT:     1d
-   :BLOCKED-BY: map-001, map-002
    :END:
-   Research could not confirm the original's lane count. *Decision:* model one
-   spawn point per player, because =creeps_per_wave()= already multiplies by the
-   connected-player count, so a bigger lobby means more creeps from more points.
-   Implement a =SpawnPoint= per player and give each wave a front instead of
-   spreading it around the loop.
+   Research could not confirm the original's lane count, so the earlier decision
+   was one spawn point per player, with =creeps_per_wave()='s connected-player
+   multiplier supplying the variety. The real board answered the question instead:
+   it has ten spawn regions (nine colours, red holding two so the middle player is
+   attacked from both sides) and its wave triggers create units at *every* one of
+   them, whether or not a human holds that colour. A solo player therefore faces
+   all ten lanes, which is what the original does.
 
-   - Files: =src/map.rs=, =assets/maps/*.ron=, =src/sim.rs=
+   - Files: =src/sim/waves.rs=, =src/data/balance.rs=, =assets/maps/green_td_v36.ron=
    - Acceptance:
-     - [ ] A map declares one spawn point per player; =N= connected players use =N= points.
-     - [ ] The lane topology (shared path versus separate paths) is a map-level setting with a written default of one shared ring.
-     - [ ] A wave spawns from its owner's spawn point as a contiguous front (see =map-005=, closes D10).
-     - [ ] A player joining or leaving changes the active spawn set without disturbing creeps already in flight.
+     - [x] The spawn set is the board's lanes; a lane is not owned by a player and a join or leave does not change which lanes exist.
+     - [x] A wave is spawned on every lane, so =wave_size = creeps_per_lane × lanes=.
+     - [x] The connected-player multiplier stays, now as the *difficulty* multiplier rather than the spawn-set size, and it is documented as one of two multipliers.
+     - [x] A creep carries a =lane= index, not a player id, so it can be re-laned by a map change and cannot be mistaken for a player's unit.
 
-** TODO [#A] Spawn waves as a front, never adjacent to the Life Zone   :@map:
+   What this leaves is not map work: how a smaller lobby should be *scaled*
+   against ten lanes is the difficulty table (=waves-004=) and the lobby
+   (=lobby-003=), and the per-lane count is =creeps_per_lane()= in
+   =src/data/balance.rs=.
+
+** DONE [#A] Spawn waves as a front, never adjacent to the goal   :@map:
    :PROPERTIES:
    :ID:         map-005
    :EFFORT:     1d
-   :BLOCKED-BY: map-004, map-003
    :END:
-   D10: a wave is spread evenly around the whole loop so it has no front, and a
-   creep can spawn already touching the Life Zone and leak immediately. Define
-   how a wave is laid out from a spawn point and require a minimum
-   spawn-to-Life-Zone distance.
+   D10: a wave was spread evenly around the whole loop, so it had no front, and a
+   creep could spawn already touching the destination and leak immediately. The
+   ring's disappearance is what fixed it — a lane has a *start* — and the wave
+   layout was made explicit on top of that.
 
-   - Files: =src/map/path.rs=, =src/map.rs=, =src/sim.rs=
+   - Files: =src/sim/waves.rs=, =assets/balance/waves.ron=, =assets/maps/green_td_v36.ron=
    - Acceptance:
-     - [ ] A wave occupies a contiguous run of path starting at its spawn point, with a clear front (closes D10).
-     - [ ] No spawn point lies within a configurable minimum distance of its Life Zone, enforced at map load.
-     - [ ] The inter-creep spacing is data, not the inline =spacing = path.total / n=.
-     - [ ] Two lanes spawning on the same tick do not overlap at the spawn point.
+     - [x] A wave enters a lane at that lane's spawn point as a contiguous column, with a clear front (closes D10).
+     - [x] The inter-creep gap and the arrival window are data (=spawn_gap=, =spawn_arc=), not the inline =spacing = path.total / n=.
+     - [x] A late wave compresses its gap to fit =spawn_arc=, so *no* wave starts near the goal (the safety-distance box, satisfied without waiting for =sim-005=).
+     - [x] Two lanes spawning on the same tick do not interact: each lane's column is placed from its own spawn point.
 
-** TODO [#A] Make buildability a precomputed rule set, not a per-query path walk   :@map:
+   The implementation and its tests are =audit-013='s; this task and that one are
+   the same change recorded in two files, and this row is what keeps them from
+   drifting. The property the box is really about is asserted on the shipped
+   board by =tests/map.rs= =a_wave_of_creeps_never_starts_within_a_tile_of_the_goal=.
+
+** TODO [#A] Make buildability a precomputed rule set, not a per-query lane walk   :@map:
    :PROPERTIES:
    :ID:         map-006
    :EFFORT:     1w
-   :BLOCKED-BY: map-001
    :END:
-   =is_buildable= is "not within =0.95 * TILE= of the path", computed by walking
-   every path segment on every query — D28. Replace it with a precomputed
-   per-cell build mask plus explicit rules: no-build on path, no-build on
-   another player's area, no-build on a trap, and the original's "another player
-   can get rid of a tower in their area" rule.
+   =MapData::is_buildable= is "in bounds and further than =path_clearance= from
+   the nearest lane", and =path_distance= walks every segment of every lane on
+   every query — D28. On the ring that was four segments; on this board it is
+   about 120, and =is_buildable= is called per click on the server and again by
+   the client's ghost. Replace it with a precomputed per-cell build mask plus
+   explicit rules: no-build on a lane, no-build on another player's area, no-build
+   on a trap, and the original's "another player can get rid of a tower in their
+   area" rule.
 
-   - Files: =src/map.rs=, =src/sim.rs=, =assets/maps/*.ron=
+   - Files: =src/map.rs=, =src/sim/economy.rs=, =assets/maps/*.ron=
    - Acceptance:
-     - [ ] A per-cell mask (buildable, on-path, owner, blocked) is built once at load and =is_buildable= is a single lookup (closes D28).
-     - [ ] The rules are named flags in the map asset, not branches in code.
+     - [ ] A per-cell mask (buildable, on-lane, owner, blocked) is built once at load, keyed by the *loaded* board's grid — not by the retired =GRID_W=/=GRID_H= constants — and =is_buildable= is a single lookup (closes D28; this is also what =audit-027= and =audit-025= want).
+     - [ ] The rules are named flags in the board asset, not branches in code.
      - [ ] A cell owned by another player is unbuildable for the caller and the reject reason is distinct (the map-side half of D25's =NotOwner=).
      - [ ] The "another player may get rid of a tower in their area" rule is expressible and the ownership filter supports D1's ownership fix.
 
-* The Life Zone
+* The goal (the Life Zone)
 
-** TODO [#A] Add the Life Zone as a named, rendered region   :@map:
+** DONE [#A] The goal is a named, rendered region at the end of every lane   :@map:
    :PROPERTIES:
    :ID:         map-003
    :EFFORT:     1d
-   :BLOCKED-BY: map-002
    :END:
-   Lineage B ends a creep's run at the Life Zone and "creeps that enter the Life
-   Zone are removed from the game instead of killed", but there is no end point
-   today — creeps wrap forever ([[file:02-simulation.org][02-simulation.org]] =sim-005=, =sim-006=).
-   Add the zone as a named region at the path end, with a distinct render and
-   the leak behaviour attached to it.
+   Lineage B ends a creep's run at the "Life Zone", and the earlier plan assumed
+   one Life Zone per lane, moving or multiplying. The board settled it the other
+   way: every lane ends at the *same* region — =gg_rct_END=, a rectangle at the
+   bottom centre of the board — which is why the board's middle is worth
+   defending and why "one goal" is a shared fact the lanes funnel into.
 
-   - Files: =src/map.rs=, =src/visuals.rs=, =assets/maps/*.ron=
+   - Files: =src/map.rs=, =src/ui/visuals.rs=, =assets/maps/green_td_v36.ron=
    - Acceptance:
-     - [ ] A map declares a Life Zone as a region with a shape the sim can point-test in constant time.
-     - [ ] A closed-ring map with no Life Zone still loads and never leaks.
-     - [ ] The zone is rendered distinctly from path and grass.
-     - [ ] The zone's geometry is what =sim-006= tests against; there is no second definition of "the end" in the sim.
+     - [x] A board declares its goal as a named region (=GoalDef= / =Goal=), and =map-003= is the region =decide-default-lineage= cites.
+     - [x] The goal is rendered distinctly from the ground and the lanes: a gold block at the goal, red markers at the spawns.
+     - [x] The goal is where a lane ends, so =sim-006= leaks against =lane.total= and there is no second definition of "the end" in the sim.
+     - [x] A goal region's geometry is validated at load (positive halves), and every lane's last waypoint must equal the goal centre.
+
+   The original's rule is the same shape one level down: its =END= trigger fires
+   when a unit enters the region, removes it, plays the death effect there and
+   decrements the "chances" counter the map starts at 60. The transcript is in
+   [[file:README.org][README.org]].
 
 * Presentation
 
-** TODO [#A] Define terrain classes for the tile palette   :@map:
+** TODO [#A] Define terrain classes for the board's ground   :@map:
    :PROPERTIES:
    :ID:         map-007
    :EFFORT:     1d
-   :BLOCKED-BY: map-001
    :END:
-   D26: grass versus path is the only distinction and "inside the ring" is
-   coloured identically to "outside", with no statement of intent. Define the
-   tile palette — path, buildable grass, decorative, blocked — and document the
-   intended look so the art pass has placeholder colours to replace.
+   D26 asked whether grass inside the ring and outside it should be coloured
+   differently; the ring is gone, so the question dissolved with =audit-026=. What
+   replaces it is a real palette question: the ground is now one sprite plus the
+   board's *zones*, and the lanes are drawn over it with one bar per segment. The
+   zones are decoration (the original declares them and never reads them), so
+   "what each kind of ground means" is a decision to make explicitly rather than a
+   by-product of a grid rule.
 
-   - Files: =src/map.rs=, =src/visuals.rs=, =assets/maps/*.ron=
+   - Files: =src/map.rs=, =src/ui/visuals.rs=, =assets/maps/*.ron=
    - Acceptance:
-     - [ ] A terrain class enum (path, buildable, decorative, blocked) exists and every cell has one.
-     - [ ] The render maps each class to a documented colour/sprite, and inside versus outside the ring is a deliberate choice.
+     - [ ] A terrain class (lane, buildable ground, zone/decoration, blocked) exists and every kind of cell on the board has one.
+     - [ ] The render maps each class to a documented colour/sprite, and "zones are decoration" is stated where the class is chosen.
      - [ ] The palette is data, so the art pass can replace colours without touching =visuals.rs= logic.
-     - [ ] A test asserts every in-bounds cell has a terrain class.
+     - [ ] A test asserts the classes tile the board without gaps or overlaps.
 
-** TODO [#A] Derive world bounds and camera framing from the loaded map   :@map:
+** DONE [#A] Derive world bounds and camera framing from the loaded board   :@map:
    :PROPERTIES:
    :ID:         map-008
    :EFFORT:     1d
-   :BLOCKED-BY: map-001
    :END:
-   The orthographic =AutoMin= projection hardcodes =WORLD_W + 96.0= and
-   =WORLD_H + 96.0=, and =GRID_W=/=GRID_H= feed both camera and input mapping,
-   so any other map size mis-frames and mis-clicks. Make framing derive from the
-   loaded map.
+   The orthographic =AutoMin= projection hardcoded =WORLD_W + 96.0= and
+   =WORLD_H + 96.0=, and =GRID_W=/=GRID_H= fed both camera and input mapping, so
+   any other board mis-framed and mis-clicked.
 
-   - Files: =src/visuals.rs=, =src/map.rs=, =src/client.rs=
+   - Files: =src/ui/visuals.rs=, =src/map.rs=, =src/ui/hud.rs=
    - Acceptance:
-     - [ ] The camera's =min_width=/=min_height= come from the loaded map's world size, not the =WORLD_W=/=WORLD_H= constants.
-     - [ ] =cell_to_world= and =world_to_cell= use the map's tile size and origin and round-trip for a non-32x24 map.
-     - [ ] The whole map is framed at startup for at least two differently sized maps.
-     - [ ] A cursor position maps to the same cell at any zoom or window size.
+     - [x] The camera's =min_width=/=min_height= come from the loaded board's =half_extents=, not from =WORLD_W=/=WORLD_H=.
+     - [x] =MapData::cell_to_world= / =world_to_cell= use the board's tile size and a centred origin and round-trip at 96x96.
+     - [x] The whole board is framed at startup, and input mapping asks the =Map= resource rather than a constant.
+     - [x] The board's tile size reaches the sprite sizes too: creeps, towers, lane bars, spawn markers and the goal are all sized from =map.tile_size=.
 
 ** TODO [#C] Add a data-driven doodad layer that never affects pathing   :@map:
    :PROPERTIES:
    :ID:         map-010
    :EFFORT:     1d
-   :BLOCKED-BY: map-001
    :END:
    The originals are full of decorative terrain. Add a doodad layer (positions,
-   sprites, optional animation) declared in the map asset, strictly visual: it
+   sprites, optional animation) declared in the board asset, strictly visual: it
    must not change buildability, pathing or the sim.
 
-   - Files: =assets/maps/*.ron=, =src/visuals.rs=, =src/map.rs=
+   - Files: =assets/maps/*.ron=, =src/ui/visuals.rs=, =src/map.rs=
    - Acceptance:
-     - [ ] A map declares decorations as data (position, sprite key, optional animation).
+     - [ ] A board declares decorations as data (position, sprite key, optional animation).
      - [ ] Adding or removing a decoration changes nothing the sim can observe; a test compares sim state with and without them.
      - [ ] Decorations never make a cell buildable or unbuildable.
      - [ ] Decorations render behind creeps and towers (a lower z-order).
 
-** TODO [#C] Render the ground as a tiled pass, not 768 entities   :@map:
+** TODO [#C] Render the ground as a tiled pass, not one sprite per kind   :@map:
    :PROPERTIES:
-   :ID:         map-014
-   :EFFORT:     1w
-   :BLOCKED-BY: map-001, map-007
-   :END:
-   =setup_camera_and_map= spawns one entity per tile — 768 for the current grid
-   (D29). Replace it with a tiled or instanced ground pass driven by the terrain
-   classes from =map-007=, so a larger map is not a larger entity count.
+     :ID:         map-014
+     :EFFORT:     1w
+     :BLOCKED-BY: map-007
+     :END:
+   =audit-023= deleted the 768 =MapTile= entities (D29): the ground is now a
+   single sprite plus the board's zones, with the lanes drawn on top. That is
+   right for two colours and a first board, but it is not the tiled ground pass a
+   real tileset needs. When =map-007='s terrain classes and =11-content.org='s
+   tileset exist, replace the flat ground sprite with a tiled or instanced pass
+   driven by the classes, so a board several times larger is not a larger entity
+   count.
 
-   - Files: =src/visuals.rs=, =src/map.rs=
+   - Files: =src/ui/visuals.rs=, =src/map.rs=, =assets/tilesets/=
    - Acceptance:
-     - [ ] The ground is drawn without one ECS entity per tile.
-     - [ ] Terrain classes from =map-007= drive the pass.
-     - [ ] Removing the per-tile =MapTile= entities (and its =#[allow(dead_code)]=) does not change what the player sees.
-     - [ ] A map several times larger renders in the same number of draw batches.
+     - [ ] The ground is drawn by a data-driven pass over the terrain classes, not by one flat sprite per kind.
+     - [ ] Adding a tier of board detail does not add one ECS entity per tile.
+     - [ ] Removing the interim ground sprite does not change what the player sees, beyond the detail the tileset adds.
+     - [ ] A board several times larger renders in the same number of draw batches.
 
 * Selection
 
-** TODO [#B] Let the lobby pick a map   :@map:
+** TODO [#B] Let the lobby pick a board   :@map:
    :PROPERTIES:
    :ID:         map-009
    :EFFORT:     1d
-   :BLOCKED-BY: map-001, lobby-001
+   :BLOCKED-BY: lobby-001
    :END:
-   With more than one map, the host must choose one before the match starts and
-   every client must load the same one. Add the lobby-side map picker here; the
-   lobby mechanics themselves are in [[file:08-lobby.org][08-lobby.org]] (lobby-001).
+   The loader takes a board id (=Map::load(dir, id)=), the config takes =--map=
+   and =--map-dir=, and the protocol version carries the board's hash — so the
+   machinery for two boards exists. What is missing is the choice: before a match
+   starts, the host picks a board and every client loads the same one. The picker
+   is the registry's consumer (=map-013=); the lobby mechanics are
+   [[file:08-lobby.org][08-lobby.org]] =lobby-012=.
 
-   - Files: =src/lobby.rs=, =src/map/registry.rs=, =assets/maps/*.ron=
+   - Files: =src/lobby.rs=, =src/map.rs= (=src/map/registry.rs= if it splits), =assets/maps/*.ron=
    - Acceptance:
-     - [ ] The host selects a map before the match and the choice is part of the replicated match settings.
-     - [ ] Every client loads the host's map, and a client whose local map file differs is rejected rather than silently mismatched.
-     - [ ] The picker lists registered maps with their lineage and wave count.
-     - [ ] Selecting a Lineage A map defaults the lose rule to =Overrun= and a Lineage B map to =Lives= ([[file:02-simulation.org][02-simulation.org]] =sim-005=), overridable by the host.
+     - [ ] The host selects a board before the match and the choice is part of the replicated match settings.
+     - [ ] Every client loads the host's board, and a client whose local file differs — by id or by hash — is rejected rather than silently mismatched (=net-001=).
+     - [ ] The picker lists registered boards with their lineage and wave count.
+     - [ ] Selecting a Lineage A board defaults the lose rule to =Overrun= and a Lineage B board to =Lives= ([[file:02-simulation.org][02-simulation.org]] =sim-005=), overridable by the host.
 
 * Non-goals
 
@@ -289,15 +375,17 @@ carries no authority.
 
 * Open questions
 
-  - *Spawn lane count.* Research could not confirm it. Default: one spawn point
-    per player (=map-004=), matching =creeps_per_wave()='s player multiplier.
+  - *Spawn lane count.* Settled by the board: ten lanes, one spawn each except red's two. A lane is not owned by a player (=map-004=).
   - *Do Lineage A ring creeps loop forever or stop at the ring end?* Default:
-    loop forever on a closed ring, so =Overrun= can accumulate.
-  - *Exact build-region ownership layout.* Unconfirmed. Default: equal
-    rectangular plots around the ring, one per player, =(tune)=.
-  - *Real serpentine, multi-lane and figure-8 geometry.* Not documented in
-    measured form. Default: author-defined waypoint lists, marked =(tune)=.
-  - *Default spawn direction.* Unconfirmed. Default: clockwise from each
-    player's spawn point.
-  - *Does the Life Zone ever move or multiply per lane?* Unconfirmed. Default:
-    one zone per lane, fixed for the match.
+    loop forever on a closed ring, so =Overrun= can accumulate. Lineage A still
+    has no shipped board (=map-013=).
+  - *Exact build-region ownership layout.* The board's zones are decoration and
+    the original never reads them, so the default is "build anywhere the lanes
+    are clear" (=map-006=, =audit-026=). Anything narrower would be a mechanic
+    this project invents.
+  - *Real serpentine, multi-lane and figure-8 geometry.* The shipped board's
+    lanes are real; a ring board for Lineage A is still author-defined, =(tune)=.
+  - *Default spawn direction.* Settled by the board: each lane's first waypoint
+    is its spawn and its polyline is the direction (=map-001=).
+  - *Does the goal move or multiply per lane?* No: one region per board, =END=,
+    and every lane's last waypoint is its centre (=map-003=).

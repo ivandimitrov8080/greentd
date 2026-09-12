@@ -83,11 +83,12 @@ protocol from [[file:09-networking.org][09-networking.org]] =net-001= and builds
    :EFFORT:     1w
    :BLOCKED-BY: found-001
    :END:
-   A dedicated server should be runnable without a window (the current =server=
-   mode still adds =DefaultPlugins= with a window and the 768 tile sprites,
-   =D15=). Provide it as a separate binary or a documented flag from the config
-   layer (=found-001=), plus a container image and a runbook so it can be started
-   from a command line rather than a debugger.
+   A dedicated server should be runnable without a window. It used to add
+   =DefaultPlugins= with a window and the whole board's sprites (=D15=; the board
+   was 768 tiles then and draws ~145 entities now, =audit-023=, and =found-001=
+   has since given a server =MinimalPlugins=). Provide it as a separate binary or
+   a documented flag from the config layer (=found-001=), plus a container image
+   and a runbook so it can be started from a command line rather than a debugger.
 
    - Files: =src/main.rs=, =Dockerfile=, =docs/server.md=, =Cargo.toml=
    - Acceptance:

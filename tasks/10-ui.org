@@ -232,14 +232,15 @@ state or the local build ghost, and every action is an intent, never a mutation.
    :EFFORT:     1w
    :BLOCKED-BY: ui-001
    :END:
-   The original ships a custom minimap, and the board is a fixed =GRID_W= x
-   =GRID_H= grid in =map.rs=, so both peers already know the geometry. The
-   minimap draws the path and grid, live creeps, towers coloured by owner, the
-   destination / Life Zone and the camera viewport, and a click moves the camera.
+   The original ships a custom minimap, and the board is data
+   (=assets/maps/*.ron=, =map-001=), so both peers already know the geometry
+   without a constant. The minimap draws the lanes and the goal, live creeps,
+   towers coloured by owner, the spawn points and the camera viewport, and a
+   click moves the camera.
 
-   - Files: =src/ui/minimap.rs=, =src/visuals.rs=, =src/map.rs=
+   - Files: =src/ui/minimap.rs=, =src/ui/visuals.rs=, =src/map.rs=
    - Acceptance:
-     - [ ] The minimap draws the path, the destination / Life Zone and the grid bounds.
+     - [ ] The minimap draws the board's lanes, its spawn points and its goal, scaled from =MapData::half_extents()=.
      - [ ] Live creeps and towers appear on it, with towers coloured by owner (=ui-005=).
      - [ ] The camera viewport rectangle is drawn and a click moves the camera to that world position.
      - [ ] The minimap is derived from replicated state only and runs no simulation.
@@ -364,24 +365,28 @@ state or the local build ghost, and every action is an intent, never a mutation.
      - [ ] Panels reflow rather than overlap when the window is resized or the scale is raised.
      - [ ] The palette is shared with the content pass (=content-011=) and the tooltip colours (=ui-004=).
 
-** TODO [#B] Replace the per-tile entities with a tiled map render pass :@ui:map:
+** DONE [#B] Replace the per-tile entities with a tiled map render pass :@ui:map:
    :PROPERTIES:
    :ID:         ui-018
    :EFFORT:     1w
-   :BLOCKED-BY: ui-001
    :END:
-   =MapTile= is =#[allow(dead_code)]= and =setup_camera_and_map= spawns one
-   entity per tile (32 x 24 = 768 sprites) with two hardcoded colours, and it
-   colours grass inside and outside the ring identically (=D26=, =D29=). Replace
-   the entities with a tiled render pass, remove the =allow(dead_code)=, and take
-   the tile appearance from the map data (=map-007=).
+   =MapTile= was =#[allow(dead_code)]= over one entity per tile (32 x 24 = 768
+   sprites) coloured by a two-colour =is_buildable= test, and it coloured grass
+   inside the ring the same as outside (=D26=, =D29=). The tiles are gone rather
+   than cheaper: the new board is 96x96, so one entity per tile would have been
+   9,216, and the honest fix was to stop drawing one.
 
-   - Files: =src/visuals.rs=, =src/map.rs=
+   - Files: =src/ui/visuals.rs=, =src/map.rs=
    - Acceptance:
-     - [ ] The 768 per-tile entities are replaced by a tiled render pass (or a single mesh) that draws the same board.
-     - [ ] =MapTile='s =#[allow(dead_code)]= is removed because the type is genuinely used.
-     - [ ] Tile appearance is derived from the map data and grass inside the ring is distinguishable from grass outside (=D26=, =map-007=).
-     - [ ] The static tile entity count is O(1), and the change is measured by the benchmarks in [[file:12-testing.org][12-testing.org]] =test-012=.
+     - [x] The 768 per-tile entities are gone; =MapTile= does not exist any more, so neither does its =#[allow(dead_code)]=.
+     - [x] The board draws as one ground sprite plus the map's zones, one bar per lane segment, a spawn marker per lane and a block at the goal (~145 static entities), all sized from =map.tile_size=.
+     - [x] Appearance is derived from the loaded board, not from a constant grid or a two-colour rule.
+     - [ ] The static tile entity count is O(1). (~145 is not O(1): it is one entity per zone and per lane segment. The real pass is =map-014=, and it needs =map-007='s palette.)
+
+   With no tileset there is nothing to draw better with, so the ground is one
+   flat sprite for now; when the palette exists, that sprite is what =map-014=
+   replaces. This task and =audit-023= describe one change made once, and holding
+   both rows is what keeps them from drifting.
 
 * Non-goals
   - No client-side simulation, prediction or authority: the client renders and
@@ -399,7 +404,7 @@ state or the local build ghost, and every action is an intent, never a mutation.
 * Open questions
   - *Default zoom.* The original documents 2500 units. Recommended default:
     2500 (tune), clamped to a range derived from the loaded map bounds
-    (=map-007=), recorded in the config layer ([[file:00-foundation.org][00-foundation.org]] =found-001=).
+    (=map-008=), recorded in the config layer ([[file:00-foundation.org][00-foundation.org]] =found-001=).
   - *Multiboard scope.* Show every player's row or only the local board?
     Recommended default: all players, with the =LocalPlayer= row highlighted.
   - *Message log depth.* Recommended default: 8 visible lines with a 200-line

@@ -5,11 +5,12 @@
 #+FILETAGS: :greentd:
 #+STARTUP: overview indent
 
-This plan touches a new =assets/= tree, =src/visuals.rs=, =src/ui/theme.rs=, a
+This plan touches a new =assets/= tree, =src/ui/visuals.rs=, =src/ui/theme.rs=, a
 new =src/audio.rs= and the asset manifest/check tooling. The visual layer today
-is entirely procedural — 768 tile sprites, creeps darkened by health fraction in
-=track_creeps=, towers scaled by =level.min(6)= — with no =assets/= directory, no
-animation, no VFX and no audio. It runs after the sim has named every unit and tower.
+is entirely procedural — one ground sprite over the board's zones, one bar per
+lane segment, creeps darkened by health fraction in =track_creeps=, towers scaled
+by =level.min(6)= — with no =assets/= directory, no animation, no VFX and no
+audio. It runs after the sim has named every unit and tower.
 
 * Tasks
 
@@ -20,14 +21,14 @@ animation, no VFX and no audio. It runs after the sim has named every unit and t
    :END:
    The clone is not Warcraft III, and it must not copy Blizzard assets, names or
    textures. Pick and document a visual identity that reads as "green TD" — the
-   green ring is the map's signature — while being entirely original, and make it
-   the single style source that every other task in this file follows and that
-   the UI palette (=ui-017=) consumes.
+   shipped board's ten lanes funnelling into one goal, over green ground — while
+   being entirely original, and make it the single style source that every other
+   task in this file follows and that the UI palette (=ui-017=) consumes.
 
    - Files: =docs/art-direction.md=, =assets/=, =src/ui/theme.rs=
    - Acceptance:
      - [ ] A short art-direction document states the palette, the silhouette language, the camera framing and the icon style.
-     - [ ] It names the green ring as the map's signature read and says how it is preserved.
+     - [ ] It names the shipped board's ten-lane funnel as the signature read and says how it is preserved.
      - [ ] It states explicitly that no Blizzard asset, name or texture is used.
      - [ ] The palette is checked against a colour-blind simulation and shared with content-011 and ui-017.
 
@@ -37,17 +38,19 @@ animation, no VFX and no audio. It runs after the sim has named every unit and t
    :EFFORT:     1w
    :BLOCKED-BY: content-001, map-007
    :END:
-   Terrain today is two hardcoded colours chosen by =is_buildable=, and grass
-   inside and outside the ring are coloured identically (=D26=). Produce art for
-   path, buildable grass, decoration and blocked cells, resolved by model key and
-   driven by the per-cell region masks the map data provides (=map-007=), so a
-   tileset swap is a data change rather than a code change.
+   Terrain today is a flat ground sprite over the board's zones with the lanes
+   drawn on top (=audit-023=), and the two-colour =is_buildable= rule that used to
+   colour tiles — grass inside the ring coloured the same as outside (=D26=) — is
+   gone with the ring. Produce art for the lanes, the buildable ground, the zone
+   decoration and the goal, resolved by model key and driven by the terrain
+   classes the map data provides (=map-007=), so a tileset swap is a data change
+   rather than a code change.
 
-   - Files: =assets/tilesets/=, =assets/manifest.ron=, =src/visuals.rs=, =src/map.rs=
+   - Files: =assets/tilesets/=, =assets/manifest.ron=, =src/ui/visuals.rs=, =src/map.rs=
    - Acceptance:
-     - [ ] Tiles exist for path, buildable grass, decoration and blocked, each resolved by a model key.
+     - [ ] Tiles exist for lane, buildable ground, zone/decoration and goal, each resolved by a model key.
      - [ ] The path is unmistakable at the default zoom and under the colour-blind palette (=content-011=).
-     - [ ] Region masks from the map data select the tiles, and inside-the-ring grass is distinct from outside (=D26=, =map-007=).
+     - [ ] The board's terrain classes select the tiles, and the lanes, the goal and the spawn points read distinctly from the ground (=D26=, =map-007=).
      - [ ] Replacing the tileset is a manifest/data edit with no code change.
 
 ** TODO [#A] Produce creep art that distinguishes ground, air, boss, hero and immune :@content:waves:
@@ -124,7 +127,7 @@ animation, no VFX and no audio. It runs after the sim has named every unit and t
      - [ ] Each effect is a distinct, pooled sprite effect with a documented duration (tune).
      - [ ] Splash renders as a ring sized to the tower's actual splash radius.
      - [ ] Slow, poison and stun markers key off the sim's status effects (=sim-009=), never off a local guess.
-     - [ ] A leak plays a visible effect at the destination / Life Zone.
+     - [ ] A leak plays a visible effect at the goal.
 
 ** TODO [#B] Produce the audio set and a mixing policy :@content:
    :PROPERTIES:
@@ -179,7 +182,7 @@ animation, no VFX and no audio. It runs after the sim has named every unit and t
    - Files: =assets/ui/=, =assets/manifest.ron=, =src/loading.rs= (or =src/visuals.rs=)
    - Acceptance:
      - [ ] A loading screen is shown until the manifest resolves, and a missing asset surfaces a readable error rather than a blank window.
-     - [ ] Each map ships a preview image referenced by its map data (=map-007=).
+     - [ ] Each map ships a preview image referenced by its map data (=map-013=).
      - [ ] A build-panel icon exists for every family, with tier conveyed by decoration rather than a per-tier drawing.
      - [ ] The loading screen reports progress and never shows an empty window.
 

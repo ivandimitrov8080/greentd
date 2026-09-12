@@ -358,8 +358,8 @@ an excuse for an untested mutation (D17).
      - [x] Sim test (D17): two =CallWave= commands inside the cooldown window leave =wave_timer= advanced by the first only.
 
    *The rule.* Any player in the match may call the next wave -- it is a shared,
-   cooperative action on a map where every player spawns into the same ring --
-   but each player may only do so once every
+   cooperative action on a board every player is defending -- but each player may
+   only do so once every
    =match_rules.call_wave_cooldown= seconds (=5.0= in =assets/balance/match.ron=,
    a value the table already carried and nothing read). No gold or food cost,
    because the original has none and a cooldown is sufficient to close D6: the
@@ -869,7 +869,7 @@ an excuse for an untested mutation (D17).
    - Files: =src/visuals.rs=, =src/client.rs=
    - Acceptance:
      - [ ] Creeps render by interpolating between the last two replicated samples at display rate, with a single documented render delay.
-     - [ ] Steady-state positional error against the authoritative position is under one world unit, with no visible overshoot at a ring corner.
+     - [ ] Steady-state positional error against the authoritative position is under one world unit, with no visible overshoot at a lane bend.
      - [ ] The wire format is unchanged; interpolation is presentation-only and never feeds back into =Sim=.
      - [ ] If =net-009= in [[file:09-networking.org][09-networking.org]] owns the implementation, this task closes by pointing at it rather than duplicating.
 
@@ -1377,15 +1377,18 @@ an excuse for an untested mutation (D17).
      change or depend on the format, so doing them in one pass is cheaper than three;
      =audit-024= (D12, the component merge) joins this batch because it changes the
      replicated component set. None may start before =net-001= is =DONE=.
-  5. *The design decision.* =audit-012= (D19) stays =WAITING= until
-     =decide-default-lineage= is signed off. It blocks nothing else in this file, but
-     it gates =sim-005=, and the lose condition cannot be finalised until it resolves.
+  5. *The design decision: done.* =audit-012= (D19) was signed off against the
+     shipped board's own =END= trigger -- Lineage B, =lives=, 60 starting lives --
+     and closed with =sim-005= and =sim-006=. It gates nothing else in this file
+     now.
   6. *The [#B] fidelity cluster.* =audit-013= (D10), =audit-014= (D11), =audit-015=
      (D13), =audit-016= (D14), =audit-017= (D15), =audit-018= (D20/D21), =audit-021=
-     (D24), =audit-022= (D27), =audit-023= (D29). =audit-017= and =audit-018= are
-     =DONE=; the rest are open and unblocked, except =audit-014=, whose sim half
-     cannot be finished without =waves-004='s creep catalogue.
-  7. *The [#C] polish.* =audit-024= through =audit-028=.
+     (D24), =audit-022= (D27), =audit-023= (D29). =audit-013=, =audit-017=,
+     =audit-018= and =audit-023= are =DONE=; the rest are open and unblocked,
+     except =audit-014=, whose sim half cannot be finished without =waves-004='s
+     creep catalogue.
+  7. *The [#C] polish.* =audit-024= through =audit-028=, minus =audit-026= and
+     =audit-028=, which are =DONE=.
 
   Steps 1 and 2 are complete, and so are =audit-017=, =audit-028=, =audit-029=,
   =audit-030=, =audit-019=, =audit-011=, =audit-031=, =audit-018=, =audit-012=,
@@ -1485,7 +1488,7 @@ an excuse for an untested mutation (D17).
   5. =sim-005='s remainder (a documented Lineage A cap, =boss_leak_cost=,
      =waves-004= for bosses) and the board work that follows from the real
      geometry: =map-002='s shared funnel, =map-007='s terrain palette and
-     =map-008='s heading. See [[file:03-map.org][03-map.org]].
+     =map-012='s heading. See [[file:03-map.org][03-map.org]].
 
   =audit-031= (D33) is closed, so there is no =[#A]= left in this file. The
   stall that made three remote-delivery boxes transcripts rather than scripts was

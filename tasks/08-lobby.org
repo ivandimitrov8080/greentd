@@ -337,21 +337,23 @@ and =assets/balance/*.ron=. Numbers research could not confirm are =(tune)=.
    :PROPERTIES:
    :ID:         lobby-012
    :EFFORT:     1d
-   :BLOCKED-BY: map-001
+   :BLOCKED-BY: map-013
    :END:
-   Once [[file:03-map.org][03-map.org]] makes the map a RON asset (=map-001=), setup
-   must choose among the shipped maps and every peer must load the same one, with
-   world bounds and camera framing derived from it (=map-009=). Today the map is
-   four hardcoded corner waypoints in =src/map.rs= (the =RING= const), so there
-   is nothing to select.
+   =map-001= made the board a RON asset, the loader already takes an id, the
+   config already takes =--map= (=--map-dir=), and the protocol version already
+   carries the board's hash — so a peer can be pointed at a board and two peers
+   cannot silently disagree. What setup must add is the *choice*: the registered
+   boards (=map-013=), and every peer loading the host's one. World bounds and
+   camera framing already follow the loaded board (=map-008=); the picker itself
+   is =map-009=.
 
-   - Files: =src/lobby.rs=, =src/game.rs=, =src/server.rs=, =src/client.rs=,
+   - Files: =src/lobby.rs=, =src/game.rs=, =src/net/server.rs=, =src/net/client.rs=,
      =src/main.rs=
    - Acceptance:
      - [ ] The setup screen lists the available maps and the host picks one.
      - [ ] The selected map id is part of the replicated match settings and every peer loads the same asset.
-     - [ ] A peer lacking the selected map is refused during the handshake rather than loading a different one (=net-001=).
-     - [ ] World bounds and camera framing follow the loaded map (=map-009=).
+     - [ ] A peer lacking the selected map — by id or by hash — is refused during the handshake rather than loading a different one (=net-001=).
+     - [ ] World bounds and camera framing follow the loaded map (=map-008=).
 
 ** TODO [#C] Replace the single notice string with real game messages      :@lobby:
    :PROPERTIES:
@@ -421,7 +423,8 @@ and =assets/balance/*.ron=. Numbers research could not confirm are =(tune)=.
     host-only, with a visible announcement (tune).
   - *Kick rules*: whether a majority can outvote the host. Recommended default:
     host-only, no vote (tune).
-  - *Default lose rule*: pending =decide-default-lineage=. Recommended default:
-    Lineage B (lives).
+  - *Default lose rule*: settled — Lineage B (=lives=), signed off against the
+    shipped board's own script (=decide-default-lineage=). A Lineage A board
+    (=map-013=) would select =overrun= instead.
   - *Observer slots*: whether an observer consumes one of the 9 slots is settled
     in [[file:09-networking.org][09-networking.org]] =net-013=.
