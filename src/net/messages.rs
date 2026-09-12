@@ -9,6 +9,28 @@
 use serde::{Deserialize, Serialize};
 
 use crate::data::reject::Reject;
+use crate::net::protocol::ProtocolVersion;
+
+/// Client -> server, once, before anything else: which protocol it speaks.
+///
+/// It carries no identity and no intent, so a server may act on it before the
+/// sender is a player. A peer that never sends one is never admitted, which is
+/// what lets the server keep "connected" and "in the match" separate (`D22`,
+/// `net-001`).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
+pub struct Handshake {
+    pub version: ProtocolVersion,
+}
+
+/// Server -> client: the answer to a [`Handshake`].
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum HandshakeAck {
+    /// The versions agree and the sender is now a player in the match.
+    Accepted,
+    /// The versions disagree, so the sender is not admitted. The reason names
+    /// the part of the version that differed (`net-001`).
+    Refused { reason: String },
+}
 
 /// Client -> server intents. The client never mutates the world directly; it
 /// only asks. The server decides.

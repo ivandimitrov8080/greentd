@@ -190,7 +190,7 @@
    | =audit-011= | TODO        | Blocked on =net-001= for the hash half; the per-tier literals are =towers-002='s to absorb. |
    | =audit-012= | WAITING     | Blocked on =decide-default-lineage=, which is a sign-off, not a task. |
    | =audit-009= | TODO        | Blocked on =net-001=. |
-   | =audit-019= | TODO        | Blocked on =net-001=. |
+   | =audit-019= | DONE        | Closed by =net-001=: the refusal is the handshake's other outcome, so the three claims this task makes are the three =net-001= verified. D22 is =DONE=. |
 
   Everything above builds, passes =cargo test= (64 tests: 3 + 7 + 24 + 8 + 22)
   and =cargo clippy --all-targets -- -D warnings=, and was walked by hand in a
@@ -206,9 +206,15 @@
   =audit-012= is =WAITING= on a sign-off. What is left before M1, in the order it
   should be taken:
 
-  - =net-001= (protocol v2 with version negotiation). It gates =audit-009=,
-    =audit-011=, =audit-019=, =audit-020= and =audit-024=, and it is the largest
-    unblocked task in the plan.
+  - =net-001= (protocol v2 with version negotiation) is *done*, and it was the
+    largest unblocked task in the plan. It gates =audit-009=, =audit-011=,
+    =audit-019=, =audit-020= and =audit-024=, and =audit-019= closed with it
+    because the refusal is the handshake's other outcome. See
+    [[file:09-networking.org][09-networking.org]] for what it cost -- two
+    defects of the "a message that is never written" shape, both found by
+    starting two processes by hand.
+  - =net-002= (a stable identity for a player) is the next of the block, because
+    =audit-009= is waiting on it and it is what makes a reconnect a reconnect.
   - =net-006=, which is the network-design statement of what =audit-029= fixed
     mechanically, and still owns a test for "a host plus one remote client".
   - =found-002='s last box and =audit-020='s, which both need a second machine to
@@ -219,7 +225,8 @@
   - =decide-default-lineage=, without which =sim-005= cannot start.
 
   Two debts are left, and both are downstream of =audit-031= (D33), which is why
-  that task is =[#A]= and why it is the next thing in this file after =net-001=:
+  that task is =[#A]= and why it is the next thing in this file after the rest of
+  the netcode block:
 
   - Remote delivery is verified in one direction only. The server demonstrably
     *sends* every wave notice and every refusal, and a host demonstrably *shows*
@@ -338,7 +345,7 @@
   | D19 | A   | open  | The lose condition is the other lineage's lose condition and its constant (150) matches neither. See the lineage section above. |
   | D20 | B   | open  | =Sim::over= is terminal; there is no restart, rematch or -restart equivalent. |
   | D21 | B   | open  | =Net::announced_over= is never reset, so a restarted match would not announce again. |
-  | D22 | B   | open  | No protocol version negotiation; a mismatched client desyncs silently instead of being rejected. |
+  | D22 | B   | DONE  | No protocol version negotiation; a mismatched client desyncs silently instead of being rejected. Fixed by =net-001=: =ProtocolVersion= = schema revision + balance hash, exchanged in a =Handshake=, with a refusal that names the part that differed, before any entity exists. |
   | D23 | B   | open  | =spawn_client= hardcodes =127.0.0.1=; there is no way to join a remote host. |
   | D24 | B   | open  | A player joining mid-match starts at wave N with starting gold and no catch-up. |
   | D25 | B   | DONE  | =Reject= has no =NotOwner= and no =RateLimited= variant, so D1/D6 cannot report a reason. |

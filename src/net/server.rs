@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
+use lightyear::connection::client::Disconnecting;
 use lightyear::connection::host::HostClient;
 use lightyear::prelude::client::Connected;
 use lightyear::prelude::server::*;
@@ -18,6 +19,7 @@ use crate::data::components::*;
 use crate::data::reject::Reject;
 use crate::logging;
 use crate::net::messages::*;
+use crate::net::protocol::ProtocolVersion;
 use crate::ratelimit::TokenBucket;
 use crate::sim::*;
 
@@ -130,30 +132,147 @@ fn on_server_started(_trigger: On<Add, Started>, config: Res<Config>) {
     );
 }
 
-/// A client finished its handshake, so we now know its stable peer identity.
-/// This is where a player joins the match.
+/// Admit a peer as a player, or refuse it, once it states its protocol version
+/// (`net-001`, D22).
 ///
-/// One observer covers both kinds of peer, because lightyear gives both a
+/// One query covers both kinds of peer, because lightyear gives both a
 /// `Connected` + `RemoteId` + `ClientOf`: a remote peer entity spawned by the
 /// UDP transport, and -- in host mode -- the host's own client entity, which
 /// `HostPlugin` promotes in place. What differs is what the connection *is*, and
-/// that is the `is_host` flag below.
-fn on_client_connected(
-    trigger: On<Add, Connected>,
-    links: Query<(&RemoteId, Has<HostClient>), With<ClientOf>>,
+/// that is the `Has<HostClient>` flag below.
+///
+/// Deliberately *not* an `On<Add, Connected>` observer any more. Lightyear marks
+/// a socket connected the moment it links, but a peer is not a player until it
+/// has said what it speaks, and the whole point of `net-001` is that nothing --
+/// no `Replicate` entity, no `Sim` player record -- may be created before that
+/// version is checked. Splitting "connected" from "in the match" is what makes
+/// the refusal land *before* any entity exists rather than nearly before, and
+/// it is where `net-002`'s real identity and `net-014`'s handshake timeout will
+/// both attach.
+/// A connected peer and the two ends of its handshake.
+///
+/// Spelled out here because the five-element tuple is the whole admission
+/// question: who the peer is, whether it is the host, what it says it speaks,
+/// and where to answer. A peer already [`Refused`] is excluded, so a client
+/// that retransmits its handshake during the grace window is not refused twice.
+type HandshakePeers<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static RemoteId,
+        Has<HostClient>,
+        &'static mut MessageReceiver<Handshake>,
+        &'static mut MessageSender<HandshakeAck>,
+    ),
+    (With<ClientOf>, Without<Refused>),
+>;
+
+/// A peer that stated an incompatible version, being let down over a few frames
+/// (`net-001`).
+///
+/// The refusal has to be *written* before the link is torn down, and lightyear
+/// only serialises a connection that still has `Connected` -- which lightyear's
+/// own `Disconnecting` hook removes the instant it is inserted. Dropping the
+/// peer in the same tick it is refused therefore sends nothing, which is how a
+/// refusal becomes a bare disconnect with no reason. So the drop is deferred.
+#[derive(Component)]
+struct Refused {
+    /// Frames left before the link is dropped.
+    grace: u8,
+}
+
+/// Frames a refused peer is kept alive so its refusal can reach the socket.
+///
+/// One frame is enough -- `PostUpdate` writes the bytes and `Last` would drop
+/// the peer -- and the second is margin. It is not tunable because a refused
+/// peer never reaches the match whichever value is used.
+const REFUSAL_GRACE_FRAMES: u8 = 2;
+
+/// Drop peers whose refusal has had time to be written (`net-001`).
+///
+/// Runs before [`handle_handshakes`] so that the frame a peer is refused is
+/// never also the frame it is dropped.
+fn age_refusals(mut peers: Query<(Entity, &mut Refused)>, mut commands: Commands) {
+    for (entity, mut refused) in peers.iter_mut() {
+        match refused.grace.checked_sub(1) {
+            Some(left) => refused.grace = left,
+            None => {
+                commands.entity(entity).insert(Disconnecting);
+            }
+        }
+    }
+}
+
+fn handle_handshakes(
+    version: Res<ProtocolVersion>,
     config: Res<Config>,
     mut sim: ResMut<Sim>,
     mut net: ResMut<Net>,
     mut commands: Commands,
+    mut peers: HandshakePeers,
 ) {
-    let Ok((remote, is_host_client)) = links.get(trigger.entity) else {
-        return;
-    };
-    let key = peer_key(remote);
-    if net.links.contains_key(&key) {
-        return;
-    }
+    for (entity, remote, is_host_client, mut recv, mut ack) in peers.iter_mut() {
+        let key = peer_key(remote);
+        // Already admitted: a peer may retransmit its handshake, and a second
+        // one must not spawn a second player.
+        if net.links.contains_key(&key) {
+            continue;
+        }
+        // Drains the buffer, so the answer is given once per stated version
+        // rather than once per frame.
+        let Some(handshake) = recv.receive().last() else {
+            continue;
+        };
 
+        if let Some(reason) = version.disagreement(&handshake.version) {
+            warn!(
+                target: logging::target::NET,
+                "refusing {:?} (remote {}, speaks {}): {reason}",
+                key, remote.0, handshake.version
+            );
+            ack.send::<ReliableChannel>(HandshakeAck::Refused { reason });
+            // The refusal is written to the socket over the next frames, then
+            // the link is dropped; the peer is not a player now and never
+            // becomes one, so nothing has to be undone.
+            commands.entity(entity).insert(Refused {
+                grace: REFUSAL_GRACE_FRAMES,
+            });
+            continue;
+        }
+
+        join_player(
+            entity,
+            remote,
+            is_host_client,
+            &config,
+            &mut sim,
+            &mut net,
+            &mut commands,
+            &mut ack,
+        );
+    }
+}
+
+/// Everything that turns a verified peer into a player in the match.
+///
+/// This used to be the body of the `Connected` observer; it lives on its own so
+/// that no part of it can run before the handshake (`net-001`).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one call site, and every argument is a distinct service the join needs"
+)]
+fn join_player(
+    entity: Entity,
+    remote: &RemoteId,
+    is_host_client: bool,
+    config: &Config,
+    sim: &mut Sim,
+    net: &mut Net,
+    commands: &mut Commands,
+    ack: &mut MessageSender<HandshakeAck>,
+) {
+    let key = peer_key(remote);
     info!(target: logging::target::NET, "player {:?} joined", key);
     let start_gold = sim.balance.match_rules.start_gold;
 
@@ -170,11 +289,9 @@ fn on_client_connected(
     // replace it and wipe that registration -- which is precisely what made
     // every `ServerNotice` vanish on the way to a remote client (D32).
     if is_host_client {
-        commands
-            .entity(trigger.entity)
-            .insert(Name::new("HostClientLink"));
+        commands.entity(entity).insert(Name::new("HostClientLink"));
     } else {
-        commands.entity(trigger.entity).insert((
+        commands.entity(entity).insert((
             Name::new("ClientLink"),
             ReplicationSender,
             MessageReceiver::<ClientCmd>::default(),
@@ -213,7 +330,7 @@ fn on_client_connected(
         );
     }
 
-    net.links.insert(key, trigger.entity);
+    net.links.insert(key, entity);
     net.views.insert(key, view);
     // A fresh full budget, so a rejoin is not punished for an earlier burst.
     // The bucket is keyed by the same `PlayerKey` as everything else, which is
@@ -223,6 +340,10 @@ fn on_client_connected(
         TokenBucket::new(config.command_burst, config.commands_per_second),
     );
     sim.add_player(key);
+
+    // The sender may now send intents; before this line the server drops
+    // everything it says.
+    ack.send::<ReliableChannel>(HandshakeAck::Accepted);
 }
 
 fn on_client_disconnected(
@@ -596,7 +717,6 @@ impl Plugin for GreenTdServerPlugin {
             .init_resource::<Net>()
             .add_systems(Startup, spawn_server)
             .add_observer(on_server_started)
-            .add_observer(on_client_connected)
             .add_observer(on_client_disconnected)
             // Match setup and the sim itself only make sense once we're listening.
             .add_systems(
@@ -604,6 +724,13 @@ impl Plugin for GreenTdServerPlugin {
                 (
                     setup_match,
                     mark_host_view,
+                    // A refusal is aged before new ones are made, so the frame
+                    // a peer is refused is never the frame it is dropped.
+                    age_refusals,
+                    // The handshake is admitted before intents are read, so a
+                    // peer that handshakes and acts in the same frame is a
+                    // player by the time its command is handled (`net-001`).
+                    handle_handshakes,
                     handle_cmds,
                     // Mirror order matters only for readability: creeps then
                     // towers then the aggregate views.

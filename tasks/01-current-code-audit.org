@@ -47,7 +47,7 @@ an excuse for an untested mutation (D17).
   | D19 | A   | =src/sim.rs=                     | 1w     | =audit-012=                       | open  |
   | D20 | B   | =src/sim.rs=, =src/server.rs=    | 1d     | =audit-018=                       | open  |
   | D21 | B   | =src/server.rs=                  | 2h     | =audit-018=                       | open  |
-  | D22 | B   | =src/protocol.rs=                | 1w     | =audit-019=                       | open  |
+  | D22 | B   | =src/protocol.rs=                | 1w     | =net-001= (tracked =audit-019=) | DONE  |
   | D23 | B   | =src/client.rs=, =src/main.rs=   | 1d     | =audit-020=                       | open  |
   | D24 | B   | =src/sim.rs=                     | 1d     | =audit-021=                       | open  |
   | D25 | B   | =src/game.rs=                    | 2h     | =audit-001=                       | DONE  |
@@ -790,7 +790,7 @@ an excuse for an untested mutation (D17).
      - [ ] Sim test (D17): drive to over, reset, then observe a fresh wave spawn with empty boards.
      - [ ] The user-facing restart flow is out of scope here and lives in [[file:08-lobby.org][08-lobby.org]].
 
-** TODO [#B] Negotiate the protocol version and refuse a mismatched peer               :@net:
+** DONE [#B] Negotiate the protocol version and refuse a mismatched peer               :@net:
    :PROPERTIES:
    :ID:         audit-019
    :EFFORT:     1w
@@ -804,9 +804,33 @@ an excuse for an untested mutation (D17).
 
    - Files: =src/protocol.rs=, =src/server.rs=, =src/client.rs=
    - Acceptance:
-     - [ ] A client whose version or balance hash differs is refused during the handshake with a message naming the mismatch, and the server logs it.
-     - [ ] The refusal happens before any =Replicate= entity or =Sim= player record is created.
-     - [ ] A matching client still completes the handshake and receives its =PlayerView=.
+     - [x] A client whose version or balance hash differs is refused during the handshake with a message naming the mismatch, and the server logs it.
+     - [x] The refusal happens before any =Replicate= entity or =Sim= player record is created.
+     - [x] A matching client still completes the handshake and receives its =PlayerView=.
+
+   Closed by =net-001=, which is where the work was done: the task was written as
+   "the audit-side refusal behaviour", but refusal *is* the handshake's other
+   outcome, and building the negotiation without it would have left =net-001= able
+   to detect a mismatch and do nothing about it. Rather than implement the same
+   three claims twice, this task records them and points at the code.
+
+   What =net-001= added, all of it in =src/net/=: =ProtocolVersion= (=schema= plus
+   =balance_hash=) as one resource computed in =build_protocol=; =Handshake= /
+   =HandshakeAck= messages; the =Connected= observer replaced by
+   =handle_handshakes=, which is the only path that creates a =PlayerView=, a
+   =Replicate= or a =Sim= player; and the refusal itself, deferred a couple of
+   frames so the =Refused { reason }= can be written before =Connected= is removed
+   and the send path stops looking at the peer.
+
+   The evidence is the transcript under =net-001=: a server on
+   =--balance-dir= with =start_gold= changed refuses a client on the shipped
+   tables with =balance data (server dad530826fe71a60, client 4c100b237b653043)=
+   in the server log and in the client's, and creates nothing for it. The
+   headless half -- the mismatch text and the hash -- is tested in
+   =tests/protocol.rs=; the two-process half is owed to =test-008='s =App=
+   harness, as =net-001= records.
+
+   D22 is =DONE=.
 
 ** TODO [#B] Join a remote host instead of only 127.0.0.1                            :@net:
    :PROPERTIES:
@@ -938,6 +962,7 @@ an excuse for an untested mutation (D17).
    :PROPERTIES:
    :ID:         audit-024
    :EFFORT:     2h
+   :BLOCKED-BY: net-001
    :END:
 
    D12: =CreepVis= and =CreepHp= (=src/game.rs=) are registered independently in
@@ -1052,19 +1077,35 @@ an excuse for an untested mutation (D17).
      (D24), =audit-022= (D27), =audit-023= (D29).
   7. *The [#C] polish.* =audit-024= through =audit-028=.
 
-  Steps 1 and 2 are complete, and so are =audit-017=, =audit-028= and =audit-029=.
-  Two of them were found rather than planned: =audit-029= (D31) because building CI
-  meant running a server by hand, and =audit-030= (D32) because running a server by
-  hand *beside a client* is the only way to see a message that never leaves the
-  process. Both are reasons to keep doing that, and both say the same thing about
-  this list: every task in it was written from reading =src/=, and reading =src/=
-  is what missed them.
+  Steps 1 and 2 are complete, and so are =audit-017=, =audit-028=, =audit-029=,
+  =audit-030= and =audit-019=. Two of them were found rather than planned:
+  =audit-029= (D31) because building CI meant running a server by hand, and
+  =audit-030= (D32) because running a server by hand *beside a client* is the
+  only way to see a message that never leaves the process. Both are reasons to
+  keep doing that, and both say the same thing about this list: every task in it
+  was written from reading =src/=, and reading =src/= is what missed them.
 
-  Next: =net-001=. It is the head of the remaining block -- =audit-009=,
-  =audit-011='s hash half, =audit-019=, =audit-020= and =audit-024= all sit behind
-  it -- and it is the only unblocked task in the file whose effort is a week.
-  =decide-default-lineage= should be settled in parallel, since it is a decision
-  and not work, and =sim-005= is waiting on it.
+  =net-001= has landed, and it was the head of the remaining block: =audit-009=,
+  =audit-011='s hash half, =audit-019=, =audit-020= and =audit-024= were all
+  waiting on it, and =audit-019= closed with it because the refusal *is* the
+  handshake's other outcome. It cost more than a version check, and the two
+  things it cost are worth carrying forward:
+
+  - a refusal that removes =Connected= before the send path runs is a refusal
+    that is never written -- the same shape as =audit-030= (D32), and the second
+    time in this project that a message has existed and not reached the wire;
+  - a one-shot handshake can simply be lost, because lightyear's UDP server
+    drops the payload of every packet that arrives while it is still spawning
+    the peer, and the first datagram is the one it spawns on. A reliable channel
+    cannot recover from that, because there is nobody yet to acknowledge it.
+    Both were found by starting two processes and reading their logs; neither is
+    visible to any test that exists today.
+
+  Next: =net-002= (stable identity), which is what =audit-009= is now waiting on,
+  and =net-006= is already closed. =decide-default-lineage= should be settled in
+  parallel, since it is a decision and not work, and =sim-005= is waiting on it.
+  =audit-031= (D33) is still =[#A]= and still unexplained, and it is the reason
+  the remote-delivery boxes above are transcripts rather than scripts.
 
   One addition to step 3, now that D32 has been seen: the wire-format batch should
   include a smoke-run of a *remote* client for every change to =src/net/server.rs=.

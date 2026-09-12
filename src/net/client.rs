@@ -28,6 +28,20 @@
 //! duration of its system, and the server path then panics with `registry
 //! should always exist on the server`. Host mode used to do exactly that and
 //! died about three seconds into the first wave. See D31.
+//!
+//! # The handshake, and why both kinds of client send one
+//!
+//! Since `net-001` a client is not a player until it has said which protocol it
+//! speaks, and the server drops everything an unhandshaken peer says. A host is
+//! no exception, even though it shares the server's world: it sends its
+//! handshake to itself, in process, and the local delivery path carries it like
+//! any other message. That keeps one admission rule rather than two.
+//!
+//! The statement is repeated on a short timer until the server answers. That is
+//! not belt-and-braces: the first datagram is the one the server *creates* the
+//! peer on, so it can be parsed by nobody, and a reliable channel cannot
+//! recover from that because there is no one yet to acknowledge it. See
+//! `HANDSHAKE_RETRY_SECS`.
 
 use bevy::prelude::*;
 use lightyear::prelude::client::*;
@@ -35,8 +49,29 @@ use lightyear::prelude::*;
 
 use crate::config::Config;
 use crate::data::components::{LocalPlayer, PlayerView};
-use crate::net::messages::{ClientCmd, ServerNotice};
+use crate::net::messages::{ClientCmd, Handshake, HandshakeAck, ReliableChannel, ServerNotice};
+use crate::net::protocol::ProtocolVersion;
 use crate::ui::hud::HudPlugin;
+
+/// How this process's client half stands with the server (`net-001`).
+///
+/// The handshake is a phase of the connection, not a message: before it the
+/// client is a stranger whose intents the server drops, and after it the client
+/// is a player whose `PlayerView` is on its way. Keeping the phase in a resource
+/// -- rather than inferring it from whether a `PlayerView` has arrived -- is
+/// what lets a connect screen say "connecting", "joining" or "refused", and it
+/// is what a test can assert without reading a log.
+#[derive(Resource, Debug, Default, Clone, PartialEq, Eq)]
+pub enum HandshakeStatus {
+    /// The handshake is in flight, or the link is not up yet.
+    #[default]
+    Connecting,
+    /// The server agreed on the version; this client is a player.
+    Accepted,
+    /// The server refused the client, naming the part of the version that
+    /// differed.
+    Refused(String),
+}
 
 /// Spawn this process's client half, once the world it needs is ready.
 ///
@@ -131,6 +166,136 @@ fn mark_local_view(
     }
 }
 
+/// How long the client waits for an answer before stating its version again
+/// (`net-001`).
+///
+/// A handshake is the one message that must not be lost. The first datagram a
+/// client sends is also the datagram on which the server *creates* the peer
+/// entity, and it can be processed in a frame where that entity exists but is
+/// not yet `Connected` -- in which case the message is parsed by nobody, and
+/// because the server has nothing to acknowledge it with, it is never
+/// retransmitted either. A client that stated its version exactly once would
+/// then sit at "connecting" forever, which is exactly what a test run showed.
+///
+/// So the client repeats the statement until the server answers. The server
+/// treats a repeat as a no-op: a peer already in `links` is a player and a peer
+/// already `Refused` is not asked again.
+const HANDSHAKE_RETRY_SECS: f32 = 0.25;
+
+/// Counts down to the next repeat of this client's [`Handshake`].
+///
+/// A component rather than a `Local<f32>` so that one process could later run
+/// two client halves without them sharing one clock, and so that a reconnect
+/// can be given a fresh one (`net-003`).
+#[derive(Component)]
+struct HandshakeRetry(f32);
+
+/// A linked client half, with its retry clock if it already has one.
+///
+/// Spelled out here because `Option<&mut HandshakeRetry>` is the whole state
+/// machine: absent on the first frame, present until the server answers.
+type PendingHandshake<'w, 's> =
+    Query<'w, 's, (Entity, Option<&'static mut HandshakeRetry>), (With<Client>, With<Connected>)>;
+
+/// State this process's version, and repeat it until the server answers
+/// (`net-001`).
+///
+/// The `Connected` bound is what stops the handshake going out before there is
+/// anywhere to send it: a `RawClient` links asynchronously, and a `Connect`
+/// triggered before the socket exists would otherwise be silently wasted.
+fn send_handshake(
+    time: Res<Time>,
+    version: Res<ProtocolVersion>,
+    status: Res<HandshakeStatus>,
+    mut pending: PendingHandshake,
+    mut senders: Query<&mut MessageSender<Handshake>>,
+    mut commands: Commands,
+) {
+    // A settled client says nothing. `Accepted` means the statement was heard;
+    // `Refused` means repeating it would only be noise at a server that has
+    // already answered.
+    if !matches!(*status, HandshakeStatus::Connecting) {
+        return;
+    }
+    let version = *version;
+    for (entity, retry) in pending.iter_mut() {
+        let first = match retry {
+            Some(mut retry) => {
+                retry.0 -= time.delta_secs();
+                if retry.0 > 0.0 {
+                    continue;
+                }
+                retry.0 = HANDSHAKE_RETRY_SECS;
+                false
+            }
+            None => {
+                commands
+                    .entity(entity)
+                    .insert(HandshakeRetry(HANDSHAKE_RETRY_SECS));
+                true
+            }
+        };
+        let Ok(mut sender) = senders.get_mut(entity) else {
+            continue;
+        };
+        sender.send::<ReliableChannel>(Handshake { version });
+        if first {
+            info!(
+                target: crate::logging::target::NET,
+                "handshake sent ({version})"
+            );
+        } else {
+            debug!(
+                target: crate::logging::target::NET,
+                "handshake repeated ({version})"
+            );
+        }
+    }
+}
+
+/// Read the server's answer and remember it (`net-001`, D22).
+///
+/// A refusal names the part of the version that differed, and the client does
+/// not sit on a dead link afterwards: it drops the connection, because the only
+/// thing left to do with it is retry against a matching server.
+fn read_handshake_ack(
+    mut status: ResMut<HandshakeStatus>,
+    mut clients: Query<(Entity, &mut MessageReceiver<HandshakeAck>)>,
+    mut commands: Commands,
+) {
+    for (entity, mut recv) in clients.iter_mut() {
+        for ack in recv.receive() {
+            match ack {
+                HandshakeAck::Accepted => {
+                    if *status != HandshakeStatus::Accepted {
+                        info!(target: crate::logging::target::NET, "handshake accepted");
+                    }
+                    *status = HandshakeStatus::Accepted;
+                }
+                HandshakeAck::Refused { reason } => {
+                    error!(
+                        target: crate::logging::target::NET,
+                        "server refused this client: {reason}"
+                    );
+                    *status = HandshakeStatus::Refused(reason);
+                    commands.trigger(Disconnect { entity });
+                }
+            }
+        }
+    }
+}
+
+/// Forget the retry clock when the link drops, so a reconnect states its
+/// version again rather than assuming the last one was heard (`net-003`).
+fn reset_handshake_on_disconnect(
+    dropped: Query<Entity, (With<HandshakeRetry>, With<Disconnected>)>,
+    mut commands: Commands,
+) {
+    for entity in dropped.iter() {
+        commands.entity(entity).remove::<HandshakeRetry>();
+    }
+}
+
 /// A client: the link, and the HUD that reads it.
 ///
 /// The two are separate modules because they fail differently -- a link that
@@ -141,7 +306,18 @@ pub struct GreenTdClientPlugin;
 
 impl Plugin for GreenTdClientPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(HudPlugin)
-            .add_systems(Update, (spawn_client, mark_local_view));
+        app.init_resource::<HandshakeStatus>()
+            .add_plugins(HudPlugin)
+            .add_systems(
+                Update,
+                (
+                    spawn_client,
+                    send_handshake,
+                    read_handshake_ack,
+                    reset_handshake_on_disconnect,
+                    mark_local_view,
+                )
+                    .chain(),
+            );
     }
 }

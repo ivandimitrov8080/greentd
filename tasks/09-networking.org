@@ -13,7 +13,7 @@ server. It touches =src/protocol.rs=, =src/server.rs=, =src/client.rs=,
 
 * Protocol, identity and authority
 
-** TODO [#A] Ship protocol v2 with version negotiation                      :@net:
+** DONE [#A] Ship protocol v2 with version negotiation                      :@net:
    :PROPERTIES:
    :ID:         net-001
    :EFFORT:     1w
@@ -31,11 +31,129 @@ server. It touches =src/protocol.rs=, =src/server.rs=, =src/client.rs=,
 
    - Files: =src/protocol.rs=, =src/server.rs=, =src/client.rs=, =src/game.rs=
    - Acceptance:
-     - [ ] The version is =hash(balance data) ++ schema revision=, computed once and identical on both peers.
-     - [ ] A client whose hash or revision differs is refused during the handshake with a message naming which part mismatched, and the server logs it (D22).
-     - [ ] The refusal happens before any =Replicate= entity or =Sim= player record is created.
-     - [ ] A matching client still completes the handshake and receives its =PlayerView=.
-     - [ ] Every audit task that changes the wire format lists =BLOCKED-BY: net-001=.
+     - [x] The version is =hash(balance data) ++ schema revision=, computed once and identical on both peers.
+     - [x] A client whose hash or revision differs is refused during the handshake with a message naming which part mismatched, and the server logs it (D22).
+     - [x] The refusal happens before any =Replicate= entity or =Sim= player record is created.
+     - [x] A matching client still completes the handshake and receives its =PlayerView=.
+     - [x] Every audit task that changes the wire format lists =BLOCKED-BY: net-001=.
+
+   Done. Three pieces, one per file the task names, plus a test file.
+
+   *The version.* =net::protocol::ProtocolVersion= is two numbers, because a
+   mismatch has two causes with two different fixes and a player told only the
+   first would fix the wrong thing: =schema=, the hand-kept wire revision, now
+   =2= (=SCHEMA_REVISION=), and =balance_hash=, =BalanceData::hash= from
+   =found-004=. =build_protocol= computes it once from the =Balance= resource
+   and inserts it, so both halves of one process -- and both ends of a
+   connection -- necessarily agree about what they speak.
+   =disagreement(&peer)= returns =None=, or a sentence naming every part that
+   differed; =tests/protocol.rs= (7 tests) drives the whole matrix and each
+   refusal case, headless.
+
+   *The handshake.* =Handshake { version }= goes up and
+   =HandshakeAck::Accepted= / =Refused { reason }= comes down, as their own
+   messages rather than =ClientCmd= variants: the point of the task is that a
+   peer that has not been admitted cannot reach the intent path at all, and a
+   variant of the intent enum would put it there. The server's
+   =on_client_connected= observer is gone -- a peer that finishes the lightyear
+   handshake is now only *connected*, and =handle_handshakes= is what turns a
+   connected peer into a *player*. That split is what makes box three true
+   rather than nearly true: no =PlayerView=, no =Replicate=, no
+   =Sim::add_player= runs until the version has been checked, and until then the
+   peer is absent from =Net::links=, which is the same gate =audit-008= put on
+   unregistered peers. The handshake also runs before =handle_cmds= in the
+   frame, so a peer that handshakes and acts in one tick is admitted before its
+   command is read.
+
+   Two things the first draft got wrong, both found by running a server and a
+   client rather than by reading:
+
+   1. *A refusal that never arrives is a disconnect with no reason.* The first
+      version sent =HandshakeAck::Refused= and inserted lightyear's
+      =Disconnecting= in the same tick. =Disconnecting::on_add= removes
+      =Connected= at once, and =MessagePlugin::send= only serialises entities
+      =With<Connected>= -- so the refusal was written into a sender that the
+      send path then skipped. Measured: the client saw nothing. The drop is now
+      deferred =REFUSAL_GRACE_FRAMES= frames by an =age_refusals= system that
+      runs ahead of =handle_handshakes=, so the bytes go out before the link
+      goes down. This is the same class of mistake as =audit-030= (D32): a
+      message that exists and is never written.
+   2. *A one-shot handshake can be lost, and a reliable channel does not save
+      it.* lightyear's UDP server drops the payload of every packet that
+      arrives while it is still *spawning* the peer for an address
+      (=lightyear_udp/src/server.rs=, =LinkOfStatus::Spawning=), and the very
+      first datagram is the one it spawns on. A client that stated its version
+      exactly once sat at "connecting" forever -- reproduced, 3 attempts out of
+      3 under load, with the server having logged the =Spawn new LinkOf= line
+      and nothing else. Reliable delivery cannot recover from it, because there
+      is no entity yet to acknowledge. The client therefore repeats its
+      handshake every =HANDSHAKE_RETRY_SECS= (0.25 s) until the server answers,
+      and the server treats a repeat as a no-op (already in =links=) or as the
+      second half of a refusal it has already given (already =Refused=).
+      Re-measured after the change: 6 trials out of 6 joined, and a refusal is
+      still exactly one refusal, once.
+
+   Evidence, all of it from runs on this machine.
+
+   A dedicated server and a remote client (=RUST_LOG=info,greentd=debug=):
+
+   #+BEGIN_EXAMPLE
+   client: handshake sent (v2 (balance 4c100b237b653043))
+   server: player PlayerKey(23194954105345) joined
+   server: addressing: private view for PlayerKey(23194954105345) (remote Raw(127.0.0.1:5400))
+   client: handshake accepted
+   client: remote client: marked 1260v0 as its own view (gold 300)
+   client: notice: WaveStarted(2)
+   #+END_EXAMPLE
+
+   A host (=cargo run=), which sends its handshake to itself in process:
+
+   #+BEGIN_EXAMPLE
+   greentd::net: listening on 127.0.0.1:5000 (host)
+   greentd::net: handshake sent (v2 (balance 4c100b237b653043))
+   greentd::net: player PlayerKey(0) joined
+   greentd::replication: in-process: private view for PlayerKey(0) (remote Local(0)); not replicated
+   greentd::replication: host is PlayerKey(0): marked 1314v0 as its own view (gold 300)
+   greentd::net: handshake accepted
+   #+END_EXAMPLE
+
+   A *refusal*, forced by serving =--balance-dir= with one number changed
+   (=start_gold: 301=) against a client on the shipped tables:
+
+   #+BEGIN_EXAMPLE
+   server: WARN greentd::net: refusing PlayerKey(24225746256385) (remote Raw(127.0.0.1:5640),
+           speaks v2 (balance 4c100b237b653043)): balance data
+           (server dad530826fe71a60, client 4c100b237b653043)
+   client: ERROR greentd::net: server refused this client: balance data
+           (server dad530826fe71a60, client 4c100b237b653043)
+   #+END_EXAMPLE
+
+   which is boxes two and three at once: the mismatch names *which* part, the
+   server says so, the client is told, and nothing was created for it -- no
+   =joined= line, no =private view= line.
+
+   Green: =cargo fmt --check=, =cargo clippy --all-targets -- -D warnings=,
+   =cargo test= (71 tests: 3 + 7 + 24 + 7 + 8 + 22), the CI smoke job and the
+   balance-refusal script.
+
+   Owed, and deliberately not claimed:
+
+   - The refusal and the join are verified by a transcript, not by a test. There
+     is still no =App= harness in =tests/= ([[file:12-testing.org][12-testing.org]]
+     =test-008=), so the natural regression test for both -- "two peers and a
+     live =Server=, one with a different hash" -- is where =audit-030='s belongs
+     too. What *is* tested headless is everything above the socket: the version,
+     the hash, the mismatch text and the round trip.
+   - A client started *before* the server still never joins: its first datagrams
+     go to a closed port and the UDP link never recovers. That is not this task,
+     whose retry only re-sends on a link that is up; it is the connect-failure
+     handling of =net-008= and the lifecycle of =net-014=.
+   - The handshake has no timeout of its own: a server logs a peer that connects
+     and never states a version only when =net-014= gives it one. It cannot act
+     in the meantime, which is the property that mattered here.
+
+   With =net-001= done, the wire-format batch it gates -- =audit-009=,
+   =audit-011=, =audit-019=, =audit-020= and =audit-024= -- is unblocked.
 
 ** TODO [#A] Give players a stable identity that survives a new port        :@net:
    :PROPERTIES:
