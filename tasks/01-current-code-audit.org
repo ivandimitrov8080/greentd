@@ -28,7 +28,7 @@ an excuse for an untested mutation (D17).
   |-----+-----+----------------------------------+--------+-----------------------------------+-------|
   | D1  | A   | =src/sim.rs=                     | 1d     | =audit-002=                       | DONE  |
   | D2  | A   | =src/sim.rs=                     | 1d     | =audit-002=                       | DONE  |
-  | D3  | A   | =src/server.rs=, =src/client.rs= | 1d     | =audit-003=                       | open  |
+  | D3  | A   | =src/server.rs=, =src/client.rs= | 1d     | =audit-003=                       | DONE  |
   | D4  | A   | =src/server.rs=, =src/game.rs=   | 2h     | =audit-004=                       | DONE  |
   | D5  | A   | =src/server.rs=, =src/game.rs=   | 2h     | =audit-005=                       | part  |
   | D6  | A   | =src/sim.rs=, =src/server.rs=    | 1d     | =audit-006=                       | part  |
@@ -40,7 +40,7 @@ an excuse for an untested mutation (D17).
   | D12 | C   | =src/game.rs=, =src/protocol.rs= | 2h     | =audit-024=                       | open  |
   | D13 | B   | =src/sim.rs=, =src/server.rs=    | 1w     | =audit-015=                       | open  |
   | D14 | B   | =src/visuals.rs=                 | 1d     | =audit-016=                       | open  |
-  | D15 | B   | =src/main.rs=                    | 1d     | =found-001= (tracked =audit-017=) | open  |
+  | D15 | B   | =src/main.rs=                    | 1d     | =found-001= (tracked =audit-017=) | DONE  |
   | D16 | C   | =src/sim.rs=                     | 1w     | =audit-025=                       | open  |
   | D17 | A   | =src/sim.rs=                     | 1d     | =audit-010=                       | DONE  |
   | D18 | A   | =src/game.rs=, =src/sim.rs=      | 1w     | =found-004= (tracked =audit-011=) | part  |
@@ -55,7 +55,9 @@ an excuse for an untested mutation (D17).
   | D27 | B   | =src/sim.rs=, =src/server.rs=    | 1d     | =audit-022=                       | open  |
   | D28 | C   | =src/map.rs=                     | 1w     | =audit-027=                       | open  |
   | D29 | B   | =src/visuals.rs=                 | 1d     | =audit-023=                       | open  |
-  | D30 | C   | =src/client.rs=, =src/game.rs=   | 2h     | =found-010= (tracked =audit-028=) | open  |
+  | D30 | C   | =src/client.rs=, =src/game.rs=   | 2h     | =found-010= (tracked =audit-028=) | DONE  |
+  | D31 | A   | =src/main.rs=, =src/client.rs=   | 1d     | =audit-029=                       | DONE  |
+  | D32 | A   | =src/net/server.rs=              | 2h     | =audit-030=                       | DONE  |
 
 * Severity A — exploitable or loses player state
 
@@ -111,7 +113,7 @@ an excuse for an untested mutation (D17).
    ownership check those are the same player, and the code does not silently
    depend on that (see the explicit =tower.owner= in =try_sell=).
 
-** TODO [#A] Address the host's own PlayerView instead of broadcasting every view     :@net:
+** DONE [#A] Address the host's own PlayerView instead of broadcasting every view     :@net:
    :PROPERTIES:
    :ID:         audit-003
    :EFFORT:     1d
@@ -126,17 +128,113 @@ an excuse for an untested mutation (D17).
 
    - Files: =src/server.rs=, =src/client.rs=
    - Acceptance:
-     - [ ] Host mode no longer replicates a private view with =NetworkTarget::All=; the host's own view is addressable, or the host HUD binds directly to its authoritative =Player=.
-     - [ ] =update_hud= resolves exactly one =LocalPlayer= on host and remote peers alike (found-010).
-     - [ ] A host plus one remote client shows each peer its own gold and kills and never the other's.
-     - [ ] Verified on a manual =cargo run= (host) with one =cargo run -- client=.
+     - [x] Host mode no longer replicates a private view with =NetworkTarget::All=; the host's own view is addressable, or the host HUD binds directly to its authoritative =Player=.
+     - [x] =update_hud= resolves exactly one =LocalPlayer= on host and remote peers alike (found-010).
+     - [x] A host plus one remote client shows each peer its own gold and kills and never the other's.
+     - [x] Verified on a manual =cargo run= (host) with one =cargo run -- client=.
 
-   =found-010= has landed and satisfies the second box; the rest is this task.
-   Note for whoever picks it up: a host's client half reproduces its own copy of
-   every replicated entity, so the world holds two =MatchView=s and a duplicate
-   creep per creep. That duplication is the same defect as =NetworkTarget::All=
-   and goes away with it -- the local client should read the server's state that
-   is already in its world rather than be sent a copy of it.
+   Done, and it needed =audit-029= first: a host that ran a real =RawClient= over
+   UDP could not be addressed with =Single= at all, because it was not a
+   lightyear *host client*, and it died of the dual-stack topology before the
+   question came up.
+
+   The rule now: **a private view is created for every peer, and put on the wire
+   only for a peer that does not already hold it.** A host client holds the
+   server's world, so its =PlayerView= is spawned and left alone --
+   =mark_host_view= binds the HUD to that entity directly, which is box one's
+   "binds directly to its authoritative =Player=". A remote peer gets
+   =Replicate::to_clients(NetworkTarget::Single(remote.0))= and nothing else. The
+   duplicated-entity symptom in the note below is gone with it, because there is
+   no local client copy any more.
+
+   Evidence, from a host plus one remote client, =RUST_LOG=info,greentd=debug=:
+
+   #+BEGIN_EXAMPLE
+   host   : player PlayerKey(0) joined
+   host   : in-process: private view for PlayerKey(0) (remote Local(0)); not replicated
+   host   : host is PlayerKey(0): marked 1306v0 as its own view (gold 300)
+   host   : player PlayerKey(24053947564545) joined
+   host   : addressing: private view for PlayerKey(24053947564545) (remote Raw(127.0.0.1:5600))
+   client : remote client: marked 1254v0 as its own view (gold 300)
+   #+END_EXAMPLE
+
+   Read that as the two claims box three makes. The host's world contains *two*
+   =PlayerView= entities -- its own and the remote peer's, because the remote's is
+   one of the server's entities and a host client shares the server's world -- and
+   exactly one of them is marked. The old =me.single()= would have failed outright
+   on that board, which is precisely the D3 symptom, and it is now impossible for
+   the HUD to read the other player's figures.
+
+   Owed, and deliberately not claimed: the gold and kills *changing* on one peer
+   and not the other. Both peers read 300 because neither has spent anything, and
+   this machine has no input-injection tool, so the manual run could not make them
+   diverge. The path is the same in both directions -- =sync_player_views= writes
+   =net.views[key]= from =sim.players[key]=, and each peer's HUD reads the view
+   marked for it -- but a run that watches one player spend is still worth doing
+   before =M1=.
+
+** DONE [#A] Run a host as a real lightyear host client                            :@net:
+   :PROPERTIES:
+   :ID:         audit-029
+   :EFFORT:     1d
+   :END:
+
+   *D31, found while verifying =found-007=, and it is the reason =found-007= could
+   not be finished first.* Host mode -- the default, =cargo run= -- ran a
+   =RawClient= over a real UDP socket in the same =App= as a =RawServer=. That is
+   not a host: lightyear calls it =NetworkTopologyError::MixedClientServer= and
+   logs it as an error on the first frame, and in practice it took the process
+   down about three seconds into wave 1 with
+
+   #+BEGIN_EXAMPLE
+   panicked at bevy_replicon-0.42.3/src/server.rs:323:
+   registry should always exist on the server
+   panicked at lightyear_replication::client::sync_entity_map:
+   Parameter `Res<'_, ServerEntityMap>` failed validation: Resource does not exist
+   #+END_EXAMPLE
+
+   The mechanism: =lightyear_replication::client::sync_client_state= puts
+   =bevy_replicon= into =ClientState::Connected= for any connected =Client= that is
+   *not* a =HostClient=, so =receive_replication= runs -- and that system removes
+   =ServerEntityMap= and =ReplicationRegistry= from the world for the duration of
+   its run. The replicon *server* side is simultaneously =Running=, because the
+   =RawServer= is =Started=, and its =buffer_removals= observer fires on every
+   component removal and =expect= s the registry to be there. Two halves of one
+   replication stack, each valid alone, in one world.
+
+   - Files: =src/net/client.rs=, =src/net/server.rs=
+   - Acceptance:
+     - [x] =cargo run= (host) survives a full wave and a client connect with no =MixedClientServer= error and no panic.
+     - [x] A host plus one remote client both run; the remote is still a real UDP peer.
+     - [x] =cargo run -- server= and =cargo run -- client= are unchanged.
+     - [x] A host client is not sent replication: no =Remote= marker, no duplicate =MatchView=, no duplicate creep.
+
+   Fixed by using the mechanism lightyear provides for exactly this. A host spawns
+   `(Client, LinkOf { server })` with *no IO component at all* and triggers
+   =Connect=; =lightyear_connection::host::HostPlugin= recognises a client whose
+   =LinkOf= points at a =Started= server and inserts =Connected=, =LocalId=,
+   =RemoteId=, =ClientOf= and =HostClient= together. From then on:
+
+   - messages flow in process. Both directions land on that one entity, because it
+     is simultaneously the =Client= (=MessageSender<ClientCmd>=) and the
+     =ClientOf= (=MessageSender<ServerNotice>=); =MessagePlugin::send_local= hands
+     them straight to the matching receivers instead of building packets.
+   - replication does not flow. =sync_client_state= skips a =HostClient=, so
+     =receive_replication= never runs, so neither the resource-removal window nor
+     the panic can happen, and no =Remote= is inserted. The entities the host
+     renders are the server's own.
+   - =on_client_connected= (=src/net/server.rs=) sees the same =Connected= +
+     =RemoteId= + =ClientOf= shape a remote peer has, distinguishes it with
+     =Has<HostClient>=, and creates its =PlayerView= *without* =Replicate=.
+
+   Note =HostClient= is not re-exported in `lightyear::prelude`: the import is
+   =lightyear::connection::host::HostClient=. And =spawn_client= had to move from
+   =Startup= to =Update= with a latch, because a =LinkOf= needs the =Server=
+   entity and two plugins' =Startup= systems are not ordered against each other.
+
+   =audit-003= still owns the addressing policy; this task only made the host a
+   thing that *can* be addressed. =net-006= is the same fix described at the level
+   of the network design and closes with this.
 
 ** DONE [#A] Publish MatchView.phase and stop freezing the HUD at defeat              :@sim:
    :PROPERTIES:
@@ -166,7 +264,7 @@ an excuse for an untested mutation (D17).
    compared, so a player leaving changed the wire value unnoticed. =MatchView=
    now derives =PartialEq= and the whole component is compared at once.
 
-** IN-PROGRESS [#A] Send ServerNotice::WaveStarted or delete the variant                     :@net:
+** DONE [#A] Send ServerNotice::WaveStarted or delete the variant                     :@net:
    :PROPERTIES:
    :ID:         audit-005
    :EFFORT:     2h
@@ -180,24 +278,41 @@ an excuse for an untested mutation (D17).
    - Acceptance:
      - [x] The choice is recorded in this task: wire it to =SimEvent::WaveStarted= (recommended) or delete the variant and the client arm.
      - [x] If wired, every connected peer receives =WaveStarted(w)= exactly once per wave, on the same broadcast path used for =GameOver=.
-     - [ ] The client shows "wave N" on receipt.
+     - [x] The client shows "wave N" on receipt.
      - [x] A wave that starts with no peer connected neither panics nor queues an unbounded backlog.
 
    *Wired, not deleted.* =tick_sim= now sends =ServerNotice::WaveStarted(w)= for
    each =SimEvent::WaveStarted= it steps, iterating =Net::links= and using the
    same =Query<&mut MessageSender<ServerNotice>>= that =announce_game_over=
    uses, so the two waves a match cannot do without -- the first and the last --
-   travel identically. Nothing is buffered in between: an empty =links= means
-   the loop body never runs, so a wave with no peers costs one =info!= and no
-   queue. The client's =read_notices= arm was already correct and is now
-   reachable, which is the one box left owed to a process: run
-   =cargo run= and watch the HUD after the first wave.
+   travel identically. Nothing is buffered in between: an empty =links= means the
+   loop body never runs, so a wave with no peers costs one =info!= and no queue.
+
+   Verified twice over: once in a host, where delivery is in process, and once
+   between a real server and a real remote client, which is the case the variant
+   exists for. The second run is =audit-030='s doing -- the first version of this
+   verification was a host run, and it passed while the box was still false for
+   every remote peer.
+
+   #+BEGIN_EXAMPLE
+   host   : 08:42:39 DEBUG greentd::commands: notice: WaveStarted(1)
+   server : 10:27:14  INFO greentd::sim: wave 2 started (5 creeps)
+   client : 10:27:34 DEBUG greentd::commands: notice: WaveStarted(2)
+   client : 10:27:54 DEBUG greentd::commands: notice: WaveStarted(3)
+   #+END_EXAMPLE
+
+   The =debug= line is new, and deliberate: a notice is the client's half of "what
+   the server did with my intents", which is what the =greentd::commands= target
+   already says it is for, and without it a notice exists only inside a HUD that
+   nobody can grep. It is also what makes the box tickable rather than plausible --
+   the arm sets =ui.notice= to =wave {w}= for 1.5 s, and the line proves the arm
+   ran.
 
    The full notice set (=net-011=) is still a design question -- wave cleared,
    victory, message -- and =net-017= is what splits session notices onto their
    own channel; neither is in scope here.
 
-** IN-PROGRESS [#A] Give CallWave a documented cooldown, cost and authority rule             :@sim:
+** DONE [#A] Give CallWave a documented cooldown, cost and authority rule             :@sim:
    :PROPERTIES:
    :ID:         audit-006
    :EFFORT:     1d
@@ -214,7 +329,7 @@ an excuse for an untested mutation (D17).
      - [x] =call_wave= takes the caller's =PlayerKey= and records a per-player cooldown on =Player=.
      - [x] The rule is written here and implemented (a cooldown alone is enough); the numbers live in the balance tables (found-004), not in =sim.rs=.
      - [x] A refused early call returns =Err(Reject::RateLimited)= or =Err(Reject::NotEnoughGold)=, never a silent success.
-     - [ ] Sim test (D17): two =CallWave= commands inside the cooldown window leave =wave_timer= advanced by the first only.
+     - [x] Sim test (D17): two =CallWave= commands inside the cooldown window leave =wave_timer= advanced by the first only.
 
    *The rule.* Any player in the match may call the next wave -- it is a shared,
    cooperative action on a map where every player spawns into the same ring --
@@ -231,11 +346,12 @@ an excuse for an untested mutation (D17).
    cooldown, =MatchOver= after the match ends, and the last one is checked
    before the player lookup so a finished match reports why.
 
-   Written, *not yet run*: three tests join the harness in =tests/sim_smoke.rs=
-   (the cooldown window, one player's cooldown not covering another's, and a
-   finished match). The last box closes with =cargo test=.
+   Done. The three tests are green:
+   =a_player_cannot_call_two_waves_inside_the_cooldown=,
+   =one_player_cannot_call_waves_for_another= and =a_finished_match_refuses_a_wave_call=
+   (22 tests in =tests/sim_smoke.rs=, 0 failures).
 
-** IN-PROGRESS [#A] Rate-limit commands with a per-peer token bucket                         :@net:
+** DONE [#A] Rate-limit commands with a per-peer token bucket                         :@net:
    :PROPERTIES:
    :ID:         audit-007
    :EFFORT:     1d
@@ -251,7 +367,7 @@ an excuse for an untested mutation (D17).
    - Acceptance:
      - [x] A token bucket per peer refills at a rate and burst fed from =Config= (found-002) and is consumed once per command.
      - [x] Over-budget commands are dropped, not deferred, and exactly one =Reject::RateLimited= notice is sent for the frame (uses audit-001's variant).
-     - [ ] Test: bursting =n + burst= commands in one frame yields exactly =burst= executions.
+     - [x] Test: bursting =n + burst= commands in one frame yields exactly =burst= executions.
      - [x] The rate and burst are configuration, not literals in =server.rs=.
 
    =src/ratelimit.rs= is the whole policy: a ~30-line =TokenBucket= that holds
@@ -272,8 +388,17 @@ an excuse for an untested mutation (D17).
    than per tick because =handle_cmds= runs in =Update=, where the frame delta is
    what the clock gives it.
 
-   Written, *not yet run*: the last box closes with =cargo test=, and the
-   across-many-frames disconnect policy is =net-005='s, not this task's.
+   Green: 8 tests in =tests/ratelimit.rs=, including
+   =a_burst_taller_than_the_bucket_is_cut_down_to_the_bucket=, which is the last
+   box stated almost word for word. The across-many-frames disconnect policy is
+   =net-005='s, not this task's.
+
+   =audit-006='s rule that "a refusal is never silent" was also checked against a
+   live remote client rather than only in the sim. Four build attempts against
+   =start_gold = 300= and a basic tower at =80= arrive as three =Ok= and one
+   =Err(NotEnoughGold)= -- see =audit-030= for the transcript. What has *not* been
+   watched over the wire is the =RateLimited= refusal specifically: it needs a peer
+   deliberately flooding, and no manual run does that.
 
 ** DONE [#A] Require a registered PlayerKey instead of minting a zero-gold player     :@sim:
    :PROPERTIES:
@@ -418,6 +543,93 @@ an excuse for an untested mutation (D17).
      - [ ] The sim carries both rules as a match setting (=sim-005=, =lobby-003=); this task only selects the default and replaces the =overrun_cap= value and the "real lose condition" comment (already gone).
      - [ ] The implementation and its tests are owned by =sim-005= and are not duplicated here.
 
+** DONE [#A] Stop replacing a peer's MessageManager when it connects                :@net:
+   :PROPERTIES:
+   :ID:         audit-030
+   :EFFORT:     2h
+   :END:
+
+   *D32, found while running a server and a client side by side to verify =found-007=,
+   and it had been silently discarding every notice sent to a remote player.*
+
+   =on_client_connected= (=src/net/server.rs=) opted a new connection into
+   messaging by inserting =MessageManager::default()= alongside the rest of the
+   link components. =MessageManager= is already a *required component* of both
+   =MessageSender=M== and =MessageReceiver=M==, and each of those registers itself
+   in that manager from a =#[component(on_add)]= hook:
+
+   #+BEGIN_SRC rust
+   // lightyear_messages-0.29.0/src/send.rs:257
+   pub fn on_add_hook(mut world: DeferredWorld, context: HookContext) {
+       world.commands().queue(move |world: &mut World| {
+           let mut message_manager = entity_mut.get_mut::<MessageManager>().unwrap();
+           message_manager.send_messages.push((MessageKind::of::<M>(), context.component_id));
+       })
+   }
+   #+END_SRC
+
+   So the entity *already* had a populated manager by the time this ran -- and
+   inserting a second, default one replaced it. =send_messages= went back to
+   empty, and =MessagePlugin::send= (which walks exactly that list) had nothing to
+   serialize. Every =ServerNotice= was dropped inside the server's own process. The
+   sender still existed, the channel still existed, the bytes were never written.
+
+   The two directions failed asymmetrically, which is what made it hard to see:
+   *receiving* looks the message kind up in the global =MessageRegistry= and then
+   fetches the component by id, so it does not consult the per-entity list at all.
+   Client-to-server commands worked the whole time; server-to-client notices never
+   did.
+
+   - Files: =src/net/server.rs=
+   - Acceptance:
+     - [x] No system inserts a bare =MessageManager= on a connection; the one the engine inserts is left alone.
+     - [x] A remote client receives =ServerNotice::WaveStarted= for every wave.
+     - [x] A remote client receives a refusal, with its reason, when the server refuses one of its commands.
+     - [x] The send and receive paths are re-verified against a running server and client, not against a host.
+
+   Fixed by deleting the two words. Worth recording *how* it was found, because
+   nothing cheaper worked: the sim tests cannot see it, the host run cannot see it
+   (in-process delivery goes through =MessagePlugin::send_local=, which reads the
+   same =send_messages= list on the *client* entity, where there was nothing to
+   stomp), and adding =info!= probes to =tick_sim= only proved the server *called*
+   =send=. The line that settled it was lightyear's own:
+
+   #+BEGIN_EXAMPLE
+   $ RUST_LOG=info,greentd=debug,lightyear_debug::message=trace ./greentd server
+   $ RUST_LOG=info,greentd=debug,lightyear_debug::message=trace ./greentd client
+   #+END_EXAMPLE
+
+   =message_send= appeared zero times for =ServerNotice= on the server while the
+   other direction's =message_receive_bytes= appeared normally. After the fix, both
+   directions and both endpoints are in the trace.
+
+   Evidence, from a server and one remote client, =RUST_LOG=info,greentd=debug=:
+
+   #+BEGIN_EXAMPLE
+   server: player PlayerKey(26630927942145) joined
+   server: addressing: private view for PlayerKey(26630927942145) (remote Raw(127.0.0.1:6200))
+   server: wave 2 started (5 creeps)
+   client: remote client: marked 1258v0 as its own view (gold 300)
+   client: notice: WaveStarted(2)
+   client: notice: Ok
+   client: notice: Ok
+   client: notice: Ok
+   client: notice: Err(NotEnoughGold)
+   client: notice: WaveStarted(3)
+   #+END_EXAMPLE
+
+   That last sequence is three builds accepted and a fourth refused, which is the
+   arithmetic the tower table implies -- =match_rules.start_gold= is 300 and a basic
+   tower costs 80 -- arriving at a *remote* player as four separate notices, each
+   with the right verdict. It closes, in one run, the two debts recorded under
+   =audit-005= and =audit-006=.
+
+   Not fixed here, and worth watching: the same "insert a default over an
+   engine-managed component" mistake is easy to repeat, and nothing in the type
+   system prevents it. =tests/net.rs= ([[file:12-testing.org][12-testing.org]]
+   =test-008=) is where a regression test belongs, and it needs an =App= harness
+   that does not exist yet.
+
 * Severity B — fidelity gaps
 
   These do not lose data, but they are the difference between a slice and the game.
@@ -496,7 +708,7 @@ an excuse for an untested mutation (D17).
      - [ ] The wire format is unchanged; interpolation is presentation-only and never feeds back into =Sim=.
      - [ ] If =net-009= in [[file:09-networking.org][09-networking.org]] owns the implementation, this task closes by pointing at it rather than duplicating.
 
-** TODO [#B] Verify the server runs headless, tracked in found-001                     :@found:
+** DONE [#B] Verify the server runs headless, tracked in found-001                     :@found:
    :PROPERTIES:
    :ID:         audit-017
    :EFFORT:     2h
@@ -510,9 +722,21 @@ an excuse for an untested mutation (D17).
 
    - Files: =src/main.rs=, =src/visuals.rs=
    - Acceptance:
-     - [ ] =cargo run -- server= creates no window, no camera and no =MapTile= entity (the fix is found-001's).
-     - [ ] The server reaches the listening state with =DISPLAY= unset.
-     - [ ] The triage table lists D15 against =found-001=, not against a second implementation here.
+     - [x] =cargo run -- server= creates no window, no camera and no =MapTile= entity (the fix is found-001's).
+     - [x] The server reaches the listening state with =DISPLAY= unset.
+     - [x] The triage table lists D15 against =found-001=, not against a second implementation here.
+
+   Done as the audit-side check, and the check is now permanent rather than a
+   one-off: =ci/smoke-server.sh= (=found-007=) starts the real binary with
+   =DISPLAY=, =WAYLAND_DISPLAY= and =XDG_RUNTIME_DIR= *unset* and waits for
+   =greentd::net: listening on <addr> (server)=. A regression that re-adds
+   =VisualsPlugin= to the server arm would fail to bind and fail the job.
+
+   One honest qualification, which is why this is a =2h= and not a bigger task:
+   "no display" and "no GPU" are different claims. The script proves the first,
+   because it can take the display away from the child; it cannot take the GPU
+   away, so it does not claim the second. The first is the one that was broken --
+   a window was being created -- and it is the one CI can hold.
 
 ** TODO [#B] Add the sim reset path and clear announced_over                          :@sim:
    :PROPERTIES:
@@ -742,3 +966,24 @@ an excuse for an untested mutation (D17).
      (D13), =audit-016= (D14), =audit-017= (D15), =audit-018= (D20/D21), =audit-021=
      (D24), =audit-022= (D27), =audit-023= (D29).
   7. *The [#C] polish.* =audit-024= through =audit-028=.
+
+  Steps 1 and 2 are complete, and so are =audit-017=, =audit-028= and =audit-029=.
+  Two of them were found rather than planned: =audit-029= (D31) because building CI
+  meant running a server by hand, and =audit-030= (D32) because running a server by
+  hand *beside a client* is the only way to see a message that never leaves the
+  process. Both are reasons to keep doing that, and both say the same thing about
+  this list: every task in it was written from reading =src/=, and reading =src/=
+  is what missed them.
+
+  Next: =net-001=. It is the head of the remaining block -- =audit-009=,
+  =audit-011='s hash half, =audit-019=, =audit-020= and =audit-024= all sit behind
+  it -- and it is the only unblocked task in the file whose effort is a week.
+  =decide-default-lineage= should be settled in parallel, since it is a decision
+  and not work, and =sim-005= is waiting on it.
+
+  One addition to step 3, now that D32 has been seen: the wire-format batch should
+  include a smoke-run of a *remote* client for every change to =src/net/server.rs=.
+  =audit-030= is a two-word mistake that no test in this repository can catch, and
+  the only instrument that sees it is =RUST_LOG=lightyear_debug::message=trace= on
+  a server and a client at once. That is a procedure, not a task, and it belongs in
+  the same list as "run all three modes by hand" in the =found-008= upgrade path.

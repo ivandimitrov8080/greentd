@@ -1,0 +1,23 @@
+# The compiler this project is built with, pinned so that a local build and a CI
+# build cannot diverge (`found-008`, `found-007`).
+#
+# Read by `rustup`, which is what a GitHub Actions runner has and what the
+# `Rust toolchain` step in `.github/workflows/ci.yml` relies on. It is *not*
+# read by a `rustc` that did not come from rustup, which is the case in the Nix
+# devshell: `flake.nix` enables `languages.rust`, so a local build uses
+# nixpkgs' `rustc`, currently **1.97.1** — the same version pinned below. The
+# two are bumped together, and the CI `toolchain` job prints `rustc --version`
+# so a divergence is visible in the log rather than in a mystery failure.
+#
+# Why 1.97.1 rather than the floor:
+#
+# - lightyear 0.29.0 declares `rust-version = "1.95"`, the highest floor of any
+#   dependency, so that is the *minimum*.
+# - `edition = "2024"` needs 1.85.
+# - The pinned version is what the project is actually developed and tested on
+#   today. Raising it is a deliberate act, not a side effect of a `nix flake
+#   update`; see the upgrade procedure in `tasks/README.org`.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

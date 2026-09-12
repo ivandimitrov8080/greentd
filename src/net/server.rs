@@ -8,7 +8,8 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
-use lightyear::prelude::client::{Connected, RawClient};
+use lightyear::connection::host::HostClient;
+use lightyear::prelude::client::Connected;
 use lightyear::prelude::server::*;
 use lightyear::prelude::*;
 
@@ -79,14 +80,20 @@ fn server_up(server: Query<(), (With<Server>, With<Started>)>) -> bool {
 /// `PlayerKey`, and the client half cannot reconstruct that key from anything
 /// it holds. So the marking happens here, where the mapping is.
 ///
-/// The peer to mark is the one this process dialled from, which is the only
-/// `RawClient` in the world; its [`LocalId`] is the `PeerId::Raw` of its own
-/// socket, which is the same value the server derived its [`PlayerKey`] from. A
-/// dedicated server has no such entity and does nothing.
+/// The peer to mark is this process's own client half, which in host mode is the
+/// one entity carrying [`Client`]. Its [`LocalId`] is the `PeerId` lightyear
+/// gave it when it connected, and that is the same value the server derived its
+/// [`PlayerKey`] from, because a host client's `LocalId` and `RemoteId` are the
+/// same `PeerId::Local(0)` (`HostPlugin::connect`). A dedicated server has no
+/// such entity and does nothing.
+///
+/// This used to look for the host's `RawClient`, which stopped existing when
+/// host mode moved to lightyear's in-process host client (D31).
 fn mark_host_view(
     config: Res<Config>,
     net: Res<Net>,
-    local: Query<&LocalId, (With<RawClient>, With<Connected>)>,
+    local: Query<&LocalId, (With<Client>, With<Connected>)>,
+    views: Query<&PlayerView>,
     marked: Query<(), With<LocalPlayer>>,
     mut commands: Commands,
 ) {
@@ -98,6 +105,14 @@ fn mark_host_view(
     };
     let key = PlayerKey(local_id.0.to_bits());
     if let Some(view) = net.views.get(&key) {
+        // Logged at `debug` because this is the line that answers "why is the
+        // HUD showing the wrong player?", which is the symptom D3 had.
+        let gold = views.get(*view).map(|v| v.gold).unwrap_or_default();
+        debug!(
+            target: logging::target::REPLICATION,
+            "host is {:?}: marked {view:?} as its own view (gold {gold})",
+            key
+        );
         commands.entity(*view).insert(LocalPlayer);
     }
 }
@@ -117,15 +132,21 @@ fn on_server_started(_trigger: On<Add, Started>, config: Res<Config>) {
 
 /// A client finished its handshake, so we now know its stable peer identity.
 /// This is where a player joins the match.
+///
+/// One observer covers both kinds of peer, because lightyear gives both a
+/// `Connected` + `RemoteId` + `ClientOf`: a remote peer entity spawned by the
+/// UDP transport, and -- in host mode -- the host's own client entity, which
+/// `HostPlugin` promotes in place. What differs is what the connection *is*, and
+/// that is the `is_host` flag below.
 fn on_client_connected(
     trigger: On<Add, Connected>,
-    links: Query<&RemoteId, With<ClientOf>>,
+    links: Query<(&RemoteId, Has<HostClient>), With<ClientOf>>,
     config: Res<Config>,
     mut sim: ResMut<Sim>,
     mut net: ResMut<Net>,
     mut commands: Commands,
 ) {
-    let Ok(remote) = links.get(trigger.entity) else {
+    let Ok((remote, is_host_client)) = links.get(trigger.entity) else {
         return;
     };
     let key = peer_key(remote);
@@ -136,34 +157,34 @@ fn on_client_connected(
     info!(target: logging::target::NET, "player {:?} joined", key);
     let start_gold = sim.balance.match_rules.start_gold;
 
-    // Opt this connection into replication and message passing.
-    commands.entity(trigger.entity).insert((
-        Name::new("ClientLink"),
-        ReplicationSender,
-        MessageManager::default(),
-        MessageReceiver::<ClientCmd>::default(),
-    ));
-
-    // A private HUD entity, replicated only to this player. Host clients share
-    // the server's world, so `Single` cannot target them and they get
-    // everything -- that is D3, which `audit-003` removes by addressing the
-    // host's own view instead of broadcasting every view.
-    let target = if config.mode.is_host() {
-        NetworkTarget::All
+    // Opt this connection into replication and into receiving intents. A host
+    // client already has both receivers (`net::client::spawn_client` put them
+    // there at spawn, because both directions land on that one entity), and it
+    // must *not* get a `ReplicationSender`: it is not a replicon peer, and the
+    // entities it reads are the server's own.
+    //
+    // Note what is *not* inserted here: a fresh `MessageManager`. It is a
+    // required component of `MessageSender`/`MessageReceiver`, so the entity
+    // already has one, and it is the manager each of those components registers
+    // itself in through an `on_add` hook. Inserting a second, default one would
+    // replace it and wipe that registration -- which is precisely what made
+    // every `ServerNotice` vanish on the way to a remote client (D32).
+    if is_host_client {
+        commands
+            .entity(trigger.entity)
+            .insert(Name::new("HostClientLink"));
     } else {
-        NetworkTarget::Single(remote.0)
-    };
-    debug!(
-        target: logging::target::REPLICATION,
-        "{}: private view for {:?} (remote {})",
-        if config.mode.is_host() {
-            "broadcasting"
-        } else {
-            "addressing"
-        },
-        key,
-        remote.0
-    );
+        commands.entity(trigger.entity).insert((
+            Name::new("ClientLink"),
+            ReplicationSender,
+            MessageReceiver::<ClientCmd>::default(),
+        ));
+    }
+
+    // A private HUD entity, addressed to this player alone. A host client is
+    // deliberately *not* addressed: it needs no copy of anything, because the
+    // authoritative `PlayerView` is already in its world (D3, `audit-003`).
+    // `mark_host_view` binds the HUD to that entity instead.
     let view = commands
         .spawn((
             Name::new("PlayerView"),
@@ -171,9 +192,26 @@ fn on_client_connected(
                 gold: start_gold,
                 kills: 0,
             },
-            Replicate::to_clients(target),
         ))
         .id();
+    if !is_host_client {
+        commands
+            .entity(view)
+            .insert(Replicate::to_clients(NetworkTarget::Single(remote.0)));
+        debug!(
+            target: logging::target::REPLICATION,
+            "addressing: private view for {:?} (remote {})",
+            key,
+            remote.0
+        );
+    } else {
+        debug!(
+            target: logging::target::REPLICATION,
+            "in-process: private view for {:?} (remote {}); not replicated",
+            key,
+            remote.0
+        );
+    }
 
     net.links.insert(key, trigger.entity);
     net.views.insert(key, view);
@@ -514,11 +552,13 @@ fn sync_player_views(sim: Res<Sim>, net: Res<Net>, mut views: Query<&mut PlayerV
         let Some(player) = sim.players.get(key) else {
             continue;
         };
-        if let Ok(mut v) = views.get_mut(*entity) {
-            if v.gold != player.gold || v.kills != player.kills {
-                v.gold = player.gold;
-                v.kills = player.kills;
-            }
+        // One write per player per frame at most: the change-diffing guard is
+        // what keeps a quiet board off the wire.
+        if let Ok(mut v) = views.get_mut(*entity)
+            && (v.gold != player.gold || v.kills != player.kills)
+        {
+            v.gold = player.gold;
+            v.kills = player.kills;
         }
     }
 }

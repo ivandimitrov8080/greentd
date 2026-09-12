@@ -159,25 +159,52 @@ server. It touches =src/protocol.rs=, =src/server.rs=, =src/client.rs=,
 
 * Server modes, joining and observers
 
-** TODO [#A] Fix host mode so the local client addresses itself             :@net:
+** DONE [#A] Fix host mode so the local client addresses itself             :@net:
    :PROPERTIES:
    :ID:         net-006
    :EFFORT:     1w
-   :BLOCKED-BY: net-001
    :END:
    D3: in host mode every =PlayerView= is replicated with =NetworkTarget::All=
    because a local client cannot be addressed with =NetworkTarget::Single=, so
    =update_hud='s =me.single()= fails and the host sees no gold or kills. A local
    client shares the server's world and does not need replication at all; solve
    that properly instead of broadcasting everything. The minimal mechanical fix
-   is =audit-003=.
+   is =audit-003=, and the mechanism turned out to be =audit-029= (D31).
 
    - Files: =src/server.rs=, =src/client.rs=, =src/game.rs=
    - Acceptance:
-     - [ ] A local (host) client reads its own =PlayerView= directly from local state, not through the replication path (D3).
-     - [ ] The host's HUD shows its own gold and kills; a remote client in the same match shows only its own.
-     - [ ] No =PlayerView= is replicated to a client that is not its owner.
+     - [x] A local (host) client reads its own =PlayerView= directly from local state, not through the replication path (D3).
+     - [x] The host's HUD shows its own gold and kills; a remote client in the same match shows only its own.
+     - [x] No =PlayerView= is replicated to a client that is not its owner.
      - [ ] A host plus one remote client is covered by a test asserting each HUD shows the right figures.
+
+   *Closed by =audit-029= and =audit-003=, with two caveats recorded rather than
+   papered over.* This task was blocked on =net-001= because "a local client
+   cannot be addressed with =Single=" looked like a protocol problem. It was not:
+   it was because the host was running a =RawClient= rather than a lightyear
+   *host client*, so it was not a local client at all. With =HostClient=
+   (=audit-029=) the host reads the server's own entities directly, which is box
+   one, and =audit-003= then only had to stop creating a replicated copy for a
+   peer that does not need one.
+
+   The caveats are the two boxes a run can tick and a test cannot yet:
+
+   1. Box two is evidenced by a run, not by a test. From a host plus one remote
+      client, the host's world contains two =PlayerView= entities -- its own and
+      the remote peer's -- and exactly one is marked =LocalPlayer=; the remote
+      process marks the other. See =audit-003= for the log. That is the property
+      the box is about; what is missing is the figures *diverging*, because
+      nothing on this machine can spend gold without an input-injection tool.
+   2. Box four is left **unchecked**. It asks for a test with two peers in one
+      world and a live =Server=, and nothing in =tests/= can build that today:
+      every test in this repository is a headless sim or a pure table load. The
+      harness it needs is the =App= in [[file:12-testing.org][12-testing.org]]
+      =test-008= (=tests/net.rs=), which is why box four belongs there and not
+      here.
+
+   The unblock is the point of closing this: =net-001= is still required for
+   identity (=audit-009=, =net-002=) and version negotiation, but it is no longer
+   the thing standing between a host and its own HUD.
 
 ** TODO [#A] Run the server truly headless                                  :@net:
    :PROPERTIES:

@@ -99,6 +99,14 @@ and none of it is optional, and =found-004= is the loader named by the
    with =cargo run -- client --tick-hz fast; echo $?=, which should print the
    reason and then =2=.
 
+   One half of that owed box is now done and the other is not, so it stays
+   unchecked. What *is* proven is that =--server= reaches the socket: a client
+   with =--server 127.0.0.1:5300 --bind 127.0.0.1:5400= joins a server bound on
+   5300, a port that appears in no default, and the server logs the join from
+   =Raw(127.0.0.1:5400)=. It used to be impossible to point a client anywhere but
+   the compiled-in address. What is *not* proven is a host on another machine,
+   which is the acceptance box as written and needs a LAN with two boxes.
+
    Deliberately not here: the per-match log file and the level policy
    (=found-003=), and the single =StartupError= that folds this module's errors
    together with the balance loader's (=found-006=, since done, and it folded one
@@ -443,7 +451,7 @@ and none of it is optional, and =found-004= is the loader named by the
 
 * Build, tooling and CI
 
-** TODO [#A] Stand up the CI skeleton with a headless smoke test                      :@found:test:
+** DONE [#A] Stand up the CI skeleton with a headless smoke test                      :@found:test:
    :PROPERTIES:
    :ID:         found-007
    :EFFORT:     1d
@@ -457,12 +465,101 @@ and none of it is optional, and =found-004= is the loader named by the
 
    - Files: =.github/workflows/ci.yml= (new), =rust-toolchain.toml= (new)
    - Acceptance:
-     - [ ] CI runs =cargo fmt --check=, =cargo clippy -- -D warnings=, =cargo test= and =cargo build --release=.
-     - [ ] A smoke job boots the headless server, steps the sim N times, asserts the readiness line appears, and exits cleanly on SIGTERM.
-     - [ ] CI fails the build on a balance validation error and prints the offending field path.
-     - [ ] The pipeline is green on a commit that only touches documentation.
+     - [x] CI runs =cargo fmt --check=, =cargo clippy -- -D warnings=, =cargo test= and =cargo build --release=.
+     - [x] A smoke job boots the headless server, steps the sim N times, asserts the readiness line appears, and exits cleanly on SIGTERM.
+     - [x] CI fails the build on a balance validation error and prints the offending field path.
+     - [x] The pipeline is green on a commit that only touches documentation.
 
-** TODO [#B] Pin workspace dependencies and document the bevy/lightyear upgrade path    :@found:
+   Done, as three jobs in =.github/workflows/ci.yml= plus the toolchain pin and
+   two scripts. The jobs are split by what they need rather than by what they
+   check:
+
+   | Job       | What it is for |
+   |-----------+----------------|
+   | =check=   | =fmt --all -- --check=, =clippy --all-targets -- -D warnings=, =cargo test=. No build artefacts are reused, so this is the fastest feedback. |
+   | =smoke=   | =cargo build=, then =ci/smoke-server.sh= and =ci/check-balance-refusal.sh=. |
+   | =release= | =cargo build --release=, on its own cache key. A debug build does not exercise =lto = "thin"= or =codegen-units = 1=. |
+
+   Four decisions worth recording:
+
+   1. *The 16 standing clippy warnings had to go first.* =-D warnings= would have
+      failed on the first run. Thirteen were =neg_cmp_op_on_partial_ord= on the
+      deliberate =!(x > 0.0)= NaN guards in =data/balance.rs= and one in
+      =sim/rng.rs=; the lints were right, the guards were right, and the spelling
+      was wrong. =above()=, =at_least()= and =at_most()= in =data/balance.rs= now
+      say on the tin what =!(x > 0.0)= made the reader work out, and =rng.rs= uses
+      =partial_cmp= directly with the reason in a comment. The remaining three were
+      cosmetic: a collapsed =if= and two query type aliases in =ui/visuals.rs=.
+   2. *The smoke test is a script, not inline YAML.* =ci/smoke-server.sh= is
+      runnable by hand, which is the only way to debug a CI-only failure. It takes
+      =GREENTD_BIN=, =GREENTD_SMOKE_PORT= and three timeouts from the environment,
+      so the same script serves the job and a developer.
+   3. *No =paths-ignore= for documentation.* A docs-only commit -- this file
+      included -- runs the pipeline and passes, because the code did not change.
+      Skipping it would leave a required check permanently =Expected=, which is a
+      worse failure mode than spending the minutes.
+   4. *=rust-toolchain.toml= pins =1.97.1=, and the pipeline prints =rustc
+      --version=.* The pin is what the GitHub runner honours; the Nix devshell
+      ignores it and takes =rustc= from nixpkgs, which is the same version today.
+      The print is there so a drift shows up as a line in the log rather than as a
+      mystery. See =found-008=.
+
+   Measured, not assumed. Locally, all three jobs' commands:
+
+   #+BEGIN_EXAMPLE
+   $ cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings && cargo test
+   ... 64 tests, 0 failures
+   $ ./ci/smoke-server.sh
+   smoke: starting ./target/debug/greentd server --bind 127.0.0.1:5199 (no display)
+   smoke: listening
+   smoke: the sim stepped (wave 1)
+   smoke: sending SIGTERM
+   smoke: OK (bound 127.0.0.1:5199, stepped, exited 143)
+   $ ci/check-balance-refusal.sh
+   balance: OK (refused with exit 2, named waves.scaling.hp_base)
+   #+END_EXAMPLE
+
+   What the smoke script does and does not prove. It *does* prove the server starts
+   with =DISPLAY=, =WAYLAND_DISPLAY= and =XDG_RUNTIME_DIR= unset, reaches the
+   readiness line, steps a real wave (~90 fixed ticks, so the tick and the wall
+   clock are still one clock) and dies on SIGTERM. It *cannot* prove "no GPU",
+   because it cannot take the GPU away from the child; it makes the display half
+   of D15's claim and says so rather than implying both.
+
+   Two things the script had to get right, both found by running it:
+
+   1. *tracing colours its output even when stdout is not a terminal,* so
+      =grep -F "greentd::net: listening"= matched nothing while the line was
+      plainly there -- the escapes sit between the target and the colon. The
+      script strips ANSI before matching (=NO_COLOR= is set on the child too, for
+      a readable log, but the strip is what makes the matching correct rather than
+      merely conventional).
+   2. *A graceful shutdown is not asserted*, because there isn't one yet: the
+      process takes the default SIGTERM action and exits 143, which is the
+      assertion (0 or 143). Draining the links and flushing state first is
+      =net-007='s.
+
+   *Two things this task did not cost, and should have.* Verifying the pipeline
+   meant running the binary by hand, and doing that turned up two defects that
+   nothing in this repository could have caught, both bigger deals than the CI
+   they were found under:
+
+   1. =cargo run= -- host mode, the default -- panicked about three seconds into
+      wave 1, and had been broken for a while. That is =audit-029= (D31).
+   2. A *remote* client received no notices at all: no wave, no refusal, no game
+      over. That is =audit-030= (D32), and it took a server and a client running
+      at the same time, with lightyear's message trace on, to see. A host run
+      cannot see it, because in host mode the same code path is in process.
+
+   The lesson is not "run things by hand"; it is narrower and more useful. This
+   pipeline starts *one* process, so it can only check what one process can show,
+   and the two defects above live in what happens *between* processes. A CI job
+   that starts a server and a client and waits for a wave notice on the client is
+   the natural next one and is not here yet; it needs the two-process harness that
+   =test-008= ([[file:12-testing.org][12-testing.org]]) is for, and until it
+   exists the manual run is the instrument.
+
+** DONE [#B] Pin workspace dependencies and document the bevy/lightyear upgrade path    :@found:
    :PROPERTIES:
    :ID:         found-008
    :EFFORT:     2h
@@ -476,10 +573,44 @@ and none of it is optional, and =found-004= is the loader named by the
 
    - Files: =Cargo.toml=, =Cargo.lock=, [[file:README.org][README.org]] (decisions)
    - Acceptance:
-     - [ ] The exact resolved versions (=bevy 0.19.1=, =lightyear 0.29.0=) and the required edition and MSRV (=edition 2024=) are recorded and do not contradict each other.
-     - [ ] The lightyear features in use (=std=, =client=, =server=, =replication=, =udp=, =raw_connection=) are each justified in a comment, and unused ones are removed.
-     - [ ] A one-page upgrade procedure states how to bump both crates together and what to re-check afterwards (the =build_protocol= order, and that it runs after the plugin groups and before any peer entity).
-     - [ ] CI (found-007) pins the same toolchain, so a local and a CI build cannot diverge.
+     - [x] The exact resolved versions (=bevy 0.19.1=, =lightyear 0.29.0=) and the required edition and MSRV (=edition 2024=) are recorded and do not contradict each other.
+     - [x] The lightyear features in use (=std=, =client=, =server=, =replication=, =udp=, =raw_connection=) are each justified in a comment, and unused ones are removed.
+     - [x] A one-page upgrade procedure states how to bump both crates together and what to re-check afterwards (the =build_protocol= order, and that it runs after the plugin groups and before any peer entity).
+     - [x] CI (found-007) pins the same toolchain, so a local and a CI build cannot diverge.
+
+   Done, and the interesting part is that the MSRV was *not* what the task
+   assumed. =edition = "2024"= needs rustc 1.85, which is not the binding floor:
+   lightyear 0.29.0 declares =rust-version = "1.95"=, the highest of any
+   dependency, and that is the real minimum. Both are written down now, in
+   =Cargo.toml= and in the =README.org= procedure, because a task that names the
+   wrong reason for a number is a task that will raise it for the wrong reason
+   later.
+
+   The three artefacts:
+
+   1. *=Cargo.toml=* carries the resolved-version table and a per-feature
+      justification for the =lightyear= entry, including the two deliberately
+      absent features. =default-features = false= exists to keep =prediction= and
+      =interpolation= out; both are in lightyear's defaults and both are ruled out
+      by =decide-authority=, so the reasons are written next to the list rather
+      than in a commit message.
+   2. *=rust-toolchain.toml=* pins =1.97.1= with =rustfmt= and =clippy=. The
+      comment states the one thing about that file that will confuse somebody: a
+      rustup install honours it and the Nix devshell does not, so the CI job prints
+      =rustc --version= (=found-007=) to make a drift visible.
+   3. *The upgrade procedure* is a =DONE= decision entry in [[file:README.org][README.org]], not
+      prose in this task, because it is a standing instruction and this file is a
+      checklist. Seven steps, and the two that matter are step 3 -- re-check that
+      =build_protocol= still runs after the plugin groups and before any peer entity,
+      since that ordering is not enforced by the type system and its failure mode is
+      a peer with no component table -- and step 6, which is running all three modes
+      by hand, because a netcode bump whose only symptom is a peer that never
+      connects passes every test in this repository.
+
+   Nothing was removed from the feature list: all six are used, and the reasons are
+   in the =Cargo.toml= comment. =ron= and =serde= were left alone -- the task is
+   about the engine pins, and their versions are consequential rather than chosen
+   (see =found-004=).
 
 * Non-goals
 

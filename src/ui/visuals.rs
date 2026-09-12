@@ -31,6 +31,36 @@ struct MapTile;
 #[derive(Component)]
 pub struct MainCamera;
 
+/// A creep's replicated state and the local transform/sprite it drives, plus
+/// the change filter that decides when to re-render it. Named because the
+/// spelled-out query is four components wide and appears in a signature; the
+/// alias is what lets the function read as "track creeps", not as "a tuple of
+/// seven things".
+type CreepRender<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static CreepVis,
+        &'static CreepHp,
+        &'static mut Transform,
+        &'static mut Sprite,
+    ),
+    Or<(Changed<CreepVis>, Changed<CreepHp>)>,
+>;
+
+/// The tower equivalent of [`CreepRender`].
+type TowerRender<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static TowerAt,
+        &'static TowerVis,
+        &'static mut Transform,
+        &'static mut Sprite,
+    ),
+    Or<(Changed<TowerAt>, Changed<TowerVis>)>,
+>;
+
 // ---------------------------------------------------------------------------
 // Spawn-time attachment
 // ---------------------------------------------------------------------------
@@ -67,12 +97,7 @@ const CREEP_BASE: Color = Color::srgb(0.80, 0.25, 0.25);
 // Per-frame sync
 // ---------------------------------------------------------------------------
 
-fn track_creeps(
-    mut q: Query<
-        (&CreepVis, &CreepHp, &mut Transform, &mut Sprite),
-        Or<(Changed<CreepVis>, Changed<CreepHp>)>,
-    >,
-) {
+fn track_creeps(mut q: CreepRender) {
     for (vis, hp, mut transform, mut sprite) in &mut q {
         transform.translation.x = vis.x;
         transform.translation.y = vis.y;
@@ -83,12 +108,7 @@ fn track_creeps(
     }
 }
 
-fn track_towers(
-    mut q: Query<
-        (&TowerAt, &TowerVis, &mut Transform, &mut Sprite),
-        Or<(Changed<TowerAt>, Changed<TowerVis>)>,
-    >,
-) {
+fn track_towers(mut q: TowerRender) {
     for (at, vis, mut transform, mut sprite) in &mut q {
         let p = cell_to_world(IVec2::new(at.x, at.y));
         transform.translation.x = p.x;

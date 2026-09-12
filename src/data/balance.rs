@@ -469,31 +469,31 @@ impl BalanceData {
                     "cost must be positive",
                 ));
             }
-            if !(t.range > 0.0) {
+            if !above(t.range, 0.0) {
                 return Err(BalanceError::invalid(
                     format!("towers[{i}].range"),
                     "range must be positive",
                 ));
             }
-            if !(t.damage >= 0.0) {
+            if !at_least(t.damage, 0.0) {
                 return Err(BalanceError::invalid(
                     format!("towers[{i}].damage"),
                     "damage cannot be negative",
                 ));
             }
-            if !(t.cooldown > 0.0) {
+            if !above(t.cooldown, 0.0) {
                 return Err(BalanceError::invalid(
                     format!("towers[{i}].cooldown"),
                     "cooldown must be positive",
                 ));
             }
-            if !(t.slow > 0.0 && t.slow <= 1.0) {
+            if !(above(t.slow, 0.0) && at_most(t.slow, 1.0)) {
                 return Err(BalanceError::invalid(
                     format!("towers[{i}].slow"),
                     "slow is a speed multiplier in (0.0, 1.0]",
                 ));
             }
-            if !(t.upgrade_growth >= 0.0) {
+            if !at_least(t.upgrade_growth, 0.0) {
                 return Err(BalanceError::invalid(
                     format!("towers[{i}].upgrade_growth"),
                     "upgrade growth cannot be negative",
@@ -550,19 +550,19 @@ impl BalanceData {
 
     fn validate_creeps(&self) -> Result<(), BalanceError> {
         for (i, c) in self.creeps.iter().enumerate() {
-            if !(c.hp_mult > 0.0) {
+            if !above(c.hp_mult, 0.0) {
                 return Err(BalanceError::invalid(
                     format!("creeps[{i}].hp_mult"),
                     "health multiplier must be positive",
                 ));
             }
-            if !(c.speed_mult > 0.0) {
+            if !above(c.speed_mult, 0.0) {
                 return Err(BalanceError::invalid(
                     format!("creeps[{i}].speed_mult"),
                     "speed multiplier must be positive",
                 ));
             }
-            if !(c.bounty_mult >= 0.0) {
+            if !at_least(c.bounty_mult, 0.0) {
                 return Err(BalanceError::invalid(
                     format!("creeps[{i}].bounty_mult"),
                     "bounty multiplier cannot be negative",
@@ -624,7 +624,7 @@ impl BalanceData {
             ("speed_base", s.speed_base),
             ("count_base", s.count_base),
         ] {
-            if !(value > 0.0) {
+            if !above(value, 0.0) {
                 return Err(BalanceError::invalid(
                     format!("waves.scaling.{field}"),
                     "must be positive",
@@ -638,7 +638,7 @@ impl BalanceData {
             ("bounty_per_wave", s.bounty_per_wave),
             ("count_per_wave", s.count_per_wave),
         ] {
-            if !(value >= 0.0) {
+            if !at_least(value, 0.0) {
                 return Err(BalanceError::invalid(
                     format!("waves.scaling.{field}"),
                     "cannot be negative",
@@ -664,19 +664,19 @@ impl BalanceData {
                 "overrun cap must be positive",
             ));
         }
-        if !(r.wave_interval > 0.0) {
+        if !above(r.wave_interval, 0.0) {
             return Err(BalanceError::invalid(
                 "match_rules.wave_interval",
                 "wave interval must be positive",
             ));
         }
-        if !(r.first_wave_delay >= 0.0) {
+        if !at_least(r.first_wave_delay, 0.0) {
             return Err(BalanceError::invalid(
                 "match_rules.first_wave_delay",
                 "first wave delay cannot be negative",
             ));
         }
-        if !(r.call_wave_cooldown >= 0.0) {
+        if !at_least(r.call_wave_cooldown, 0.0) {
             return Err(BalanceError::invalid(
                 "match_rules.call_wave_cooldown",
                 "call wave cooldown cannot be negative",
@@ -722,6 +722,34 @@ fn check_unique(namespace: &str, keys: &[&str]) -> Result<(), BalanceError> {
         }
     }
     Ok(())
+}
+
+// Every numeric guard below is written as `!above(..)` / `!at_least(..)` rather
+// than `!(value > bound)`. The two spell the same test -- *reject* NaN as well as
+// the out-of-range value, because `NaN > 0.0` is false and so is
+// `!(NaN > 0.0)` ... which is to say, `NaN` must fail the guard, not pass it --
+// but only the first says so out loud. Clippy's `neg_cmp_op_on_partial_ord`
+// exists because `!(a > b)` reads as `a <= b`, which is wrong for a float.
+
+/// `value > bound`, with `NaN` on the *false* side.
+fn above(value: f32, bound: f32) -> bool {
+    value.partial_cmp(&bound) == Some(std::cmp::Ordering::Greater)
+}
+
+/// `value >= bound`, with `NaN` on the *false* side.
+fn at_least(value: f32, bound: f32) -> bool {
+    matches!(
+        value.partial_cmp(&bound),
+        Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+    )
+}
+
+/// `value <= bound`, with `NaN` on the *false* side.
+fn at_most(value: f32, bound: f32) -> bool {
+    matches!(
+        value.partial_cmp(&bound),
+        Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+    )
 }
 
 /// `-0.0` and `0.0` compare equal but print differently, so pin them.

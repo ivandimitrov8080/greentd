@@ -44,8 +44,13 @@ impl Rng {
 
     /// The next float in `[low, high)`. An empty or inverted range yields
     /// `low`, so a misconfigured table cannot panic here.
+    ///
+    /// The guard is `partial_cmp` rather than `!(high > low)` because a `NaN`
+    /// bound must yield `low` too, and `!(NaN > low)` is `true` while
+    /// `NaN > low` is `false` -- the double negative reads like `high <= low`,
+    /// which is not the same test for floats.
     pub fn range_f32(&mut self, low: f32, high: f32) -> f32 {
-        if !(high > low) {
+        if high.partial_cmp(&low) != Some(std::cmp::Ordering::Greater) {
             return low;
         }
         low + (high - low) * self.next_f32()

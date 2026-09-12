@@ -124,6 +124,16 @@ fn read_notices(
 ) {
     for mut receiver in receivers.iter_mut() {
         for notice in receiver.receive() {
+            // `greentd::commands` is where a client's view of the exchange
+            // belongs: the target is documented as "client intents, and what the
+            // server did with them", and this is the second half. It is also the
+            // only place a refusal, a wave notice or the match end becomes
+            // visible in a log -- the HUD shows it and nothing else does
+            // (`audit-005`).
+            debug!(
+                target: crate::logging::target::COMMANDS,
+                "notice: {notice:?}"
+            );
             match notice {
                 ServerNotice::Ok => {
                     ui.notice.clear();

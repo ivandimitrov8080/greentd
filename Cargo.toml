@@ -1,14 +1,55 @@
 [package]
 name = "greentd"
 version = "0.1.0"
+# 2024 needs rustc 1.85; `rust-toolchain.toml` pins the toolchain actually used,
+# which is 1.97.1 -- lightyear 0.29.0's own `rust-version` is 1.95, so the
+# binding floor here is lightyear's, not the edition's. See `found-008`.
 edition = "2024"
+
+# ---------------------------------------------------------------------------
+# Pinned dependency set (`found-008`)
+# ---------------------------------------------------------------------------
+#
+# Resolved versions, from `Cargo.lock`:
+#
+# | crate     | required | resolved | why pinned exactly |
+# |-----------+----------+----------+--------------------|
+# | bevy      | 0.19.1   | 0.19.1   | breaks API on every minor release |
+# | lightyear | 0.29     | 0.29.0   | tracks bevy's minor releases, one-to-one |
+# | ron       | 0.12     | 0.12.2   | the balance-table format; a parse change is a data change |
+# | serde     | 1        | 1.0.229  | derive support for those tables |
+#
+# bevy and lightyear move together or not at all: every lightyear release is
+# written against exactly one bevy minor, so bumping one alone is not a smaller
+# change, it is a broken build. `tasks/README.org` carries the upgrade
+# procedure; `rust-toolchain.toml` pins the compiler both a local build and CI
+# use, so the two cannot quietly disagree.
 
 [dependencies]
 bevy = "0.19.1"
-# Server-authoritative multiplayer. `udp` + `raw_connection` give us plain
-# UDP sockets without the netcode.io connect-token handshake, which is what we
-# want for LAN/dev play. prediction/interpolation are deliberately OFF: clients
-# are dumb renderers of authoritative state, which is the correct model for a TD.
+
+# Server-authoritative multiplayer. The feature list is the whole of the
+# netcode model, so each feature is justified:
+#
+# - `std`           this is not a `no_std` build. `udp` already pulls it in;
+#                   it is listed anyway because it is the one feature that
+#                   states the fact, and it should not vanish silently if the
+#                   transport is ever swapped.
+# - `client`        the client half: `RawClient`, `ClientPlugins`, the
+#                   receiving side of replication. (`src/net/client.rs`)
+# - `server`        the server half: `RawServer`, `ServerPlugins`, `Net::links`
+#                   and the sending side of replication. (`src/net/server.rs`)
+# - `replication`   `Replicate`, `NetworkTarget`, the component registry
+#                   `build_protocol` fills in. (`src/net/protocol.rs`)
+# - `udp`           the transport. Plain UDP, no connect-token handshake.
+# - `raw_connection` the socket-address identity used until protocol v2
+#                   (`net-001`) issues a session token (`audit-009`, D9).
+#
+# Deliberately OFF, and not by omission: `prediction` and `interpolation`. A
+# tower defence has no twitch input to hide latency behind, so the client is a
+# dumb renderer of authoritative state (`decide-authority` in
+# `tasks/README.org`). Client-side smoothing is presentation and lives in
+# `src/ui/visuals.rs` (`audit-016`), not in a prediction plugin.
 lightyear = { version = "0.29", default-features = false, features = [
     "std",
     "client",
@@ -17,6 +58,7 @@ lightyear = { version = "0.29", default-features = false, features = [
     "udp",
     "raw_connection",
 ] }
+
 serde = { version = "1", features = ["derive"] }
 # Balance tables (assets/balance/*.ron) and the ServerNotice round-trip test.
 # Already in the lock file as a transitive dependency of the engine.
@@ -25,7 +67,6 @@ ron = "0.12"
 # subscriber and re-exports both (`bevy::log::{tracing, tracing_subscriber}`),
 # so the per-match log file in `src/logging.rs` is a layer on Bevy's logger
 # rather than a second one (`found-003`).
-
 
 # Enable a small amount of optimization in the dev profile.
 [profile.dev]

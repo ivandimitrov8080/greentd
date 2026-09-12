@@ -85,6 +85,18 @@
   What is implemented is a *vertical slice*: one map, one wave loop, three
   towers, one lose condition, replicated state, and a text HUD.
 
+  *M0's exit criterion is met*, and the milestone is not formally =DONE=, which
+  is a distinction worth keeping. The criterion is "no client can affect another
+  player's towers; the sim has tests; the balance numbers live in one table;
+  server runs headless" -- all four hold and the last one is now held by CI. But
+  the rule above says a milestone ends when every =[#A]= task in it is =DONE=,
+  and two are not: =found-002= (one acceptance box needs a second machine to join
+  a host on another box) and =test-001= (the harness works; the task is open
+  because its siblings keep arriving). =audit-012= is =WAITING= on a human
+  sign-off rather than on work. Those three are listed under *Progress against
+  M0* and nowhere else, so read the milestone as "unblocked" rather than
+  "stamped".
+
 ** Implemented
    :PROPERTIES:
    :ID:       status-implemented
@@ -157,30 +169,66 @@
    | =found-004= | DONE        | =src/data/balance.rs= and =assets/balance/*.ron=; every tuned number is data, validated and hashed. D18 is only =part= until =audit-011= removes the remaining per-tier literals. |
    | =found-005= | DONE        | The flat crate is now =data/=, =sim/=, =net/= and =ui/=, with the reason for each placement written down in =src/main.rs=. |
    | =found-006= | DONE        | One =StartupError= for the config and the balance loader; the last =unwrap()= in =src/= (=Path::sample=) is NaN-safe. |
+   | =found-007= | DONE        | =.github/workflows/ci.yml= (=check=, =smoke=, =release=), =rust-toolchain.toml=, =ci/smoke-server.sh= and =ci/check-balance-refusal.sh=. Unblocked by dealing with the 16 standing clippy warnings, with =-D warnings= as the gate from here on. |
+   | =found-008= | DONE        | =Cargo.toml= carries the resolved-version table and a justification per lightyear feature; =rust-toolchain.toml= pins 1.97.1; the upgrade procedure is the =decide-upgrade-path= decision below. The MSRV is lightyear's 1.95, not the edition's 1.85. |
    | =found-009= | DONE        | =sim::Rng=, seeded from =match_rules.seed=; the wave's spawn jitter is its first consumer. Same seed, same match -- proven, not asserted. |
    | =found-010= | DONE        | =data::components::LocalPlayer=, marked by the server on a host and by the client on a remote peer; =MatchView.players= replaces counting the views the HUD happens to hold. Closes D30 and =audit-028=. |
    | =audit-001= | DONE        | =Reject= gains =NotOwner=, =RateLimited= and =NotInMatch=. |
    | =audit-002= | DONE        | Ownership enforced in =try_upgrade=/=try_sell=; refunds go to the owner (D1, D2). |
+   | =audit-003= | DONE        | A private =PlayerView= is created for every peer and put on the wire only for a peer that does not already hold it, so host mode no longer broadcasts every view and the HUD cannot read the wrong player (D3). |
    | =audit-004= | DONE        | =Phase= is published and the mirror keeps running after defeat (D4). |
+   | =audit-005= | DONE        | =WaveStarted= is broadcast and observed at the client (`notice: WaveStarted(1)` in a live run), so the wave notice is live code (D5). |
+   | =audit-006= | DONE        | =call_wave(key)=, a per-player =wave_call_cooldown= from the balance table, run down in =step=, refused with a reason (D6). |
+   | =audit-007= | DONE        | =src/ratelimit.rs= and =Net::buckets=; a peer spends =Config='s burst and rate, and the rest of the frame's commands are dropped, not deferred (D7). |
    | =audit-008= | DONE        | No handler mints a player; =handle_cmds= drops unregistered peers (D8). |
    | =audit-010= | DONE        | =tests/sim_smoke.rs= + =tests/balance.rs=; zero tests is no longer true (D17). |
+   | =audit-017= | DONE        | The audit-side check for D15, now permanent: the smoke job starts the real server with the display environment unset. |
+   | =audit-029= | DONE        | *D31, found while building CI.* Host mode ran a =RawClient= over UDP beside a =RawServer=, which lightyear calls =MixedClientServer= and which killed the process about three seconds into wave 1. A host is now a real lightyear host client: in-process messages, no per-peer copy of anything. |
+  | =audit-030= | DONE        | *D32, found by running a server and a client side by side.* =on_client_connected= inserted a default =MessageManager= over the engine-managed one, wiping the sender registration; every notice to a remote client was dropped inside the process. |
    | =test-001=  | IN-PROGRESS | Same harness; the fixed-seed box now has =found-009= to stand on. |
-   | =audit-005= | IN-PROGRESS | =tick_sim= broadcasts =WaveStarted= to every link on =GameOver='s path, so the client's wave notice is live code (D5). Owed: seeing "wave N" in a running HUD. |
-   | =audit-006= | IN-PROGRESS | =call_wave(key)=, a per-player =wave_call_cooldown= from the balance table, run down in =step= (D6). Owed: =cargo test=. |
-   | =audit-007= | IN-PROGRESS | =src/ratelimit.rs= and =Net::buckets=; a peer spends =Config='s burst and rate, and the rest of the frame's commands are dropped (D7). Owed: =cargo test=. |
+   | =audit-011= | TODO        | Blocked on =net-001= for the hash half; the per-tier literals are =towers-002='s to absorb. |
+   | =audit-012= | WAITING     | Blocked on =decide-default-lineage=, which is a sign-off, not a task. |
+   | =audit-009= | TODO        | Blocked on =net-001=. |
+   | =audit-019= | TODO        | Blocked on =net-001=. |
 
-   Everything above builds, passes =cargo test= (64 tests) and was walked by hand
-   in a running =host=, =server= and =client=. The three =part= D-rows keep that
-   state only because nobody has yet watched a wave notice, a refusal and a
-   rate-limit refusal arrive in a live HUD -- the code paths and their tests are
-   in place.
+  Everything above builds, passes =cargo test= (64 tests: 3 + 7 + 24 + 8 + 22)
+  and =cargo clippy --all-targets -- -D warnings=, and was walked by hand in a
+  running =host=, =server= and =client=. CI's three jobs' commands were run
+  locally in full, including the headless smoke run and the balance-refusal
+  check.
 
-   Next in M0: =found-007= (CI -- unblocked now, and its =clippy -- -D warnings=
-   gate needs the 16 standing warnings dealt with) and =found-008= (pin the
-   dependency set and write down the upgrade path). Then M0 is done except for
-   the wire-format batch, which =net-001= gates: =audit-003=, =audit-009= and
-   =audit-011= all stay blocked on it, and =net-001= remains the largest
-   unblocked task in the file.
+  *M0's exit criterion holds; the milestone is unblocked rather than stamped.*
+  The four things the criterion names are true -- no client can touch another
+  player's towers, the sim has tests, the balance numbers are one table, and the
+  server runs headless under CI -- but =found-002= and =test-001= are still
+  =IN-PROGRESS= for reasons no amount of work on this machine resolves, and
+  =audit-012= is =WAITING= on a sign-off. What is left before M1, in the order it
+  should be taken:
+
+  - =net-001= (protocol v2 with version negotiation). It gates =audit-009=,
+    =audit-011=, =audit-019=, =audit-020= and =audit-024=, and it is the largest
+    unblocked task in the plan.
+  - =net-006=, which is the network-design statement of what =audit-029= fixed
+    mechanically, and still owns a test for "a host plus one remote client".
+  - =found-002='s last box and =audit-020='s, which both need a second machine to
+    join a non-local host.
+  - =decide-default-lineage=, without which =sim-005= cannot start.
+
+  One debt is left, and =audit-030= shrank it: refusals and wave notices *have*
+  now been watched arriving at a live remote client (three =Ok= and one
+  =Err(NotEnoughGold)=, plus a =WaveStarted= per wave), so the only unobserved
+  refusal is the rate-limit one, which needs a peer deliberately flooding. The other
+  is =audit-003='s box three, verified structurally but not yet by making one
+  player's gold diverge from another's, because this machine has no
+  input-injection tool. Both are recorded on their tasks.
+
+  The larger lesson of =audit-029= and =audit-030= is procedural and worth keeping
+  where it will be read: *reading =src/= is what wrote this plan, and reading
+  =src/= is what missed both defects.* One needed a process started by hand with
+  the display taken away; the other needed two processes started by hand at once,
+  with lightyear's own message trace turned on. Neither is covered by a test that
+  exists today, and =test-008='s =App= harness is the only thing that would make
+  them coverable.
 
 * The single most important correctness question — two lineages
   :PROPERTIES:
@@ -261,11 +309,11 @@
   |-----+-----+-------+---------|
   | D1  | A   | DONE  | =try_upgrade= and =try_sell= never check that the caller owns the tower. Any client can drain or destroy any other player's board. |
   | D2  | A   | DONE  | =try_sell= refunds the *caller*, not the tower's owner. |
-  | D3  | A   | part  | Host mode replicates every =PlayerView= to everyone (=NetworkTarget::All=), so the host holds a duplicate of the whole match. The "sees no gold or kills" symptom is gone (=found-010= marks the host's own view); the duplication itself is =net-006='s. |
+  | D3  | A   | DONE  | Host mode replicated every =PlayerView= to everyone (=NetworkTarget::All=), so the host held a duplicate of the whole match. Fixed by =audit-003= on top of =found-010=: a private view is now put on the wire only for a peer that does not already hold it, and the host reads the server's own view. |
   | D4  | A   | DONE  | =sync_match= early-returns when =sim.over=, freezing the HUD at the moment of defeat; =MatchView::phase= is never written. |
-  | D5  | A   | part  | =ServerNotice::WaveStarted= is never sent, so the client's wave notification is dead code and players cannot tell a wave began. |
-  | D6  | A   | part  | =CallWave= has no cooldown, cost or authority check; one client can force waves continuously and end the match. |
-  | D7  | A   | part  | No rate limiting. =handle_cmds= drains and executes every queued command every frame. |
+  | D5  | A   | DONE  | =ServerNotice::WaveStarted= is sent on the =GameOver= path (=audit-005=) and observed at the client. |
+  | D6  | A   | DONE  | =CallWave= takes the caller, records a per-player cooldown from the balance table, and refuses with a reason (=audit-006=). |
+  | D7  | A   | DONE  | A per-peer token bucket in =src/ratelimit.rs=; over-budget commands are dropped and the peer is told once per frame (=audit-007=). |
   | D8  | A   | DONE  | =players.entry(who).or_default()= mints a zero-gold player record for an unregistered key; diverges from =add_player='s starting gold. |
   | D9  | A   | open  | Identity is the UDP socket address, so reconnecting from a new port silently becomes a new player and loses gold and kills. |
   | D10 | B   | open  | A wave is spread evenly around the entire loop, so it has no front; and a creep can spawn already adjacent to the Life Zone. |
@@ -273,7 +321,7 @@
   | D12 | C   | open  | =CreepVis= and =CreepHp= are distinct components, doubling replication updates per creep per tick. |
   | D13 | B   | open  | No projectile entities; towers damage invisibly on a cooldown. |
   | D14 | B   | open  | No client-side interpolation; creeps visibly step at 30 Hz. |
-  | D15 | B   | DONE  | =VisualsPlugin= is added in =server= mode, so a dedicated server opens a window and allocates 768 sprites. Fixed by =found-001=: a server gets =MinimalPlugins= and no window. |
+  | D15 | B   | DONE  | =VisualsPlugin= was added in =server= mode, so a dedicated server opened a window and allocated 768 sprites. Fixed by =found-001=: a server gets =MinimalPlugins= and no window. Held fixed by the =found-007= smoke job, which starts the real binary with the display environment unset (=audit-017=). |
   | D16 | C   | open  | Target acquisition is O(towers × creeps) per tick, ~115k distance tests at the current caps. |
   | D17 | A   | DONE  | Zero tests. The sim is written to be testable and never has been. |
   | D18 | A   | part  | Every balance number is a literal in =game.rs= or worse, inline in =sim.rs=. The tables are data as of =found-004=; the per-tier scaling in =Sim::step= is still inline, which is =audit-011='s remainder. (That literal now lives in =src/sim/combat.rs=.) |
@@ -288,7 +336,9 @@
   | D27 | B   | open  | No leaver handling: gold is not split, and towers are simply orphaned. |
   | D28 | C   | open  | =Path::distance_to= walks every segment; =is_buildable= is called per click on the server. Cheap now, wrong shape later. |
   | D29 | B   | open  | =VisualsPlugin='s =MapTile= is =#[allow(dead_code)]= and tiles are spawned as individual entities rather than a tiled render pass. |
-  | D30 | C   | DONE  | No =LocalPlayer= marker; the client infers "my" state from "the one =PlayerView= I happen to hold". Fixed by =found-010=, tracked here as =audit-028=. |
+  | D30 | C   | DONE  | No =LocalPlayer= marker; the client inferred "my" state from "the one =PlayerView= I happen to hold". Fixed by =found-010=, tracked as =audit-028=. |
+  | D31 | A   | DONE  | Host mode ran a =RawClient= over a real UDP socket beside a =RawServer=, which lightyear rejects as =MixedClientServer= and which killed the process three seconds into wave 1. Fixed by =audit-029=, which makes a host a real lightyear host client: in-process messages, no per-peer copy of anything. |
+  | D32 | A   | DONE  | =on_client_connected= inserted a fresh =MessageManager= over the one the engine manages, wiping the sender registration the message layer installs from an =on_add= hook. Every =ServerNotice= -- wave started, every refusal, game over -- was silently dropped on the way to a remote client. Fixed by =audit-030=. |
 
 * Cross-cutting decisions
   :PROPERTIES:
@@ -321,6 +371,68 @@
    "ghost" of the tower it is about to place. This decision constrains
    [[file:09-networking.org][09-networking.org]] and [[file:10-ui.org][10-ui.org]] and should not be revisited
    without a concrete reason.
+
+** DONE Pin the dependency set and write down the upgrade path              :@found:net:
+   :PROPERTIES:
+   :ID:       decide-upgrade-path
+   :EFFORT:   2h
+   :END:
+
+   =bevy= and =lightyear= move together or not at all: lightyear 0.29 is written
+   against bevy 0.19 and nothing else, so a bump of one is a rebuild of the
+   other. Without a written procedure a version bump is an unbounded refactor,
+   and without a pin the local and CI builds can disagree about which one they
+   are building. This is the procedure; see [[file:00-foundation.org][00-foundation.org]]
+   =found-008=.
+
+   Pinned today (from =Cargo.lock=):
+
+   | Crate     | Required | Resolved |
+   |-----------+----------+----------|
+   | bevy      | 0.19.1   | 0.19.1   |
+   | lightyear | 0.29     | 0.29.0   |
+   | ron       | 0.12     | 0.12.2   |
+   | serde     | 1        | 1.0.229  |
+
+   Edition =2024= needs rustc 1.85; lightyear 0.29.0 declares =rust-version =
+   "1.95"=, which is the highest floor of any dependency and therefore the real
+   one. =rust-toolchain.toml= pins =1.97.1=, the version the project is
+   actually developed on, so the Nix devshell's =rustc= and CI's are the same
+   binary.
+
+   **Upgrade procedure**
+
+   1. Read lightyear's release notes for the target version and find the bevy
+      version they name. Bevy breaks API on every minor release and lightyear
+      tracks it one-to-one, so the two are bumped in *one* commit. Raise
+      =rust-toolchain.toml= in the same commit if the notes raise the MSRV.
+   2. =cargo update -p bevy -p lightyear= -- never a bare =cargo update=, which
+      floats every transitive crate at once and leaves no single suspect.
+   3. =cargo build=, then re-check the plugin ordering in =src/main.rs=. The
+      invariant is that =protocol::build_protocol(&mut app)= runs *after* the
+      lightyear plugin groups and *before* any =Client= or =Server= entity
+      exists: it fills a registry both halves read, and a peer created before it
+      runs has no component table.
+   4. Re-check the four feature groups in the =lightyear= entry in =Cargo.toml=:
+      that each one still exists under that name, and that
+      =default-features = false= is still what we want (the defaults enable
+      =prediction= and =interpolation=, which =decide-authority= rules out).
+   5. =cargo test=, then =cargo clippy --all-targets -- -D warnings=, then
+      =cargo fmt --check=. The same three commands CI runs, in the same order.
+   6. Run all three modes by hand: =cargo run= (host), =cargo run -- server=
+      with =DISPLAY= unset, and =cargo run -- client= against it. A netcode
+      change whose only symptom is a peer that never connects is exactly what
+      this step catches.
+   7. For any change to =src/net=/, re-run the remote pair with lightyear's
+      message trace on and check that *both* directions appear:
+      =RUST_LOG=info,greentd=debug,lightyear_debug::message=trace= on the server
+      and the client at once, then grep for =message_send= and
+      =message_receive_bytes= on each. This is step 6 with the instrument
+      pointed at the wire, and it is here because =audit-030= (D32) was a
+      two-word mistake that stopped every notice reaching a remote client while
+      every test in =tests/= stayed green.
+   8. Update the table above and the one in =Cargo.toml=, and say in the commit
+      message which version was left behind.
 
 ** TODO Decide the default lineage for a fresh match                     :@sim:
    :PROPERTIES:
