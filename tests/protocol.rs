@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use greentd::data::balance::{Balance, BalanceData};
-use greentd::net::messages::{Handshake, HandshakeAck};
+use greentd::net::messages::{Handshake, HandshakeAck, PlayerId};
 use greentd::net::protocol::{ProtocolVersion, SCHEMA_REVISION};
 
 /// The shipped tables, as a peer would load them.
@@ -142,11 +142,16 @@ fn the_handshake_and_its_answer_round_trip() {
     // serialise/deserialise cycle is a handshake that never completes. RON is
     // used here only because it needs no `App`; it exercises the same derives.
     let version = ProtocolVersion::current(&balance());
+    let id = PlayerId(0x0bad_c0de_dead_beef);
 
-    let sent = Handshake { version };
+    let sent = Handshake { version, id };
     let wire = ron::to_string(&sent).expect("a handshake serialises");
     let back: Handshake = ron::from_str(&wire).expect("a handshake deserialises");
     assert_eq!(back.version, version);
+    assert_eq!(
+        back.id, id,
+        "the identity must survive the round trip, or a reconnect is a new player"
+    );
 
     let refused = HandshakeAck::Refused {
         reason: "balance data (server 1, client 2)".to_string(),

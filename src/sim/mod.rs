@@ -35,8 +35,13 @@ pub use rng::Rng;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct CreepId(pub u32);
 
-/// Stable identity for a player. We key on the peer's address because that is
-/// the only durable identity raw UDP gives us.
+/// Stable identity for a player, within one match (`net-002`).
+///
+/// It is derived by the network layer from the clients' own persistent
+/// `PlayerId` -- never from a socket address -- so a player who reconnects
+/// from a new port is the same player, with the same gold, kills and towers.
+/// The sim only ever sees this key; it never reads a `SocketAddr`, and it must
+/// stay that way for the sim to remain replayable from a seed.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct PlayerKey(pub u64);
 

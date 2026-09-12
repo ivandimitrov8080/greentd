@@ -155,7 +155,7 @@ server. It touches =src/protocol.rs=, =src/server.rs=, =src/client.rs=,
    With =net-001= done, the wire-format batch it gates -- =audit-009=,
    =audit-011=, =audit-019=, =audit-020= and =audit-024= -- is unblocked.
 
-** TODO [#A] Give players a stable identity that survives a new port        :@net:
+** DONE [#A] Give players a stable identity that survives a new port        :@net:
    :PROPERTIES:
    :ID:         net-002
    :EFFORT:     1w
@@ -168,12 +168,103 @@ server. It touches =src/protocol.rs=, =src/server.rs=, =src/client.rs=,
    takeover semantics so one peer cannot impersonate another's id. The audit-side
    identity fix is =audit-009=, which is blocked on this task.
 
-   - Files: =src/protocol.rs=, =src/server.rs=, =src/sim.rs=
+   - Files: =src/net/messages.rs=, =src/net/client.rs=, =src/net/server.rs=,
+     =src/sim/mod.rs=, =src/config.rs=, =tests/identity.rs= (new)
    - Acceptance:
-     - [ ] The client generates a persistent id and sends it in the handshake; the server keys the player on it, not on =remote.0=.
-     - [ ] A client reconnecting from a new port with the same id maps to the same =PlayerKey= and the same =PlayerView= (D9).
-     - [ ] A second connection presenting an id already in use is either rejected or takes over the session under a documented rule; it never silently creates a second player.
-     - [ ] =peer_key= no longer calls =remote.0.to_bits()=, and =PlayerKey= is derived from the id.
+     - [x] The client generates a persistent id and sends it in the handshake; the server keys the player on it, not on =remote.0=.
+     - [x] A client reconnecting from a new port with the same id maps to the same =PlayerKey= and the same =PlayerView= (D9).
+     - [x] A second connection presenting an id already in use is either rejected or takes over the session under a documented rule; it never silently creates a second player.
+     - [x] =peer_key= no longer calls =remote.0.to_bits()=, and =PlayerKey= is derived from the id.
+
+   Done. Identity is now a type the client owns from process start and states in
+   the handshake; the socket address is not consulted anywhere.
+
+   *The identity.* =net::messages::PlayerId(u64)= is the identity, and
+   =Handshake= now carries ={ version, id }= rather than a version alone (which
+   is why =SCHEMA_REVISION= moves 2 to 3 -- a wire change, not a code change the
+   version could ignore). =PlayerId::generate= draws from the standard library's
+   OS-seeded =RandomState= rather than adding a =rand= dependency to a crate that
+   hand-rolls its own RNG, and it refuses to return zero because the sim reserves
+   =PlayerKey(0)= for "no player" (=Creep::last_hit_by=). The client keeps its id
+   in a =LocalIdentity= resource for the life of the process, so every connection
+   it makes -- including a reconnect -- states the same one. =--player-id= (and
+   =GREENTD_PLAYER_ID=) pins the id, which is how a reconnect is exercised by
+   hand; a run that does not pin one generates it.
+
+   *The server.* =peer_key= is gone. =player_key(id) = PlayerKey(id.0)= is the one
+   place the mapping lives, and =claim(id, conn, links)= is the pure admission
+   question: =Fresh= (nobody holds it), =AlreadyHeld= (this connection is
+   retransmitting its own handshake), or =Taken= (a different live connection
+   holds it). A =Session(PlayerKey)= is stamped on a connection when it is
+   admitted, so a later disconnect names the player without the socket address.
+   =join_player= reuses the =PlayerView= an identity already owns, and the sim's
+   =add_player= was already idempotent, so gold, kills and the whole tower board
+   survive -- a reconnect re-enters the same player, not a fresh one.
+
+   *The rule, and why it is takeover and not refusal.* "An identity is held by at
+   most one live connection" reads better but does not survive the transport:
+   **raw UDP has no drop detection.** A client killed mid-match left its link
+   "connected" on the server for the whole twelve seconds the experiment ran, and
+   lightyear never noticed -- =net-014= is the task that adds a timeout for
+   exactly this. So refusing a reconnect while the old link is *believed* to be
+   live would make box two impossible, which is the box the task is about. The
+   documented rule is therefore: **the newest connection presenting an identity
+   is the player.** The old connection is dropped, the new one takes the same
+   =PlayerKey= and the same =PlayerView=, and the takeover is logged at =info=.
+   It never creates a second player, and it is never silent. The cost is stated
+   plainly: with no authentication in scope, a peer who knows another's identity
+   can displace it. =net-003= is where a session token lets a returning client
+   prove itself, so the takeover can be narrowed to the peer that owns the
+   session.
+
+   Two races the takeover opens, both closed here. The loser's
+   =Remove<Connected>= fires *after* the winner has claimed the key, so
+   =on_client_disconnected= now releases an identity only if the connection
+   leaving is the one that still holds it; and =handle_cmds= likewise acts only
+   for the connection that currently holds the key, so a superseded link cannot
+   spend its successor's gold in the frame before it is despawned.
+
+   Evidence, from a server and two clients on this machine
+   (=RUST_LOG=info,greentd::net=debug,greentd::replication=debug=). Client A joins
+   with a pinned id; client B presents the *same* id from a **new port** while A
+   is still up:
+
+   #+BEGIN_EXAMPLE
+   player PlayerKey(42) joined (identity 000000000000002a, remote Raw(127.0.0.1:5101))
+   addressing: private view 152v0 for PlayerKey(42) (remote Raw(127.0.0.1:5101))
+   identity 000000000000002a taken over by PlayerKey(42) (remote Raw(127.0.0.1:5102)); dropping 151v0
+   player PlayerKey(42) joined (identity 000000000000002a, remote Raw(127.0.0.1:5102))
+   reusing private view 152v0 for PlayerKey(42)
+   addressing: private view 152v0 for PlayerKey(42) (remote Raw(127.0.0.1:5102))
+   #+END_EXAMPLE
+
+   which is all four boxes at once: the key is the identity (42 = =0x2a=), the
+   new port does not change it, the *same* view entity (152v0) is reused, and the
+   second connection became the player rather than a second one. Client B's own
+   log reads =handshake accepted= and =marked 1257v0 as its own view (gold 300)=.
+
+   Two clients started with no pinned id were also run together: they generated
+   distinct ids and became two distinct players, so generation does not collide.
+
+   Green: =cargo fmt --check=, =cargo clippy --all-targets -- -D warnings=,
+   =cargo test= (79 tests: 3 + 7 + 25 + 7 + 7 + 8 + 22), and the three modes run
+   by hand (=host=, =server=, =client=).
+
+   Owed, and deliberately not claimed:
+
+   - The rule is tested headless (=tests/identity.rs=: 7 tests over =player_key=,
+     =claim= and =PlayerId::generate=) and the live half is a transcript. The
+     test that would make it scripted -- two peers in one world with a live
+     =Server= -- is =test-008='s =App= harness, the same place =net-001='s refusal
+     and =audit-030='s regression belong.
+   - The state that survives is asserted by construction (*the same view entity,
+     the idempotent =add_player=*) and by the reused view's gold reading 300, but
+     not by making it *diverge*, because this machine has no input-injection tool
+     (`audit-003`'s caveat, unchanged).
+   - The =--player-id= flag is what made the reconnect demonstrable without a
+     reconnect implementation, which is =net-003='s. When =net-003= lands, the
+     client should re-state its own id from a new socket with no flag at all.
+
 
 ** TODO [#A] Let a dropped client rejoin its own player                     :@net:
    :PROPERTIES:
@@ -320,9 +411,9 @@ server. It touches =src/protocol.rs=, =src/server.rs=, =src/client.rs=,
       =test-008= (=tests/net.rs=), which is why box four belongs there and not
       here.
 
-   The unblock is the point of closing this: =net-001= is still required for
-   identity (=audit-009=, =net-002=) and version negotiation, but it is no longer
-   the thing standing between a host and its own HUD.
+   The unblock is the point of closing this: =net-001= (version negotiation) and
+   =net-002= (identity) have since landed, but neither was the thing standing
+   between a host and its own HUD.
 
 ** TODO [#A] Run the server truly headless                                  :@net:
    :PROPERTIES:
@@ -545,5 +636,7 @@ server. It touches =src/protocol.rs=, =src/server.rs=, =src/client.rs=,
     (=net-015=), a static server list later.
   - *Interpolation delay*: recommended default: about two tick intervals
     (~=66 ms=) behind the newest sample (tune).
-  - *Session-id lifetime*: recommended default: per-session only, not persisted
-    to disk, since there are no accounts.
+  - *Session-id lifetime*: decided by =net-002= -- the id is per-process and not
+    persisted to disk, since there are no accounts. A returned id is a *takeover*
+    (the newest connection is the player); a session token that would let a
+    returning client prove itself is =net-003='s.

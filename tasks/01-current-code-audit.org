@@ -34,7 +34,7 @@ an excuse for an untested mutation (D17).
   | D6  | A   | =src/sim.rs=, =src/server.rs=    | 1d     | =audit-006=                       | part  |
   | D7  | A   | =src/server.rs=                  | 1d     | =audit-007=                       | part  |
   | D8  | A   | =src/sim.rs=                     | 2h     | =audit-008=                       | DONE  |
-  | D9  | A   | =src/server.rs=, =src/sim.rs=    | 1w     | =audit-009=                       | open  |
+  | D9  | A   | =src/server.rs=, =src/sim.rs=    | 1w     | =audit-009= (via =net-002=)       | DONE  |
   | D10 | B   | =src/sim.rs=                     | 1d     | =audit-013=                       | open  |
   | D11 | B   | =src/sim.rs=, =src/game.rs=      | 1w     | =audit-014=                       | open  |
   | D12 | C   | =src/game.rs=, =src/protocol.rs= | 2h     | =audit-024=                       | open  |
@@ -444,7 +444,7 @@ an excuse for an untested mutation (D17).
    check, so a peer that is not allowed to act cannot leave a queue growing
    behind it.
 
-** TODO [#A] Make identity survive a reconnect from a new port                        :@net:
+** DONE [#A] Make identity survive a reconnect from a new port                        :@net:
    :PROPERTIES:
    :ID:         audit-009
    :EFFORT:     1w
@@ -457,12 +457,43 @@ an excuse for an untested mutation (D17).
    changes the wire format, so this is blocked on the protocol v2 handshake in
    [[file:09-networking.org][09-networking.org]] (=net-001=) and must not be built twice.
 
-   - Files: =src/server.rs=, =src/sim.rs=, =src/protocol.rs=
+   - Files: =src/net/server.rs=, =src/net/messages.rs=, =src/sim/mod.rs=
    - Acceptance:
-     - [ ] A reconnect from a different source port maps to the same =PlayerKey= and recovers gold, kills and towers.
+     - [x] A reconnect from a different source port maps to the same =PlayerKey= and recovers gold, kills and towers.
      - [ ] The raw socket address is no longer the identity key; a server-issued session token (net-001) is.
      - [ ] An unknown or expired token yields a new player, not a hang or an error that wedges the link.
-     - [ ] =Sim= never reads a =SocketAddr=; identity stays the sim-local =PlayerKey=.
+     - [x] =Sim= never reads a =SocketAddr=; identity stays the sim-local =PlayerKey=.
+
+   Closed by =net-002=, which is where the work was done, rather than implemented
+   a second time here. The task was written as "the audit-side identity fix", but
+   there is only one identity to fix, and building the client id and the
+   server-side keying separately would have been the duplication =net-002= warns
+   against. So this task records the claims and points at the code.
+
+   What =net-002= added: =PlayerId= (client-generated, stated in the handshake),
+   =player_key(id) = PlayerKey(id.0)= replacing =peer_key(remote)=, a =Session=
+   component so a disconnect names its player without the address, and a
+   documented **takeover** rule -- the newest connection presenting an identity is
+   the player, on the same key and the same =PlayerView=. D9 is =DONE=.
+
+   The evidence is the transcript under =net-002=: a client that rejoined from a
+   new port (5101 to 5102) with the same id re-entered =PlayerKey(42)= and the
+   *same* =PlayerView= entity (=152v0=).
+
+   Two boxes are left unchecked on purpose, because they describe a design
+   =net-002= did not choose. Box two's "server-issued session token" and box
+   three's "unknown or expired token" are superseded by the client-generated id
+   plus a takeover rule: the address half of box two holds (the socket address is
+   no longer the key), but there is no token, so there is nothing for box three's
+   "expired" case to describe. A session token -- which would let a returning
+   client prove it owns an identity and narrow the takeover to it -- is
+   =net-003='s, and this task deliberately does not grow one.
+
+   The one property that is *not* claimed: that the recovered gold and kills
+   *diverge from* the values a new player would have. They are the same view
+   entity, re-read from the idempotent =Sim::add_player=, and a reuse is logged;
+   but this machine has no input-injection tool, so a run cannot spend gold before
+   the reconnect and watch it come back (the same caveat =audit-003= records).
 
 ** DONE [#A] Stand up the minimum headless sim test harness                           :@test:
    :PROPERTIES:
@@ -1101,11 +1132,22 @@ an excuse for an untested mutation (D17).
     Both were found by starting two processes and reading their logs; neither is
     visible to any test that exists today.
 
-  Next: =net-002= (stable identity), which is what =audit-009= is now waiting on,
-  and =net-006= is already closed. =decide-default-lineage= should be settled in
-  parallel, since it is a decision and not work, and =sim-005= is waiting on it.
-  =audit-031= (D33) is still =[#A]= and still unexplained, and it is the reason
-  the remote-delivery boxes above are transcripts rather than scripts.
+  =net-002= has landed too, and =audit-009= closed with it: the socket address is
+  no longer a player. It also turned up a transport fact the plan did not
+  anticipate -- *raw UDP never reports a dead peer*, measured at over twelve
+  seconds and unnoticed by lightyear -- so the "refuse a second connection"
+  reading of =net-002='s third box was impossible to honour without also making a
+  reconnect impossible, and the documented rule is takeover instead. See
+  =net-002= for the measurement; the session token that would let a returning
+  client prove itself, and so narrow the takeover, is =net-003='s.
+
+  Next: =net-006='s last box, which is a host plus one remote client asserted by a
+  test ([[file:12-testing.org][12-testing.org]] =test-008='s =App= harness, the
+  same place =net-001='s refusal and =audit-030='s regression belong), and
+  =decide-default-lineage=, which is a decision and not work and is what =sim-005=
+  is waiting on. =audit-031= (D33) is still =[#A]= and still unexplained, and it
+  is the reason the remote-delivery boxes above are transcripts rather than
+  scripts.
 
   One addition to step 3, now that D32 has been seen: the wire-format batch should
   include a smoke-run of a *remote* client for every change to =src/net/server.rs=.

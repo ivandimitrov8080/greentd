@@ -49,7 +49,9 @@ use lightyear::prelude::*;
 
 use crate::config::Config;
 use crate::data::components::{LocalPlayer, PlayerView};
-use crate::net::messages::{ClientCmd, Handshake, HandshakeAck, ReliableChannel, ServerNotice};
+use crate::net::messages::{
+    ClientCmd, Handshake, HandshakeAck, PlayerId, ReliableChannel, ServerNotice,
+};
 use crate::net::protocol::ProtocolVersion;
 use crate::ui::hud::HudPlugin;
 
@@ -71,6 +73,33 @@ pub enum HandshakeStatus {
     /// The server refused the client, naming the part of the version that
     /// differed.
     Refused(String),
+}
+
+/// This process's player identity, generated once and reused for every
+/// connection it makes (`net-002`, D9).
+///
+/// It is a resource rather than a field of the client entity because it must
+/// outlive a connection: a reconnecting client states the *same* id, and that is
+/// what makes the reconnect a reconnect rather than a new player. The value is
+/// `Config::player_id` when the run pinned one (which is how a reconnect is
+/// exercised by hand) and [`PlayerId::generate`] otherwise.
+///
+/// A host is a client too (`audit-029`), so it has one of these as well; its id
+/// is what the server keys the host player on.
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LocalIdentity(pub PlayerId);
+
+impl LocalIdentity {
+    /// This run's identity: the pinned one, or a fresh random one.
+    ///
+    /// Kept as a free function so [`GreenTdClientPlugin::build`] and any test
+    /// that wants to know the rule agree without building an `App`.
+    pub fn from_config(config: &Config) -> Self {
+        match config.player_id {
+            Some(id) => Self(PlayerId(id.get())),
+            None => Self(PlayerId::generate()),
+        }
+    }
 }
 
 /// Spawn this process's client half, once the world it needs is ready.
@@ -143,8 +172,8 @@ fn spawn_client(
 /// The server addresses each peer's view with `NetworkTarget::Single`, so a
 /// remote client holds exactly one `PlayerView` and it is necessarily its own.
 /// A host holds the server's views directly (D3) and nothing distinguishes them,
-/// so it does not guess here: `net::server::mark_host_view`, which owns the
-/// key-to-view mapping, marks the right one instead.
+/// so it does not guess here: the host's own view is marked server-side, in
+/// `net::server::join_player`, where the key-to-view mapping is known.
 fn mark_local_view(
     config: Res<Config>,
     marked: Query<(), With<LocalPlayer>>,
@@ -206,6 +235,7 @@ type PendingHandshake<'w, 's> =
 fn send_handshake(
     time: Res<Time>,
     version: Res<ProtocolVersion>,
+    identity: Res<LocalIdentity>,
     status: Res<HandshakeStatus>,
     mut pending: PendingHandshake,
     mut senders: Query<&mut MessageSender<Handshake>>,
@@ -218,6 +248,7 @@ fn send_handshake(
         return;
     }
     let version = *version;
+    let id = identity.0;
     for (entity, retry) in pending.iter_mut() {
         let first = match retry {
             Some(mut retry) => {
@@ -238,16 +269,18 @@ fn send_handshake(
         let Ok(mut sender) = senders.get_mut(entity) else {
             continue;
         };
-        sender.send::<ReliableChannel>(Handshake { version });
+        sender.send::<ReliableChannel>(Handshake { version, id });
         if first {
             info!(
                 target: crate::logging::target::NET,
-                "handshake sent ({version})"
+                "handshake sent ({version}, id {:016x})",
+                id.0
             );
         } else {
             debug!(
                 target: crate::logging::target::NET,
-                "handshake repeated ({version})"
+                "handshake repeated ({version}, id {:016x})",
+                id.0
             );
         }
     }
@@ -306,7 +339,18 @@ pub struct GreenTdClientPlugin;
 
 impl Plugin for GreenTdClientPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<HandshakeStatus>()
+        // The identity is resolved once, here, and lives as long as the process:
+        // every connection this client makes states the same id, which is what
+        // lets a reconnect resume the same player instead of becoming a new one
+        // (`net-002`). `Config` is already a resource -- `main` inserts it before
+        // any plugin is added -- so this is where the run's `--player-id`, if it
+        // has one, is honoured.
+        let identity = {
+            let config = app.world().resource::<Config>();
+            LocalIdentity::from_config(config)
+        };
+        app.insert_resource(identity)
+            .init_resource::<HandshakeStatus>()
             .add_plugins(HudPlugin)
             .add_systems(
                 Update,

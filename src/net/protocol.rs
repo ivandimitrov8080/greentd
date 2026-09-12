@@ -48,8 +48,10 @@ use crate::net::messages::*;
 ///
 /// Revision 1 was the vertical slice's implicit format -- one message per
 /// direction on one reliable channel, six replicated components. Revision 2 is
-/// this one, which adds the handshake that makes the revision checkable.
-pub const SCHEMA_REVISION: u32 = 2;
+/// the handshake that makes the revision checkable (`net-001`). Revision 3 adds
+/// the client identity to that handshake (`net-002`), which is a wire change
+/// even though the message count is unchanged.
+pub const SCHEMA_REVISION: u32 = 3;
 
 /// What a peer speaks, exchanged in [`Handshake`] before it is admitted.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Resource)]

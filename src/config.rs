@@ -28,6 +28,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::net::SocketAddr;
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -59,6 +60,9 @@ pub const KEY_LOG: &str = "log";
 pub const KEY_LOG_DIR: &str = "log-dir";
 pub const KEY_COMMANDS_PER_SECOND: &str = "commands-per-second";
 pub const KEY_COMMAND_BURST: &str = "command-burst";
+/// Pins this client's player identity (`net-002`). A client setting, unread by
+/// a dedicated server, which never generates or owns an identity.
+pub const KEY_PLAYER_ID: &str = "player-id";
 
 /// Selects a layer rather than being a [`Config`] field, so it is the one key
 /// allowed to name another file. It is read by [`startup_from`], not by
@@ -115,6 +119,8 @@ pub const USAGE: &str = concat!(
     "                             (an empty value writes no file)\n",
     "  --commands-per-second <n>  per-peer command budget         [default: 20]\n",
     "  --command-burst <n>        per-peer per-frame burst        [default: 16]\n",
+    "  --player-id <n>            pin this client's identity, instead of generating\n",
+    "                             one (useful for exercising a reconnect)  [default: random]\n",
     "  --config <path>            the config file to read         [default: greentd.conf]\n",
     "  --help                     print this text\n",
     "\n",
@@ -271,9 +277,10 @@ impl std::error::Error for ConfigError {}
 /// failures that used to abort from two different places with two different
 /// messages.
 ///
-/// It is *not* [`Reject`](crate::game::Reject), and the distinction is the
-/// point: a `Reject` is an expected refusal inside a running match, it carries a
-/// reason the player can act on, and it is sent to that player. A `StartupError`
+/// It is *not* [`Reject`](crate::data::reject::Reject), and the distinction is
+/// the point: a `Reject` is an expected refusal inside a running match, it
+/// carries a reason the player can act on, and it is sent to that player. A
+/// `StartupError`
 /// is a programmer or configuration mistake, it is fatal, it is printed to
 /// whoever started the process, and it never travels over the network.
 #[derive(Debug)]
@@ -356,6 +363,15 @@ pub struct Config {
     /// Command budget: the burst one peer may spend in one frame
     /// (`audit-007`).
     pub command_burst: u32,
+
+    /// This client's pinned player identity (`net-002`), or `None` to generate
+    /// one. Read only by the client half of a run, so a dedicated server ignores
+    /// it; its presence is what makes a reconnect from a new port reproducible
+    /// by hand (`cargo run -- client --bind 127.0.0.1:5101 --player-id 42`).
+    ///
+    /// `NonZeroU64` because zero is not an identity: the sim reserves
+    /// `PlayerKey(0)` for "no player" (`Creep::last_hit_by`).
+    pub player_id: Option<NonZeroU64>,
 }
 
 impl Config {
@@ -640,6 +656,7 @@ pub fn resolve(layers: &[Settings]) -> Result<Config, ConfigError> {
     let log_dir = take(&mut merged, KEY_LOG_DIR)?;
     let commands_per_second = take_f32(&mut merged, KEY_COMMANDS_PER_SECOND)?;
     let command_burst = take_u32(&mut merged, KEY_COMMAND_BURST)?;
+    let player_id = take_optional_id(&mut merged, KEY_PLAYER_ID)?;
 
     if !tick_hz.is_finite() || tick_hz <= 0.0 {
         return Err(ConfigError::bad_value(
@@ -680,6 +697,7 @@ pub fn resolve(layers: &[Settings]) -> Result<Config, ConfigError> {
         log_dir: (!log_dir.trim().is_empty()).then(|| PathBuf::from(log_dir)),
         commands_per_second,
         command_burst,
+        player_id,
     })
 }
 
@@ -710,6 +728,23 @@ fn take_u32(map: &mut Settings, key: &str) -> Result<u32, ConfigError> {
     let value = take(map, key)?;
     let parsed = value.trim().parse::<u32>();
     parsed.map_err(|_| ConfigError::bad_value(key, value, "a non-negative integer"))
+}
+
+/// Take an optional identity (`net-002`), defaulting to `None`. Unlike [`take`],
+/// absence is not an error: it is how a key with no built-in default is spelled.
+/// A non-numeric or zero value is refused, because zero is the sim's "no player"
+/// sentinel and not an identity.
+fn take_optional_id(map: &mut Settings, key: &str) -> Result<Option<NonZeroU64>, ConfigError> {
+    let Some(value) = map.remove(key) else {
+        return Ok(None);
+    };
+    value
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .and_then(NonZeroU64::new)
+        .map(Some)
+        .ok_or_else(|| ConfigError::bad_value(key, value, "a non-zero integer"))
 }
 
 fn take_port(map: &mut Settings, key: &str) -> Result<Option<u16>, ConfigError> {

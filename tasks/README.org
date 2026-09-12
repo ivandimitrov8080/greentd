@@ -189,7 +189,7 @@
    | =test-001=  | IN-PROGRESS | Same harness; the fixed-seed box now has =found-009= to stand on. |
    | =audit-011= | TODO        | Blocked on =net-001= for the hash half; the per-tier literals are =towers-002='s to absorb. |
    | =audit-012= | WAITING     | Blocked on =decide-default-lineage=, which is a sign-off, not a task. |
-   | =audit-009= | TODO        | Blocked on =net-001=. |
+   | =audit-009= | DONE        | Closed by =net-002=: identity is the client's =PlayerId=, not the socket address. The transcript shows a client rejoining from a new port (5101 to 5102) re-entering the same =PlayerKey(42)= and the same =PlayerView= entity. D9 is =DONE=. |
    | =audit-019= | DONE        | Closed by =net-001=: the refusal is the handshake's other outcome, so the three claims this task makes are the three =net-001= verified. D22 is =DONE=. |
 
   Everything above builds, passes =cargo test= (64 tests: 3 + 7 + 24 + 8 + 22)
@@ -207,14 +207,16 @@
   should be taken:
 
   - =net-001= (protocol v2 with version negotiation) is *done*, and it was the
-    largest unblocked task in the plan. It gates =audit-009=, =audit-011=,
-    =audit-019=, =audit-020= and =audit-024=, and =audit-019= closed with it
-    because the refusal is the handshake's other outcome. See
-    [[file:09-networking.org][09-networking.org]] for what it cost -- two
-    defects of the "a message that is never written" shape, both found by
-    starting two processes by hand.
-  - =net-002= (a stable identity for a player) is the next of the block, because
-    =audit-009= is waiting on it and it is what makes a reconnect a reconnect.
+    largest unblocked task in the plan. It gates =audit-011=, =audit-020= and
+    =audit-024=, and closed =audit-019= with it because the refusal is the
+    handshake's other outcome. See [[file:09-networking.org][09-networking.org]]
+    for what it cost -- two defects of the "a message that is never written"
+    shape, both found by starting two processes by hand.
+  - =net-002= (a stable identity for a player) is *done* as well, and closed
+    =audit-009= with it: the socket address is no longer a player, so a
+    reconnect from a new port re-enters the same =PlayerKey= and the same
+    =PlayerView=. It also turned up that raw UDP never reports a dead peer,
+    which is why the identity rule is a logged takeover rather than a refusal.
   - =net-006=, which is the network-design statement of what =audit-029= fixed
     mechanically, and still owns a test for "a host plus one remote client".
   - =found-002='s last box and =audit-020='s, which both need a second machine to
@@ -332,7 +334,7 @@
   | D6  | A   | DONE  | =CallWave= takes the caller, records a per-player cooldown from the balance table, and refuses with a reason (=audit-006=). |
   | D7  | A   | DONE  | A per-peer token bucket in =src/ratelimit.rs=; over-budget commands are dropped and the peer is told once per frame (=audit-007=). |
   | D8  | A   | DONE  | =players.entry(who).or_default()= mints a zero-gold player record for an unregistered key; diverges from =add_player='s starting gold. |
-  | D9  | A   | open  | Identity is the UDP socket address, so reconnecting from a new port silently becomes a new player and loses gold and kills. |
+  | D9  | A   | DONE  | Identity is the UDP socket address, so reconnecting from a new port silently becomes a new player and loses gold and kills. Fixed by =net-002=: a client-generated =PlayerId= in the handshake, and a takeover rule, so a reconnect re-enters the same =PlayerKey= and the same =PlayerView=. |
   | D10 | B   | open  | A wave is spread evenly around the entire loop, so it has no front; and a creep can spawn already adjacent to the Life Zone. |
   | D11 | B   | open  | Creeps are entirely uniform — no armour type, no damage type, no air, no boss, no hero, no immune. |
   | D12 | C   | open  | =CreepVis= and =CreepHp= are distinct components, doubling replication updates per creep per tick. |

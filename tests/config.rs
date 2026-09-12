@@ -5,6 +5,7 @@
 //! process's real arguments or environment and none of them needs a window, a
 //! socket or an `App`.
 
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 
 use greentd::config::{self, ConfigError, Mode, Settings, Startup, StartupError};
@@ -208,6 +209,29 @@ fn an_equals_sign_is_the_same_as_a_space() {
     let cli = config::parse_args(&args(&["--tick-hz=60"])).expect("the arguments parse");
     let config = config::resolve(&[cli.settings]).expect("resolves");
     assert_eq!(config.tick_hz, 60.0);
+}
+
+#[test]
+fn a_client_can_be_told_who_it_is() {
+    // `net-002`: a client generates its own identity by default, and a run can
+    // pin one -- which is how a reconnect from a new port is exercised by hand.
+    let generated = config::resolve(&[]).expect("the defaults alone resolve");
+    assert_eq!(
+        generated.player_id, None,
+        "a client generates an identity unless it is told otherwise"
+    );
+
+    let pinned = config::resolve(&[layer(&[("player-id", "42")])]).expect("resolves");
+    assert_eq!(pinned.player_id.map(NonZeroU64::get), Some(42));
+
+    let err = config::resolve(&[layer(&[("player-id", "not-a-number")])])
+        .expect_err("an identity is a number");
+    assert!(matches!(err, ConfigError::BadValue { .. }), "{err:?}");
+
+    // Zero is the sim's "no player" sentinel, so it is not an identity.
+    let err =
+        config::resolve(&[layer(&[("player-id", "0")])]).expect_err("zero is not an identity");
+    assert!(matches!(err, ConfigError::BadValue { .. }), "{err:?}");
 }
 
 #[test]

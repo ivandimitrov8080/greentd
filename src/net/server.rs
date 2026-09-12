@@ -43,8 +43,66 @@ pub struct Net {
     pub announced_over: bool,
 }
 
-fn peer_key(remote: &RemoteId) -> PlayerKey {
-    PlayerKey(remote.0.to_bits())
+/// The player a connection was admitted as (`net-002`, D9).
+///
+/// Stored on the connection entity when it is admitted, so a disconnect can name
+/// the player without the socket address and without guessing which key the
+/// connection *would* have had. A connection that never handshook -- or was
+/// refused -- has no `Session`, which is exactly the set that must not be
+/// treated as a player leaving.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Session(pub PlayerKey);
+
+/// The sim-local key for a client identity (`net-002`, D9).
+///
+/// Identity is the clients' own [`PlayerId`], not the UDP address it arrives on,
+/// so a reconnect from a new port is the same player. This is the one place the
+/// mapping lives; [`Sim`] only ever sees a [`PlayerKey`].
+pub fn player_key(id: PlayerId) -> PlayerKey {
+    PlayerKey(id.0)
+}
+
+/// What a handshake's identity claim resolves to (`net-002`, D9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Claim {
+    /// No live connection holds this identity. Admit the peer under this key.
+    Fresh(PlayerKey),
+    /// This very connection already holds it: a retransmitted handshake, which
+    /// is a no-op rather than a second player.
+    AlreadyHeld(PlayerKey),
+    /// A different live connection holds it. The server takes the identity over:
+    /// the old connection is dropped and the new one becomes the player.
+    ///
+    /// The rule, written down because `net-002` asks for one: **the newest
+    /// connection presenting an identity is the player.** It never creates a
+    /// second player -- the key and the `PlayerView` are the ones already in the
+    /// match -- and it is never silent: the old connection is dropped and the
+    /// takeover is logged.
+    ///
+    /// Why takeover and not refusal: raw UDP has no drop detection (`net-014`),
+    /// so a killed client's link can stay "connected" indefinitely -- measured
+    /// at over twelve seconds, and lightyear never noticed. Refusing while the
+    /// old link is *thought* to be live would therefore make a reconnect
+    /// impossible, which is box two of this task. The cost is stated plainly:
+    /// takeover means a peer who knows another's identity can displace it, and
+    /// there is no authentication in scope. `net-003` is where a session token
+    /// lets a returning client prove itself, so the takeover can be narrowed to
+    /// the peer that owns the session.
+    Taken(PlayerKey),
+}
+
+/// Resolve an identity claim against the connections already in the match.
+///
+/// Pure, so the three cases -- a fresh identity, a retransmission, and a second
+/// connection claiming a live identity -- can be tested with no socket
+/// (`tests/identity.rs`).
+pub fn claim(id: PlayerId, conn: Entity, links: &HashMap<PlayerKey, Entity>) -> Claim {
+    let key = player_key(id);
+    match links.get(&key) {
+        None => Claim::Fresh(key),
+        Some(&holder) if holder == conn => Claim::AlreadyHeld(key),
+        Some(_) => Claim::Taken(key),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -74,51 +132,6 @@ fn server_up(server: Query<(), (With<Server>, With<Started>)>) -> bool {
     !server.is_empty()
 }
 
-/// Mark the *host's own* view, so its HUD reads an identity rather than a
-/// coincidence (`found-010`, D30).
-///
-/// A host runs both roles in one world, so its own `PlayerView` is one of the
-/// server's and only the server knows which: [`Net::views`] is keyed by
-/// `PlayerKey`, and the client half cannot reconstruct that key from anything
-/// it holds. So the marking happens here, where the mapping is.
-///
-/// The peer to mark is this process's own client half, which in host mode is the
-/// one entity carrying [`Client`]. Its [`LocalId`] is the `PeerId` lightyear
-/// gave it when it connected, and that is the same value the server derived its
-/// [`PlayerKey`] from, because a host client's `LocalId` and `RemoteId` are the
-/// same `PeerId::Local(0)` (`HostPlugin::connect`). A dedicated server has no
-/// such entity and does nothing.
-///
-/// This used to look for the host's `RawClient`, which stopped existing when
-/// host mode moved to lightyear's in-process host client (D31).
-fn mark_host_view(
-    config: Res<Config>,
-    net: Res<Net>,
-    local: Query<&LocalId, (With<Client>, With<Connected>)>,
-    views: Query<&PlayerView>,
-    marked: Query<(), With<LocalPlayer>>,
-    mut commands: Commands,
-) {
-    if !config.mode.is_host() || !marked.is_empty() {
-        return;
-    }
-    let Ok(local_id) = local.single() else {
-        return;
-    };
-    let key = PlayerKey(local_id.0.to_bits());
-    if let Some(view) = net.views.get(&key) {
-        // Logged at `debug` because this is the line that answers "why is the
-        // HUD showing the wrong player?", which is the symptom D3 had.
-        let gold = views.get(*view).map(|v| v.gold).unwrap_or_default();
-        debug!(
-            target: logging::target::REPLICATION,
-            "host is {:?}: marked {view:?} as its own view (gold {gold})",
-            key
-        );
-        commands.entity(*view).insert(LocalPlayer);
-    }
-}
-
 /// The server reached the listening state, so the socket is bound and peers
 /// can connect. This line is what a CI smoke test waits for (`found-007`): it
 /// is the first thing a successful run prints, and the last thing worth
@@ -143,18 +156,20 @@ fn on_server_started(_trigger: On<Add, Started>, config: Res<Config>) {
 ///
 /// Deliberately *not* an `On<Add, Connected>` observer any more. Lightyear marks
 /// a socket connected the moment it links, but a peer is not a player until it
-/// has said what it speaks, and the whole point of `net-001` is that nothing --
-/// no `Replicate` entity, no `Sim` player record -- may be created before that
-/// version is checked. Splitting "connected" from "in the match" is what makes
-/// the refusal land *before* any entity exists rather than nearly before, and
-/// it is where `net-002`'s real identity and `net-014`'s handshake timeout will
-/// both attach.
+/// has said what it speaks and who it claims to be, and the whole point of
+/// `net-001` is that nothing -- no `Replicate` entity, no `Sim` player record --
+/// may be created before that is checked. Splitting "connected" from "in the
+/// match" is what makes the refusal land *before* any entity exists rather than
+/// nearly before. `net-002`'s identity attaches here; `net-014`'s handshake
+/// timeout will too.
+///
 /// A connected peer and the two ends of its handshake.
 ///
-/// Spelled out here because the five-element tuple is the whole admission
-/// question: who the peer is, whether it is the host, what it says it speaks,
-/// and where to answer. A peer already [`Refused`] is excluded, so a client
-/// that retransmits its handshake during the grace window is not refused twice.
+/// Spelled out here because the tuple is the admission plumbing: whether the
+/// peer is the host, where to read its statement, and where to answer. The
+/// statement itself -- the version and the identity -- is the message payload.
+/// A peer already [`Refused`] is excluded, so a client that retransmits its
+/// handshake during the grace window is not refused twice.
 type HandshakePeers<'w, 's> = Query<
     'w,
     's,
@@ -213,13 +228,7 @@ fn handle_handshakes(
     mut peers: HandshakePeers,
 ) {
     for (entity, remote, is_host_client, mut recv, mut ack) in peers.iter_mut() {
-        let key = peer_key(remote);
-        // Already admitted: a peer may retransmit its handshake, and a second
-        // one must not spawn a second player.
-        if net.links.contains_key(&key) {
-            continue;
-        }
-        // Drains the buffer, so the answer is given once per stated version
+        // Drains the buffer, so the answer is given once per stated handshake
         // rather than once per frame.
         let Some(handshake) = recv.receive().last() else {
             continue;
@@ -229,21 +238,46 @@ fn handle_handshakes(
             warn!(
                 target: logging::target::NET,
                 "refusing {:?} (remote {}, speaks {}): {reason}",
-                key, remote.0, handshake.version
+                player_key(handshake.id),
+                remote.0,
+                handshake.version
             );
-            ack.send::<ReliableChannel>(HandshakeAck::Refused { reason });
-            // The refusal is written to the socket over the next frames, then
-            // the link is dropped; the peer is not a player now and never
-            // becomes one, so nothing has to be undone.
-            commands.entity(entity).insert(Refused {
-                grace: REFUSAL_GRACE_FRAMES,
-            });
+            refuse(entity, reason, &mut ack, &mut commands);
             continue;
         }
+
+        // The identity, not the socket address, decides which player this is
+        // (`net-002`). A retransmitted handshake resolves to `AlreadyHeld` and
+        // is silent; a *different* connection claiming a live identity takes it
+        // over -- the old link is dropped and this one becomes the player, on
+        // the same key and the same view.
+        let key = match claim(handshake.id, entity, &net.links) {
+            Claim::AlreadyHeld(_) => continue,
+            Claim::Taken(key) => {
+                // Drop the previous holder. Its `Remove<Connected>` fires later,
+                // but `on_client_disconnected` only releases the key if the
+                // connection leaving is still the one that holds it, so the
+                // takeover below is not undone by the old link's obituary.
+                if let Some(&old) = net.links.get(&key) {
+                    info!(
+                        target: logging::target::NET,
+                        "identity {:016x} taken over by {:?} (remote {}); dropping {:?}",
+                        key.0,
+                        player_key(handshake.id),
+                        remote.0,
+                        old
+                    );
+                    commands.entity(old).insert(Disconnecting);
+                }
+                key
+            }
+            Claim::Fresh(key) => key,
+        };
 
         join_player(
             entity,
             remote,
+            key,
             is_host_client,
             &config,
             &mut sim,
@@ -252,6 +286,23 @@ fn handle_handshakes(
             &mut ack,
         );
     }
+}
+
+/// Refuse a peer, deferring the link drop so the refusal can reach the socket
+/// (`net-001`).
+fn refuse(
+    entity: Entity,
+    reason: String,
+    ack: &mut MessageSender<HandshakeAck>,
+    commands: &mut Commands,
+) {
+    ack.send::<ReliableChannel>(HandshakeAck::Refused { reason });
+    // The refusal is written to the socket over the next frames, then the link
+    // is dropped; the peer is not a player now and never becomes one, so
+    // nothing has to be undone.
+    commands.entity(entity).insert(Refused {
+        grace: REFUSAL_GRACE_FRAMES,
+    });
 }
 
 /// Everything that turns a verified peer into a player in the match.
@@ -265,6 +316,7 @@ fn handle_handshakes(
 fn join_player(
     entity: Entity,
     remote: &RemoteId,
+    key: PlayerKey,
     is_host_client: bool,
     config: &Config,
     sim: &mut Sim,
@@ -272,15 +324,21 @@ fn join_player(
     commands: &mut Commands,
     ack: &mut MessageSender<HandshakeAck>,
 ) {
-    let key = peer_key(remote);
-    info!(target: logging::target::NET, "player {:?} joined", key);
+    info!(
+        target: logging::target::NET,
+        "player {:?} joined (identity {:016x}, remote {})",
+        key,
+        key.0,
+        remote.0
+    );
     let start_gold = sim.balance.match_rules.start_gold;
 
-    // Opt this connection into replication and into receiving intents. A host
-    // client already has both receivers (`net::client::spawn_client` put them
-    // there at spawn, because both directions land on that one entity), and it
-    // must *not* get a `ReplicationSender`: it is not a replicon peer, and the
-    // entities it reads are the server's own.
+    // Opt this connection into receiving intents, and -- for a remote peer --
+    // into replication. A host client already has both receivers
+    // (`net::client::spawn_client` put them there at spawn, because both
+    // directions land on that one entity), and it must *not* get a
+    // `ReplicationSender`: it is not a replicon peer, and the entities it reads
+    // are the server's own.
     //
     // Note what is *not* inserted here: a fresh `MessageManager`. It is a
     // required component of `MessageSender`/`MessageReceiver`, so the entity
@@ -288,43 +346,72 @@ fn join_player(
     // itself in through an `on_add` hook. Inserting a second, default one would
     // replace it and wipe that registration -- which is precisely what made
     // every `ServerNotice` vanish on the way to a remote client (D32).
+    //
+    // `Session` is what a later disconnect names the player by, so a connection
+    // that was admitted can always be mapped back to its `PlayerKey` without the
+    // socket address (`net-002`).
     if is_host_client {
-        commands.entity(entity).insert(Name::new("HostClientLink"));
+        commands
+            .entity(entity)
+            .insert((Name::new("HostClientLink"), Session(key)));
     } else {
         commands.entity(entity).insert((
             Name::new("ClientLink"),
+            Session(key),
             ReplicationSender,
             MessageReceiver::<ClientCmd>::default(),
         ));
     }
 
-    // A private HUD entity, addressed to this player alone. A host client is
-    // deliberately *not* addressed: it needs no copy of anything, because the
-    // authoritative `PlayerView` is already in its world (D3, `audit-003`).
-    // `mark_host_view` binds the HUD to that entity instead.
-    let view = commands
-        .spawn((
-            Name::new("PlayerView"),
-            PlayerView {
-                gold: start_gold,
-                kills: 0,
-            },
-        ))
-        .id();
-    if !is_host_client {
+    // Reuse the view an identity already owns, or make one. Reuse is what makes
+    // a reconnect a reconnect: the returning peer gets the *same* `PlayerView`
+    // entity, so its gold and kills are the ones the sim kept (`net-002`; the
+    // sim's `add_player` is idempotent for the same reason).
+    let view = match net.views.get(&key).copied() {
+        Some(view) => {
+            debug!(
+                target: logging::target::REPLICATION,
+                "reusing private view {view:?} for {:?}",
+                key
+            );
+            view
+        }
+        None => commands
+            .spawn((
+                Name::new("PlayerView"),
+                PlayerView {
+                    gold: start_gold,
+                    kills: 0,
+                },
+            ))
+            .id(),
+    };
+
+    // Address the view. A host client is deliberately *not* given `Replicate`:
+    // it needs no copy of anything, because the authoritative `PlayerView` is
+    // already in its world (D3, `audit-003`). It is marked `LocalPlayer` here
+    // instead, where the key-to-view mapping is known -- the job
+    // `mark_host_view` used to do from outside (`found-010`, D30). Marking at
+    // the join means there is never a frame where the view exists but its owner
+    // does not know which one it is.
+    //
+    // A remote peer is addressed with `NetworkTarget::Single`; re-adding
+    // `Replicate` on a reconnect re-targets the existing view at the new socket,
+    // because a reconnect arrives from a new port (D9).
+    if is_host_client {
+        commands.entity(view).insert(LocalPlayer);
+        debug!(
+            target: logging::target::REPLICATION,
+            "in-process: private view {view:?} for {:?} marked local; not replicated",
+            key
+        );
+    } else {
         commands
             .entity(view)
             .insert(Replicate::to_clients(NetworkTarget::Single(remote.0)));
         debug!(
             target: logging::target::REPLICATION,
-            "addressing: private view for {:?} (remote {})",
-            key,
-            remote.0
-        );
-    } else {
-        debug!(
-            target: logging::target::REPLICATION,
-            "in-process: private view for {:?} (remote {}); not replicated",
+            "addressing: private view {view:?} for {:?} (remote {})",
             key,
             remote.0
         );
@@ -333,8 +420,6 @@ fn join_player(
     net.links.insert(key, entity);
     net.views.insert(key, view);
     // A fresh full budget, so a rejoin is not punished for an earlier burst.
-    // The bucket is keyed by the same `PlayerKey` as everything else, which is
-    // the socket address until `net-002` gives players a real identity.
     net.buckets.insert(
         key,
         TokenBucket::new(config.command_burst, config.commands_per_second),
@@ -348,23 +433,40 @@ fn join_player(
 
 fn on_client_disconnected(
     trigger: On<Remove, Connected>,
-    links: Query<&RemoteId, With<ClientOf>>,
+    sessions: Query<&Session, With<ClientOf>>,
     mut sim: ResMut<Sim>,
     mut net: ResMut<Net>,
     mut commands: Commands,
 ) {
-    let Ok(remote) = links.get(trigger.entity) else {
+    // A connection that never handshook -- or was refused -- has no `Session`,
+    // and is not a player leaving.
+    let Ok(session) = sessions.get(trigger.entity) else {
         return;
     };
-    let key = peer_key(remote);
-    if net.links.remove(&key).is_none() {
+    let key = session.0;
+    // Release the identity only if this connection is still the one that holds
+    // it. A takeover re-inserts the key against the *new* connection and drops
+    // the old one, and the old one's `Remove<Connected>` must not evict its
+    // replacement (`net-002`).
+    if net.links.get(&key) != Some(&trigger.entity) {
         return;
     }
-    info!(target: logging::target::NET, "player {:?} left (towers remain)", key);
+    net.links.remove(&key);
+    info!(
+        target: logging::target::NET,
+        "player {:?} left (towers and view kept for a reconnect)",
+        key
+    );
     sim.remove_player(key);
     net.buckets.remove(&key);
-    if let Some(view) = net.views.remove(&key) {
-        commands.entity(view).despawn();
+    // Keep the `PlayerView`. Identity is stable (`net-002`), so a reconnect is
+    // entitled to the same player and the same view, and despawning it would
+    // hand the returning client a fresh starting balance. Pausing replication is
+    // enough to stop it being sent to a dead link, and `join_player` re-targets
+    // it when the identity comes back. `audit-022`'s leaver rule is what
+    // reclaims the view of a player who never returns.
+    if let Some(view) = net.views.get(&key).copied() {
+        commands.entity(view).remove::<Replicate>();
     }
 }
 
@@ -409,22 +511,26 @@ fn handle_cmds(
     mut sim: ResMut<Sim>,
     mut net: ResMut<Net>,
     mut links: Query<(
-        &RemoteId,
+        Entity,
+        &Session,
         &mut MessageReceiver<ClientCmd>,
         &mut MessageSender<ServerNotice>,
     )>,
 ) {
     let frame = time.delta_secs();
-    for (remote, mut recv, mut send) in links.iter_mut() {
-        let key = peer_key(remote);
+    for (entity, session, mut recv, mut send) in links.iter_mut() {
+        let key = session.0;
         // Always drain, so a peer that is not allowed to act cannot leave a
         // queue growing behind it.
         let cmds: Vec<ClientCmd> = recv.receive().collect();
-        if !net.links.contains_key(&key) {
+        // A connection may only act if it is the one currently holding `key`:
+        // it is otherwise either unregistered (D8) or the loser of a takeover
+        // (`net-002`), and neither may speak for the player.
+        if net.links.get(&key) != Some(&entity) {
             if !cmds.is_empty() {
                 debug!(
                     target: logging::target::COMMANDS,
-                    "dropping {} command(s) from unregistered peer {:?}",
+                    "dropping {} command(s) from a connection that does not hold {:?}",
                     cmds.len(),
                     key
                 );
@@ -723,7 +829,6 @@ impl Plugin for GreenTdServerPlugin {
                 Update,
                 (
                     setup_match,
-                    mark_host_view,
                     // A refusal is aged before new ones are made, so the frame
                     // a peer is refused is never the frame it is dropped.
                     age_refusals,
